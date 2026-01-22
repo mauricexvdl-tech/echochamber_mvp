@@ -1,6 +1,7 @@
 //! Configuration struct for Echo Chamber tunables.
 //! Phase 1.4c: Added competitive label binding with abstain.
 //! Phase 1.8: VALUE IS CONTROL - Memory lifecycle + self-regulation.
+//! Phase 1.9: CONSOLIDATION - Make merges happen + reduce stability flicker.
 
 use std::f64::consts::PI;
 
@@ -186,6 +187,34 @@ pub struct Config {
     pub stable_wins_min: u32,
     /// Fraction of stable anchors needed to switch from explore to stable mode.
     pub stable_mode_threshold: f64,
+
+    // =========================================================================
+    // Phase 1.9: CONSOLIDATION (Merge scanning + stability hysteresis)
+    // =========================================================================
+    /// How often (in ticks) to scan for merge candidates.
+    pub merge_scan_period: u32,
+    /// Minimum proto_score(a, b) required for merge candidates.
+    pub merge_proto_min_score: f32,
+    /// Minimum proto_support for both anchors to be merge candidates.
+    pub merge_min_support: u32,
+    /// Maximum merges to perform per scan.
+    pub merge_max_per_scan: u32,
+    /// If true, only merge anchors with the same key.
+    pub merge_same_key_only: bool,
+    /// Proto score threshold for cross-key merges (higher = stricter).
+    pub merge_proto_min_score_cross_key: f32,
+    /// Learning rate for prototype merge (weighted average).
+    pub merge_proto_eta: f32,
+    /// Entropy threshold to ENTER stable state (must be below).
+    pub stable_enter_entropy: f32,
+    /// Entropy threshold to EXIT stable state (must exceed).
+    pub stable_exit_entropy: f32,
+    /// |TD| threshold to ENTER stable state (must be below).
+    pub stable_enter_abs_td: f32,
+    /// |TD| threshold to EXIT stable state (must exceed).
+    pub stable_exit_abs_td: f32,
+    /// Minimum ticks an anchor must stay stable before it can drop.
+    pub stable_min_ticks_on: u32,
 }
 
 impl Default for Config {
@@ -314,6 +343,20 @@ impl Default for Config {
             stable_v_min: 0.4,         // Need V >= 0.4 to become stable
             stable_wins_min: 5,        // Need >= 5 wins to become stable
             stable_mode_threshold: 0.3, // 30% stable anchors → switch to stable mode
+
+            // Phase 1.9: CONSOLIDATION defaults
+            merge_scan_period: 3000,             // Scan every 3000 ticks (less frequent)
+            merge_proto_min_score: 0.87,         // Require 87% proto similarity
+            merge_min_support: 450,              // Require mature protos
+            merge_max_per_scan: 1,               // At most 1 merge per scan (conservative)
+            merge_same_key_only: false,          // Allow cross-key merges if proto similar enough
+            merge_proto_min_score_cross_key: 0.90, // Cross-key threshold (stricter)
+            merge_proto_eta: 0.25,               // Proto merge learning rate
+            stable_enter_entropy: 2.50,          // Enter stable when H < 2.50
+            stable_exit_entropy: 2.65,           // Exit stable when H > 2.65
+            stable_enter_abs_td: 0.28,           // Enter stable when |TD| < 0.28
+            stable_exit_abs_td: 0.45,            // Exit stable when |TD| > 0.45
+            stable_min_ticks_on: 3000,           // Stay stable for 3000 ticks minimum
         }
     }
 }

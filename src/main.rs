@@ -1,5 +1,5 @@
 //! Echo Chamber MVP: Emergent cancellation via complex signal interference.
-//! Phase 1.8: VALUE IS CONTROL - Memory lifecycle + self-regulation.
+//! Phase 1.9: CONSOLIDATION - Make merges happen + reduce stability flicker.
 
 mod causes;
 mod complex;
@@ -27,7 +27,7 @@ const EPS_PRINT: f64 = 1e-9;
 
 fn main() {
     println!("╔════════════════════════════════════════════════════════════════╗");
-    println!("║  ECHO CHAMBER MVP - Phase 1.8: VALUE IS CONTROL               ║");
+    println!("║  ECHO CHAMBER MVP - Phase 1.9: CONSOLIDATION                  ║");
     println!("╚════════════════════════════════════════════════════════════════╝");
     println!();
 
@@ -502,7 +502,7 @@ fn run_competitive_experiment(config: &Config) -> (GlobalLabelMetrics, usize, us
 fn demo_phase_1_5b_comparison(config: &Config) {
     println!();
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("DEMO 5/6: Phase 1.8 - VALUE IS CONTROL (Memory Lifecycle)");
+    println!("DEMO 5/6: Phase 1.9 - CONSOLIDATION (Merges + Stability)");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!();
 
@@ -633,10 +633,21 @@ fn demo_phase_1_5b_comparison(config: &Config) {
     println!("  total_wins: {}", lifecycle_stats.total_wins);
     println!("  final_mode: {}", if lifecycle_stats.final_mode { "STABLE" } else { "EXPLORE" });
 
-    // Acceptance check for Phase 1.8
+    // Phase 1.9: Consolidation metrics
+    println!();
+    println!("Phase 1.9 Consolidation (MERGES + STABILITY):");
+    println!("  merge_scan_runs: {}", lifecycle_stats.merge_scan_runs);
+    println!("  merges_done_proto: {}", lifecycle_stats.merges_done_proto);
+    println!("  avg_merge_score: {:.3}", lifecycle_stats.avg_merge_score);
+    println!("  merge_candidates_found: {}", lifecycle_stats.merge_candidates_found);
+    println!("  stable_new: {}", lifecycle_stats.stable_new);
+    println!("  stable_dropped: {}", lifecycle_stats.stable_dropped);
+    println!("  stable_drop_ratio: {:.1}%", lifecycle_stats.stable_drop_ratio * 100.0);
+
+    // Acceptance check for Phase 1.9
     println!();
     println!("═══════════════════════════════════════════════════════════════════");
-    println!("PHASE 1.8 ACCEPTANCE:");
+    println!("PHASE 1.9 ACCEPTANCE:");
     println!("═══════════════════════════════════════════════════════════════════");
 
     // Phase 1.6 criteria (must not regress) - slightly relaxed from 1.7a
@@ -726,9 +737,29 @@ fn demo_phase_1_5b_comparison(config: &Config) {
 
     let phase18_ok = has_wins && lifecycle_active;
 
-    if phase16_ok && phase17a_ok && phase17b_ok && phase17d_ok && phase18_ok {
+    // Phase 1.9 acceptance criteria
+    let merges_ok = lifecycle_stats.merges_done_proto > 0;
+    let drop_ratio_ok = lifecycle_stats.stable_drop_ratio <= 0.35;
+
+    println!();
+    println!("Phase 1.9 (CONSOLIDATION):");
+    println!("  [{}] merges_done_proto > 0: {}",
+        if merges_ok { "✓" } else { "✗" }, lifecycle_stats.merges_done_proto);
+    println!("  [{}] stable_drop_ratio <= 35%: {:.1}%",
+        if drop_ratio_ok { "✓" } else { "✗" }, lifecycle_stats.stable_drop_ratio * 100.0);
+    println!("  [i] avg_merge_score: {:.3}", lifecycle_stats.avg_merge_score);
+    println!("  [i] merge_candidates_found: {}", lifecycle_stats.merge_candidates_found);
+    println!("  [i] stable_new: {}, stable_dropped: {}",
+        lifecycle_stats.stable_new, lifecycle_stats.stable_dropped);
+
+    let phase19_ok = merges_ok && drop_ratio_ok;
+
+    if phase16_ok && phase17a_ok && phase17b_ok && phase17d_ok && phase18_ok && phase19_ok {
         println!();
-        println!("  → Phase 1.8: ALL CRITERIA MET!");
+        println!("  → Phase 1.9: ALL CRITERIA MET!");
+    } else if phase16_ok && phase17a_ok && phase17b_ok && phase17d_ok && phase18_ok {
+        println!();
+        println!("  → Phase 1.8 OK, Phase 1.9 consolidation needs tuning.");
     } else if phase16_ok && phase17a_ok && phase17b_ok && phase17d_ok {
         println!();
         println!("  → Phase 1.7d OK, Phase 1.8 lifecycle needs more data.");
@@ -1190,18 +1221,28 @@ fn run_demo_5a_baseline(config: &Config) -> (GlobalLabelMetrics, f64) {
     (metrics, stability)
 }
 
-/// Phase 1.8 lifecycle stats for reporting.
+/// Phase 1.8/1.9 lifecycle stats for reporting.
 struct LifecycleStats {
     stable_count: usize,
     stable_fraction: f64,
     mode_transitions: usize,
     total_wins: u32,
     final_mode: bool,
+    // Phase 1.9: Consolidation metrics
+    merges_done: usize,
+    merge_candidates_found: usize,
+    stable_new: usize,
+    stable_dropped: usize,
+    stable_drop_ratio: f64,
+    // Phase 1.9: Additional merge stats
+    merge_scan_runs: usize,
+    merges_done_proto: usize,
+    avg_merge_score: f32,
 }
 
-/// DEMO 5b: Anchor Concept Tokens with Phase 1.8 VALUE IS CONTROL
+/// DEMO 5b: Anchor Concept Tokens with Phase 1.9 CONSOLIDATION
 fn run_demo_5b_keyed(config: &Config) -> (KeyedMemoryMetrics, AnchorStats, (usize, f64, usize), Option<(usize, usize, f64, f64, usize, f64, f64)>, LifecycleStats) {
-    println!("DEMO 5b: Phase 1.8 VALUE IS CONTROL (Lifecycle + Self-Regulation)");
+    println!("DEMO 5b: Phase 1.9 CONSOLIDATION (Merges + Stability Hysteresis)");
     println!("─────────────────────────────────────────────────────────────────");
 
     // Use same seed as 5a for fair comparison
@@ -1299,7 +1340,7 @@ fn run_demo_5b_keyed(config: &Config) -> (KeyedMemoryMetrics, AnchorStats, (usiz
             let total_power = tick_metrics.tot_pow_post;
             let confidence = ConfidenceInfo::new(topk_margin, total_power);
 
-            // Phase 1.6b: Periodic merge
+            // Phase 1.6b: Periodic Hamming-based merge (legacy)
             // Phase 1.8: Pass config for value consistency check
             if anchor_bank.should_merge(global_tick) {
                 let remaps = anchor_bank.merge_similar(Some(config));
@@ -1307,9 +1348,19 @@ fn run_demo_5b_keyed(config: &Config) -> (KeyedMemoryMetrics, AnchorStats, (usiz
                     keyed_memory.apply_remaps(&remaps);
                 }
                 anchor_bank.mark_merge_done(global_tick);
-                // Phase 1.8: Also update stability after merge
-                anchor_bank.update_stability(global_tick, config);
             }
+
+            // Phase 1.9: Proto-based merge scanning (new)
+            if anchor_bank.should_scan_merges(global_tick, config) {
+                let remaps = anchor_bank.scan_and_merge(config);
+                if !remaps.is_empty() {
+                    keyed_memory.apply_remaps(&remaps);
+                }
+                anchor_bank.mark_scan_done(global_tick);
+            }
+
+            // Phase 1.8/1.9: Update stability with hysteresis
+            anchor_bank.update_stability(global_tick, config);
 
             // Phase 1.8: Get dynamic gate params based on current mode
             let gate_params = if anchor_bank.stable_mode {
@@ -1515,12 +1566,25 @@ fn run_demo_5b_keyed(config: &Config) -> (KeyedMemoryMetrics, AnchorStats, (usiz
 
     // Phase 1.8: Lifecycle stats
     let (stable_count, stable_fraction, mode_transitions, _, final_mode) = anchor_bank.lifecycle_metrics();
+    // Phase 1.9: Consolidation metrics
+    let (merge_candidates_found, _, _, stable_new, stable_dropped) = anchor_bank.consolidation_metrics();
+    let (merge_scan_runs, merges_done_proto, avg_merge_score, _) = anchor_bank.merge_stats();
     let lifecycle_stats = LifecycleStats {
         stable_count,
         stable_fraction,
         mode_transitions,
         total_wins: anchor_bank.total_wins(),
         final_mode,
+        // Phase 1.9
+        merges_done: anchor_bank.anchor_merges,
+        merge_candidates_found,
+        stable_new,
+        stable_dropped,
+        stable_drop_ratio: anchor_bank.stable_drop_ratio(),
+        // Phase 1.9: Additional merge stats
+        merge_scan_runs,
+        merges_done_proto,
+        avg_merge_score,
     };
 
     (metrics, anchor_stats, keyed_stats, probe_stats, lifecycle_stats)
