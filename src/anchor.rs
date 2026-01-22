@@ -3,6 +3,7 @@
 //! Phase 1.6: Anchor codebook stabilization with merge, gating, and instrumentation.
 //! Phase 1.7a: Prototype vectors - turn anchors into "concept tokens" with online learning.
 //! Phase 1.7b: Value learning - self-supervised credit assignment via TD(0).
+//! Phase 1.8: VALUE IS CONTROL - Memory lifecycle + self-regulation.
 
 use std::collections::HashMap;
 use crate::config::Config;
@@ -75,6 +76,14 @@ pub struct Anchor {
     pub v_updates: u32,
     /// EMA of |TD| for diagnostics.
     pub v_ema_abs_td: f32,
+
+    // Phase 1.8: VALUE IS CONTROL - Lifecycle fields
+    /// Number of times this anchor "won" in recall competition.
+    pub wins: u32,
+    /// Whether this anchor is considered stable (converged concept).
+    pub stable: bool,
+    /// Tick when this anchor became stable.
+    pub stable_since_tick: u64,
 }
 
 impl Anchor {
@@ -94,6 +103,10 @@ impl Anchor {
             v: 0.0,
             v_updates: 0,
             v_ema_abs_td: 0.0,
+            // Phase 1.8: Initialize lifecycle fields
+            wins: 0,
+            stable: false,
+            stable_since_tick: 0,
         }
     }
 
@@ -270,11 +283,103 @@ impl Anchor {
         self.v_updates += 1;
         self.v_ema_abs_td = (1.0 - ema_coef) * self.v_ema_abs_td + ema_coef * td.abs();
     }
+
+    // =========================================================================
+    // Phase 1.8: VALUE IS CONTROL - Lifecycle Methods
+    // =========================================================================
+
+    /// Compute keep_score for eviction decisions.
+    /// Higher score = more likely to keep (less likely to evict).
+    /// score = w_v * (v + 1) / 2 + w_use * log(1 + usage) + w_age * exp(-age/tau)
+    /// where v is mapped from [-1,1] to [0,1].
+    pub fn keep_score(&self, current_tick: u64, config: &Config) -> f32 {
+        // Value component: map v from [-1, 1] to [0, 1]
+        let v_norm = (self.v + 1.0) / 2.0;
+
+        // Usage component: log scale for diminishing returns
+        let use_term = (1.0 + self.usage_count as f32).ln() / 5.0; // Normalize by ln(~150) ≈ 5
+
+        // Age penalty: exponential decay
+        let age = current_tick.saturating_sub(self.last_used_tick) as f64;
+        let age_term = (-age / config.evict_age_tau).exp() as f32;
+
+        // Combine components
+        config.evict_v_weight * v_norm
+            + config.evict_use_weight * use_term.min(1.0)
+            + config.evict_age_weight * age_term
+    }
+
+    /// Record a "win" when this anchor is successfully recalled.
+    pub fn record_win(&mut self) {
+        self.wins += 1;
+    }
+
+    /// Check if this anchor should become stable based on config thresholds.
+    pub fn check_stability(&mut self, current_tick: u64, config: &Config) -> bool {
+        if self.stable {
+            return true; // Already stable
+        }
+
+        if self.v >= config.stable_v_min && self.wins >= config.stable_wins_min {
+            self.stable = true;
+            self.stable_since_tick = current_tick;
+            return true;
+        }
+
+        false
+    }
 }
 
 // =============================================================================
 // Confidence gate info for anchor creation
 // =============================================================================
+
+/// Phase 1.8: Dynamic gate parameters for value-controlled gating.
+/// In explore mode (more permissive): multipliers < 1 reduce thresholds.
+/// In stable mode (stricter): multipliers > 1 increase thresholds.
+#[derive(Clone, Debug)]
+pub struct GateParams {
+    /// Multiplier for margin threshold.
+    pub margin_mult: f64,
+    /// Multiplier for min power threshold.
+    pub power_min_mult: f64,
+}
+
+impl GateParams {
+    pub fn new(margin_mult: f64, power_min_mult: f64) -> Self {
+        GateParams { margin_mult, power_min_mult }
+    }
+
+    /// Create gate params for explore mode (more permissive).
+    pub fn explore(config: &Config) -> Self {
+        GateParams {
+            margin_mult: config.gate_explore_mult,
+            power_min_mult: config.gate_explore_mult,
+        }
+    }
+
+    /// Create gate params for stable mode (stricter).
+    pub fn stable(config: &Config) -> Self {
+        GateParams {
+            margin_mult: config.gate_stable_mult,
+            power_min_mult: 1.0, // Don't change power threshold in stable mode
+        }
+    }
+
+    /// Default (no modification).
+    pub fn default_params() -> Self {
+        GateParams {
+            margin_mult: 1.0,
+            power_min_mult: 1.0,
+        }
+    }
+}
+
+impl Default for GateParams {
+    fn default() -> Self {
+        GateParams::default_params()
+    }
+}
 
 /// Information about current signal confidence for gating anchor creation.
 #[derive(Clone, Debug)]
@@ -290,10 +395,18 @@ impl ConfidenceInfo {
         ConfidenceInfo { topk_margin, total_power }
     }
 
-    /// Check if confidence passes the gate for anchor creation.
+    /// Check if confidence passes the gate for anchor creation (default thresholds).
     pub fn passes_gate(&self) -> bool {
-        self.topk_margin >= ANCHOR_MARGIN_MIN
-            && self.total_power >= ANCHOR_MIN_POWER
+        self.passes_gate_with_params(&GateParams::default())
+    }
+
+    /// Phase 1.8: Check if confidence passes the gate with dynamic parameters.
+    pub fn passes_gate_with_params(&self, params: &GateParams) -> bool {
+        let margin_threshold = ANCHOR_MARGIN_MIN * params.margin_mult;
+        let power_min_threshold = ANCHOR_MIN_POWER * params.power_min_mult;
+
+        self.topk_margin >= margin_threshold
+            && self.total_power >= power_min_threshold
             && self.total_power <= ANCHOR_MAX_POWER
     }
 }
@@ -342,6 +455,16 @@ pub struct AnchorBank {
     proto_active_steps: usize,
     /// Total steps for proto_active calculation.
     proto_total_steps: usize,
+
+    // Phase 1.8: VALUE IS CONTROL - Mode switching
+    /// Current operating mode: true = stable (stricter gating), false = explore (permissive).
+    pub stable_mode: bool,
+    /// Count of anchors marked stable.
+    stable_count: usize,
+    /// Total stability transitions (explore → stable or stable → explore).
+    pub mode_transitions: usize,
+    /// Blocked merges due to value inconsistency.
+    pub merge_blocked_v: usize,
 }
 
 impl AnchorBank {
@@ -364,6 +487,11 @@ impl AnchorBank {
             proto_updates: 0,
             proto_active_steps: 0,
             proto_total_steps: 0,
+            // Phase 1.8
+            stable_mode: false, // Start in explore mode
+            stable_count: 0,
+            mode_transitions: 0,
+            merge_blocked_v: 0,
         }
     }
 
@@ -394,17 +522,19 @@ impl AnchorBank {
     /// Resolve a signature to an anchor ID (basic version without gating).
     /// Returns (anchor_id, is_new_anchor, match_hamming).
     pub fn resolve(&mut self, signature: u64, current_tick: u64) -> (u16, bool, u32) {
-        self.resolve_gated(signature, current_tick, None)
+        self.resolve_gated(signature, current_tick, None, None)
     }
 
     /// Resolve a signature to an anchor ID with optional confidence gating.
     /// If confidence_info is Some and fails gate, will not create new anchors.
+    /// Phase 1.8: Added config parameter for value-aware eviction.
     /// Returns (anchor_id, is_new_anchor, match_hamming).
     pub fn resolve_gated(
         &mut self,
         signature: u64,
         current_tick: u64,
         confidence_info: Option<&ConfidenceInfo>,
+        config: Option<&Config>,
     ) -> (u16, bool, u32) {
         self.total_ticks = self.total_ticks.max(current_tick);
 
@@ -456,7 +586,14 @@ impl AnchorBank {
 
         // Create new anchor (with potential pruning)
         if self.len() >= MAX_ANCHORS {
-            self.prune_one(current_tick);
+            // Phase 1.8: Use value-aware eviction if config provided
+            if let Some(cfg) = config {
+                self.prune_one(current_tick, cfg);
+            } else {
+                // Fallback: use default config for eviction
+                let default_cfg = Config::default();
+                self.prune_one(current_tick, &default_cfg);
+            }
         }
 
         let new_id = self.next_id;
@@ -467,50 +604,53 @@ impl AnchorBank {
         (new_id, true, 0)
     }
 
-    /// Prune one anchor to make room for a new one.
-    /// Strategy: Remove least-used anchor with usage < ANCHOR_MIN_USE,
-    /// or oldest anchor if all are well-used.
-    fn prune_one(&mut self, _current_tick: u64) {
-        // First try: find least-used anchor below threshold
-        let mut candidate: Option<(u16, u32, u64)> = None; // (id, usage, created_tick)
+    /// Phase 1.8: Prune one anchor using value-aware eviction.
+    /// Strategy: Remove anchor with lowest keep_score().
+    /// Protected: stable anchors are protected from eviction.
+    fn prune_one(&mut self, current_tick: u64, config: &Config) {
+        let mut candidate: Option<(u16, f32)> = None; // (id, keep_score)
 
         for (&id, anchor) in &self.anchors {
             if !anchor.alive {
                 continue;
             }
-            if anchor.usage_count < ANCHOR_MIN_USE {
-                match candidate {
-                    None => candidate = Some((id, anchor.usage_count, anchor.created_at_tick)),
-                    Some((_, best_usage, best_tick)) => {
-                        if anchor.usage_count < best_usage
-                            || (anchor.usage_count == best_usage
-                                && anchor.created_at_tick < best_tick)
-                        {
-                            candidate = Some((id, anchor.usage_count, anchor.created_at_tick));
-                        }
+            // Phase 1.8: Stable anchors are protected from eviction
+            if anchor.stable {
+                continue;
+            }
+
+            let score = anchor.keep_score(current_tick, config);
+
+            match candidate {
+                None => candidate = Some((id, score)),
+                Some((_, best_score)) => {
+                    if score < best_score {
+                        candidate = Some((id, score));
                     }
                 }
             }
         }
 
-        // If no low-usage candidate, find oldest
+        // If all non-stable anchors are exhausted, we have to evict a stable one
+        // (fallback to lowest keep_score among stable)
         if candidate.is_none() {
             for (&id, anchor) in &self.anchors {
                 if !anchor.alive {
                     continue;
                 }
+                let score = anchor.keep_score(current_tick, config);
                 match candidate {
-                    None => candidate = Some((id, anchor.usage_count, anchor.created_at_tick)),
-                    Some((_, _, best_tick)) => {
-                        if anchor.created_at_tick < best_tick {
-                            candidate = Some((id, anchor.usage_count, anchor.created_at_tick));
+                    None => candidate = Some((id, score)),
+                    Some((_, best_score)) => {
+                        if score < best_score {
+                            candidate = Some((id, score));
                         }
                     }
                 }
             }
         }
 
-        if let Some((id, _, _)) = candidate {
+        if let Some((id, _)) = candidate {
             if let Some(anchor) = self.anchors.get_mut(&id) {
                 anchor.alive = false;
             }
@@ -519,9 +659,13 @@ impl AnchorBank {
     }
 
     /// Phase 1.6b: Attempt to merge similar anchors.
+    /// Phase 1.8: Added value consistency check (|v1 - v2| < merge_v_delta_max).
     /// Returns Vec of (old_id, new_id) remappings that occurred.
-    pub fn merge_similar(&mut self) -> Vec<(u16, u16)> {
+    pub fn merge_similar(&mut self, config: Option<&Config>) -> Vec<(u16, u16)> {
         let mut remaps: Vec<(u16, u16)> = Vec::new();
+
+        // Phase 1.8: Get merge_v_delta_max from config
+        let merge_v_delta_max = config.map(|c| c.merge_v_delta_max).unwrap_or(1.0);
 
         // Collect alive anchor IDs
         let ids: Vec<u16> = self.anchors
@@ -550,21 +694,27 @@ impl AnchorBank {
                     continue;
                 }
 
-                let dist = {
+                let (dist, v_delta) = {
                     let a = &self.anchors[&id_low];
                     let b = &self.anchors[&id_high];
-                    (a.proto_signature ^ b.proto_signature).count_ones()
+                    let dist = (a.proto_signature ^ b.proto_signature).count_ones();
+                    let v_delta = (a.v - b.v).abs();
+                    (dist, v_delta)
                 };
 
-                if dist <= MERGE_HAMMING {
+                // Phase 1.8: Check both Hamming distance AND value consistency
+                if dist <= MERGE_HAMMING && v_delta < merge_v_delta_max {
                     // Merge id_low into id_high (higher usage keeps ID)
                     let usage_low = self.anchors[&id_low].usage_count;
+                    let wins_low = self.anchors[&id_low].wins;
 
                     // Mark id_low as dead
                     self.anchors.get_mut(&id_low).unwrap().alive = false;
 
-                    // Add usage to id_high
-                    self.anchors.get_mut(&id_high).unwrap().usage_count += usage_low;
+                    // Add usage and wins to id_high (value is preserved from high-usage anchor)
+                    let anchor_high = self.anchors.get_mut(&id_high).unwrap();
+                    anchor_high.usage_count += usage_low;
+                    anchor_high.wins += wins_low;
 
                     // Record the remap
                     self.id_remap.insert(id_low, id_high);
@@ -877,6 +1027,115 @@ impl AnchorBank {
         anchors_with_v.iter()
             .take(n)
             .map(|(id, a)| (*id, a.v, a.entropy(proto_m), a.proto_support, a.v_updates))
+            .collect()
+    }
+
+    // =========================================================================
+    // Phase 1.8: VALUE IS CONTROL - Lifecycle Methods
+    // =========================================================================
+
+    /// Record a "win" for an anchor (successful recall).
+    pub fn record_win(&mut self, anchor_id: u16) {
+        if anchor_id == 0xFFFF {
+            return;
+        }
+        let resolved_id = self.resolve_id(anchor_id);
+        if let Some(anchor) = self.anchors.get_mut(&resolved_id) {
+            if anchor.alive {
+                anchor.record_win();
+            }
+        }
+    }
+
+    /// Update stability of all anchors and potentially switch modes.
+    /// Returns true if mode changed.
+    pub fn update_stability(&mut self, current_tick: u64, config: &Config) -> bool {
+        let mut new_stable_count = 0;
+
+        for anchor in self.anchors.values_mut() {
+            if anchor.alive {
+                anchor.check_stability(current_tick, config);
+                if anchor.stable {
+                    new_stable_count += 1;
+                }
+            }
+        }
+
+        self.stable_count = new_stable_count;
+
+        // Check for mode transition
+        let alive_count = self.len();
+        if alive_count == 0 {
+            return false;
+        }
+
+        let stable_frac = new_stable_count as f64 / alive_count as f64;
+        let should_be_stable = stable_frac >= config.stable_mode_threshold;
+
+        if should_be_stable != self.stable_mode {
+            self.stable_mode = should_be_stable;
+            self.mode_transitions += 1;
+            return true;
+        }
+
+        false
+    }
+
+    /// Get current fraction of stable anchors.
+    pub fn stable_fraction(&self) -> f64 {
+        let alive_count = self.len();
+        if alive_count == 0 {
+            0.0
+        } else {
+            self.stable_count as f64 / alive_count as f64
+        }
+    }
+
+    /// Get the gate multiplier based on current mode.
+    /// In explore mode: use gate_explore_mult (more permissive).
+    /// In stable mode: use gate_stable_mult (stricter).
+    pub fn get_gate_mult(&self, config: &Config) -> f64 {
+        if self.stable_mode {
+            config.gate_stable_mult
+        } else {
+            config.gate_explore_mult
+        }
+    }
+
+    /// Get Phase 1.8 lifecycle metrics.
+    /// Returns (stable_count, stable_fraction, mode_transitions, merge_blocked_v, current_mode).
+    pub fn lifecycle_metrics(&self) -> (usize, f64, usize, usize, bool) {
+        (
+            self.stable_count,
+            self.stable_fraction(),
+            self.mode_transitions,
+            self.merge_blocked_v,
+            self.stable_mode,
+        )
+    }
+
+    /// Get total wins across all anchors.
+    pub fn total_wins(&self) -> u32 {
+        self.anchors.values()
+            .filter(|a| a.alive)
+            .map(|a| a.wins)
+            .sum()
+    }
+
+    /// Get top-N anchors by wins.
+    /// Returns Vec of (anchor_id, wins, v, stable).
+    pub fn top_n_by_wins(&self, n: usize) -> Vec<(u16, u32, f32, bool)> {
+        let mut anchors_with_wins: Vec<(u16, &Anchor)> = self.anchors.iter()
+            .filter(|(_, a)| a.alive)
+            .map(|(&id, a)| (id, a))
+            .collect();
+
+        // Sort by wins descending
+        anchors_with_wins.sort_by(|a, b| b.1.wins.cmp(&a.1.wins));
+
+        anchors_with_wins.iter()
+            .take(n)
+            .map(|(id, a)| (*id, a.wins, a.v, a.stable))
             .collect()
     }
 }

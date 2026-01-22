@@ -1,5 +1,5 @@
 //! Echo Chamber MVP: Emergent cancellation via complex signal interference.
-//! Phase 1.4c: Competitive Label Binding with ABSTAIN and Windowed Signatures.
+//! Phase 1.8: VALUE IS CONTROL - Memory lifecycle + self-regulation.
 
 mod causes;
 mod complex;
@@ -21,13 +21,13 @@ use memory::{
     proto_scores_to_int, topk_to_mask, WINDOW_SIZE, WINDOW_TOP_M,
 };
 use rng::Rng;
-use anchor::{AnchorBank, KeyedMemoryStore, KeyedMemoryConfig, KeyedMemoryMetrics, MemoryKey, ConfidenceInfo, MAX_ANCHORS, MERGE_EVERY_TICKS};
+use anchor::{AnchorBank, KeyedMemoryStore, KeyedMemoryConfig, KeyedMemoryMetrics, MemoryKey, ConfidenceInfo, GateParams, MAX_ANCHORS};
 
 const EPS_PRINT: f64 = 1e-9;
 
 fn main() {
     println!("╔════════════════════════════════════════════════════════════════╗");
-    println!("║  ECHO CHAMBER MVP - Phase 1.4c: Competitive Label Binding     ║");
+    println!("║  ECHO CHAMBER MVP - Phase 1.8: VALUE IS CONTROL               ║");
     println!("╚════════════════════════════════════════════════════════════════╝");
     println!();
 
@@ -502,19 +502,19 @@ fn run_competitive_experiment(config: &Config) -> (GlobalLabelMetrics, usize, us
 fn demo_phase_1_5b_comparison(config: &Config) {
     println!();
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("DEMO 5: Phase 1.7b - Value Learning on Anchors (Credit Assignment)");
+    println!("DEMO 5/6: Phase 1.8 - VALUE IS CONTROL (Memory Lifecycle)");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!();
 
     // Run both experiments with same seed for fair comparison
     let (metrics_5a, stability_5a) = run_demo_5a_baseline(config);
     println!();
-    let (metrics_5b, anchor_stats, keyed_stats) = run_demo_5b_keyed(config);
+    let (metrics_5b, anchor_stats, keyed_stats, probe_stats, lifecycle_stats) = run_demo_5b_keyed(config);
 
     // Print comparison summary
     println!();
     println!("═══════════════════════════════════════════════════════════════════");
-    println!("PHASE 1.7b COMPARISON SUMMARY");
+    println!("PHASE 1.8 COMPARISON SUMMARY");
     println!("═══════════════════════════════════════════════════════════════════");
     println!();
     println!("{:<25} {:>12} {:>12}", "Metric", "5a (1.4c)", "5b (Keyed)");
@@ -580,10 +580,63 @@ fn demo_phase_1_5b_comparison(config: &Config) {
         println!("    anchor {}: v={:.3}, entropy={:.2}, support={}, updates={}", id, v, ent, sup, upd);
     }
 
-    // Acceptance check for Phase 1.7b
+    // Phase 1.7c diagnostics
+    println!();
+    println!("Phase 1.7c Diagnostics:");
+    let clip_rate = anchor_stats.value_stats.clip_rate();
+    println!("  clip_rate: {:.1}% ({} / {} updates clipped)",
+        clip_rate,
+        anchor_stats.value_stats.clip_count,
+        anchor_stats.value_stats.clip_total);
+    let hist = anchor_stats.value_stats.reward_hist_pct();
+    println!("  reward histogram:");
+    println!("    [-1.0, -0.5): {:5.1}%", hist[0]);
+    println!("    [-0.5,  0.0): {:5.1}%", hist[1]);
+    println!("    [ 0.0,  0.5): {:5.1}%", hist[2]);
+    println!("    [ 0.5,  1.0]: {:5.1}%", hist[3]);
+    if hist[2] + hist[3] > 90.0 {
+        println!("  ⚠ Reward is heavily biased positive (>90%) - may want to tune centering");
+    } else {
+        println!("  ✓ Reward distribution looks balanced");
+    }
+
+    // Phase 1.7d: Probe convergence metrics
+    if let Some((probe_size, eval_count, last_mean, last_p95, last_missing, early_mean, late_mean)) = probe_stats {
+        println!();
+        println!("Phase 1.7d Probe Convergence:");
+        let filled = probe_size >= config.probe_min_fill;
+        println!("  probe_size: {} (filled={})", probe_size, filled);
+        println!("  eval_stride: {} ticks", config.probe_eval_stride);
+        println!("  eval_count: {}", eval_count);
+        println!("  last_mean_abs_delta_v: {:.6}", last_mean);
+        println!("  last_p95_abs_delta_v: {:.6}", last_p95);
+        println!("  last_missing: {}", last_missing);
+        if eval_count >= 10 {
+            println!("  mean_early (first 10 evals): {:.6}", early_mean);
+            println!("  mean_late (last 10 evals): {:.6}", late_mean);
+            let ratio = if early_mean > 0.0 { late_mean / early_mean } else { 1.0 };
+            println!("  probe_late/early ratio: {:.3}", ratio);
+            if last_mean < 0.01 || ratio < 1.0 {
+                println!("  ✓ Probe ΔV is low (<0.01) — values appear stable");
+            } else {
+                println!("  ⚠ Probe ΔV not decreasing — values may still be drifting");
+            }
+        }
+    }
+
+    // Phase 1.8: Lifecycle metrics
+    println!();
+    println!("Phase 1.8 Lifecycle (VALUE IS CONTROL):");
+    println!("  stable_count: {}", lifecycle_stats.stable_count);
+    println!("  stable_fraction: {:.1}%", lifecycle_stats.stable_fraction * 100.0);
+    println!("  mode_transitions: {}", lifecycle_stats.mode_transitions);
+    println!("  total_wins: {}", lifecycle_stats.total_wins);
+    println!("  final_mode: {}", if lifecycle_stats.final_mode { "STABLE" } else { "EXPLORE" });
+
+    // Acceptance check for Phase 1.8
     println!();
     println!("═══════════════════════════════════════════════════════════════════");
-    println!("PHASE 1.7b ACCEPTANCE:");
+    println!("PHASE 1.8 ACCEPTANCE:");
     println!("═══════════════════════════════════════════════════════════════════");
 
     // Phase 1.6 criteria (must not regress) - slightly relaxed from 1.7a
@@ -629,13 +682,59 @@ fn demo_phase_1_5b_comparison(config: &Config) {
     println!("  [{}] td_late/early <= 0.95: {:.3}",
         if td_decreasing_ok { "✓" } else { "~" }, td_ratio);
 
+    // Phase 1.7d acceptance criteria
+    let (probe_filled_ok, probe_evals_ok, probe_converging_ok, probe_ratio) = if let Some((probe_size, eval_count, last_mean, _, _, early_mean, late_mean)) = probe_stats {
+        let filled = probe_size >= config.probe_min_fill;
+        let evals = eval_count >= 10;
+        let ratio = if early_mean > 0.0 { late_mean / early_mean } else { 1.0 };
+        let converging = last_mean < 0.01 || ratio < 1.0;
+        (filled, evals, converging, ratio)
+    } else {
+        (false, false, false, 1.0)
+    };
+    let probe_last_mean = probe_stats.map(|(_, _, m, _, _, _, _)| m).unwrap_or(0.0);
+
+    println!();
+    println!("Phase 1.7d (probe convergence):");
+    println!("  [{}] probe_size >= {}: {}",
+        if probe_filled_ok { "✓" } else { "✗" }, config.probe_min_fill,
+        probe_stats.map(|(s, _, _, _, _, _, _)| s).unwrap_or(0));
+    println!("  [{}] probe_evals >= 10: {}",
+        if probe_evals_ok { "✓" } else { "✗" },
+        probe_stats.map(|(_, e, _, _, _, _, _)| e).unwrap_or(0));
+    println!("  [{}] probe_converging (ΔV<0.01 or ratio<1): mean={:.6}, ratio={:.3}",
+        if probe_converging_ok { "✓" } else { "✗" }, probe_last_mean, probe_ratio);
+
     let phase16_ok = cov_ok && sel_ok && fp_ok && abs_ok && anc_ok && thrash_ok;
     let phase17a_ok = proto_updates_ok && proto_support_ok;
     let phase17b_ok = v_updates_ok && delta_v_ok;
+    let phase17d_ok = probe_filled_ok && probe_evals_ok && probe_converging_ok;
 
-    if phase16_ok && phase17a_ok && phase17b_ok {
+    // Phase 1.8 acceptance criteria
+    let has_wins = lifecycle_stats.total_wins > 0;
+    let has_stable_anchors = lifecycle_stats.stable_count > 0;
+    let lifecycle_active = has_wins || has_stable_anchors || lifecycle_stats.mode_transitions > 0;
+
+    println!();
+    println!("Phase 1.8 (VALUE IS CONTROL):");
+    println!("  [{}] has_wins (total > 0): {}",
+        if has_wins { "✓" } else { "✗" }, lifecycle_stats.total_wins);
+    println!("  [{}] has_stable_anchors (stable_count > 0): {}",
+        if has_stable_anchors { "✓" } else { "~" }, lifecycle_stats.stable_count);
+    println!("  [{}] lifecycle_active (wins or stable or transitions): {}",
+        if lifecycle_active { "✓" } else { "✗" }, lifecycle_active);
+
+    let phase18_ok = has_wins && lifecycle_active;
+
+    if phase16_ok && phase17a_ok && phase17b_ok && phase17d_ok && phase18_ok {
         println!();
-        println!("  → Phase 1.7b: ALL CRITERIA MET!");
+        println!("  → Phase 1.8: ALL CRITERIA MET!");
+    } else if phase16_ok && phase17a_ok && phase17b_ok && phase17d_ok {
+        println!();
+        println!("  → Phase 1.7d OK, Phase 1.8 lifecycle needs more data.");
+    } else if phase16_ok && phase17a_ok && phase17d_ok {
+        println!();
+        println!("  → Phase 1.7d OK (probe instrumentation working), value learning needs tuning.");
     } else if phase16_ok && phase17a_ok {
         println!();
         println!("  → Phase 1.7a OK, Phase 1.7b value learning needs tuning.");
@@ -697,6 +796,13 @@ struct ValueStats {
     avg_abs_td_late: f64,
     /// Top 5 anchors by value.
     top5_by_v: Vec<(u16, f32, f32, u32, u32)>,
+    // Phase 1.7c diagnostics
+    /// Count of value updates that hit v_clip bounds.
+    clip_count: usize,
+    /// Total value updates for clip rate calculation.
+    clip_total: usize,
+    /// Reward histogram: buckets [-1,-0.5), [-0.5,0), [0,0.5), [0.5,1]
+    reward_hist: [usize; 4],
 }
 
 impl ValueStats {
@@ -712,6 +818,25 @@ impl ValueStats {
             self.r_neg_count += 1;
             self.sum_v_neg += v as f64;
         }
+        // Phase 1.7c: Record reward histogram
+        let bucket = if reward < -0.5 {
+            0 // [-1, -0.5)
+        } else if reward < 0.0 {
+            1 // [-0.5, 0)
+        } else if reward < 0.5 {
+            2 // [0, 0.5)
+        } else {
+            3 // [0.5, 1]
+        };
+        self.reward_hist[bucket] += 1;
+    }
+
+    /// Phase 1.7c: Record a value update and track if it clipped.
+    fn record_v_update(&mut self, v_before: f32, v_after: f32, v_clip: f32) {
+        self.clip_total += 1;
+        if v_after.abs() >= v_clip - 0.001 {
+            self.clip_count += 1;
+        }
     }
 
     fn finalize(&mut self) {
@@ -726,6 +851,232 @@ impl ValueStats {
     fn delta_v(&self) -> f64 {
         self.mean_v_when_r_pos - self.mean_v_when_r_neg
     }
+
+    /// Phase 1.7c: Get clip rate as percentage.
+    fn clip_rate(&self) -> f64 {
+        if self.clip_total > 0 {
+            100.0 * self.clip_count as f64 / self.clip_total as f64
+        } else {
+            0.0
+        }
+    }
+
+    /// Phase 1.7c: Get reward histogram percentages.
+    fn reward_hist_pct(&self) -> [f64; 4] {
+        let total: usize = self.reward_hist.iter().sum();
+        if total > 0 {
+            [
+                100.0 * self.reward_hist[0] as f64 / total as f64,
+                100.0 * self.reward_hist[1] as f64 / total as f64,
+                100.0 * self.reward_hist[2] as f64 / total as f64,
+                100.0 * self.reward_hist[3] as f64 / total as f64,
+            ]
+        } else {
+            [0.0; 4]
+        }
+    }
+}
+
+// =============================================================================
+// Phase 1.7d: Probe Set for Convergence Tracking
+// =============================================================================
+
+use std::collections::HashSet;
+
+/// Probe set for tracking value convergence on fixed keys.
+struct ProbeSet {
+    /// Unique anchor IDs in the probe set.
+    keys: Vec<u16>,
+    /// Set for quick uniqueness check.
+    seen: HashSet<u16>,
+    /// Previous values for delta computation.
+    prev_vals: Vec<f32>,
+    /// Last tick when we evaluated.
+    last_eval_tick: u64,
+    /// Count of missing keys in last eval.
+    missing: usize,
+    /// Number of evaluations done.
+    eval_count: usize,
+    /// Early evaluation means (first 10).
+    early_means: Vec<f64>,
+    /// Late evaluation means (last 10).
+    late_means: Vec<f64>,
+    /// Last computed mean_abs_delta.
+    last_mean_abs: f64,
+    /// Last computed p95_abs_delta.
+    last_p95_abs: f64,
+}
+
+/// Stats from a probe evaluation.
+#[derive(Clone, Debug)]
+struct ProbeStats {
+    filled: usize,
+    used: usize,
+    missing_frac: f64,
+    mean_abs_delta: f64,
+    p95_abs_delta: f64,
+}
+
+impl ProbeSet {
+    fn new() -> Self {
+        ProbeSet {
+            keys: Vec::new(),
+            seen: HashSet::new(),
+            prev_vals: Vec::new(),
+            last_eval_tick: 0,
+            missing: 0,
+            eval_count: 0,
+            early_means: Vec::new(),
+            late_means: Vec::new(),
+            last_mean_abs: 0.0,
+            last_p95_abs: 0.0,
+        }
+    }
+
+    /// Try to add an anchor_id to the probe set (only if not already present and not full).
+    fn maybe_add(&mut self, anchor_id: u16, max_size: usize) {
+        if anchor_id == 0xFFFF {
+            return;
+        }
+        if self.keys.len() >= max_size {
+            return;
+        }
+        if self.seen.contains(&anchor_id) {
+            return;
+        }
+        self.seen.insert(anchor_id);
+        self.keys.push(anchor_id);
+    }
+
+    /// Check if we should evaluate this tick.
+    fn should_eval(&self, current_tick: u64, stride: u32, min_fill: usize) -> bool {
+        if self.keys.len() < min_fill {
+            return false;
+        }
+        current_tick >= self.last_eval_tick + stride as u64
+    }
+
+    /// Evaluate probe set and compute delta statistics.
+    /// value_fn: closure that returns Option<f32> for an anchor_id.
+    fn eval<F>(&mut self, current_tick: u64, value_fn: F) -> Option<ProbeStats>
+    where
+        F: Fn(u16) -> Option<f32>,
+    {
+        if self.keys.is_empty() {
+            return None;
+        }
+
+        // Get current values
+        let mut current_vals: Vec<f32> = Vec::with_capacity(self.keys.len());
+        let mut valid_indices: Vec<usize> = Vec::new();
+        self.missing = 0;
+
+        for (i, &anchor_id) in self.keys.iter().enumerate() {
+            if let Some(v) = value_fn(anchor_id) {
+                current_vals.push(v);
+                valid_indices.push(i);
+            } else {
+                self.missing += 1;
+            }
+        }
+
+        let used = current_vals.len();
+        if used == 0 {
+            return None;
+        }
+
+        // First eval: just store values, no delta yet
+        if self.prev_vals.is_empty() {
+            self.prev_vals = current_vals;
+            self.last_eval_tick = current_tick;
+            self.eval_count += 1;
+            return Some(ProbeStats {
+                filled: self.keys.len(),
+                used,
+                missing_frac: self.missing as f64 / self.keys.len() as f64,
+                mean_abs_delta: 0.0,
+                p95_abs_delta: 0.0,
+            });
+        }
+
+        // Compute deltas
+        let mut deltas: Vec<f64> = Vec::with_capacity(used);
+        for (new_idx, &old_idx) in valid_indices.iter().enumerate() {
+            if old_idx < self.prev_vals.len() {
+                let delta = (current_vals[new_idx] - self.prev_vals[old_idx]).abs() as f64;
+                deltas.push(delta);
+            }
+        }
+
+        if deltas.is_empty() {
+            // Update prev_vals for next time
+            self.prev_vals = current_vals;
+            self.last_eval_tick = current_tick;
+            return None;
+        }
+
+        // Compute stats
+        let mean_abs = deltas.iter().sum::<f64>() / deltas.len() as f64;
+
+        // p95
+        deltas.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let p95_idx = (deltas.len() as f64 * 0.95).ceil() as usize;
+        let p95_abs = deltas.get(p95_idx.saturating_sub(1)).copied().unwrap_or(0.0);
+
+        // Track early/late means
+        self.eval_count += 1;
+        if self.eval_count <= 10 {
+            self.early_means.push(mean_abs);
+        }
+        // Always update late_means (keep last 10)
+        self.late_means.push(mean_abs);
+        if self.late_means.len() > 10 {
+            self.late_means.remove(0);
+        }
+
+        self.last_mean_abs = mean_abs;
+        self.last_p95_abs = p95_abs;
+
+        // Update prev_vals for next eval
+        self.prev_vals = current_vals;
+        self.last_eval_tick = current_tick;
+
+        Some(ProbeStats {
+            filled: self.keys.len(),
+            used,
+            missing_frac: self.missing as f64 / self.keys.len() as f64,
+            mean_abs_delta: mean_abs,
+            p95_abs_delta: p95_abs,
+        })
+    }
+
+    /// Get early mean (average of first 10 evals).
+    fn early_mean(&self) -> f64 {
+        if self.early_means.is_empty() {
+            0.0
+        } else {
+            self.early_means.iter().sum::<f64>() / self.early_means.len() as f64
+        }
+    }
+
+    /// Get late mean (average of last 10 evals).
+    fn late_mean(&self) -> f64 {
+        if self.late_means.is_empty() {
+            0.0
+        } else {
+            self.late_means.iter().sum::<f64>() / self.late_means.len() as f64
+        }
+    }
+
+    /// Get convergence ratio (late/early).
+    fn convergence_ratio(&self) -> f64 {
+        let early = self.early_mean();
+        if early > 0.0 {
+            self.late_mean() / early
+        } else {
+            1.0
+        }
+    }
 }
 
 /// Compute self-supervised reward signal r_t.
@@ -739,20 +1090,24 @@ fn compute_reward(
     // Power component (clamped)
     let power_term = (delta_power as f32).clamp(-config.r_p_clip, config.r_p_clip);
 
-    // Coherence proxy: margin normalized
+    // Coherence proxy: margin normalized to [0,1]
     let coherence = (topk_margin as f32 / config.margin_norm).clamp(0.0, 1.0);
+    // Phase 1.7c: Center to [-1, +1] for zero-mean reward
+    let coh_z = 2.0 * coherence - 1.0;
 
-    // Prototype alignment (already in [0,1])
+    // Prototype alignment (in [0,1])
     let proto_term = proto_align.clamp(0.0, 1.0);
+    // Phase 1.7c: Center to [-1, +1] for zero-mean reward
+    let proto_z = 2.0 * proto_term - 1.0;
 
     // Margin penalty: penalize if margin is below gate threshold
     let gate_margin = ANCHOR_MARGIN_MIN as f32;
     let margin_penalty = ((gate_margin - topk_margin as f32) / gate_margin).clamp(0.0, 1.0);
 
-    // Combine components
+    // Combine components (using centered terms)
     let reward = config.r_w_power * power_term
-        + config.r_w_coh * coherence
-        + config.r_w_proto * proto_term
+        + config.r_w_coh * coh_z
+        + config.r_w_proto * proto_z
         - config.r_w_margin * margin_penalty;
 
     // Clamp final reward to [-1, +1]
@@ -835,10 +1190,19 @@ fn run_demo_5a_baseline(config: &Config) -> (GlobalLabelMetrics, f64) {
     (metrics, stability)
 }
 
-/// DEMO 5b: Anchor Concept Tokens with Phase 1.7a prototypes + Phase 1.7b value learning
-fn run_demo_5b_keyed(config: &Config) -> (KeyedMemoryMetrics, AnchorStats, (usize, f64, usize)) {
-    println!("DEMO 5b: Anchor Concept Tokens (Phase 1.7b Value Learning)");
-    println!("─────────────────────────────────────────────────────────");
+/// Phase 1.8 lifecycle stats for reporting.
+struct LifecycleStats {
+    stable_count: usize,
+    stable_fraction: f64,
+    mode_transitions: usize,
+    total_wins: u32,
+    final_mode: bool,
+}
+
+/// DEMO 5b: Anchor Concept Tokens with Phase 1.8 VALUE IS CONTROL
+fn run_demo_5b_keyed(config: &Config) -> (KeyedMemoryMetrics, AnchorStats, (usize, f64, usize), Option<(usize, usize, f64, f64, usize, f64, f64)>, LifecycleStats) {
+    println!("DEMO 5b: Phase 1.8 VALUE IS CONTROL (Lifecycle + Self-Regulation)");
+    println!("─────────────────────────────────────────────────────────────────");
 
     // Use same seed as 5a for fair comparison
     let mut rng = Rng::new(config.seed.wrapping_add(0x5A5A_5A5A));
@@ -880,6 +1244,10 @@ fn run_demo_5b_keyed(config: &Config) -> (KeyedMemoryMetrics, AnchorStats, (usiz
     let mut prev_topk_margin: f64 = 0.0;
     let mut prev_proto_align: f32 = 0.0;
     let mut value_stats = ValueStats::new();
+
+    // Phase 1.7d: Probe set for convergence tracking
+    let mut probe_set = ProbeSet::new();
+    let mut reward_ema: f32 = 0.0;
 
     // Phase 1.7b: Early/late TD tracking
     let total_ticks = (config.competitive_episodes * config.competitive_episode_ticks) as u64;
@@ -932,33 +1300,56 @@ fn run_demo_5b_keyed(config: &Config) -> (KeyedMemoryMetrics, AnchorStats, (usiz
             let confidence = ConfidenceInfo::new(topk_margin, total_power);
 
             // Phase 1.6b: Periodic merge
+            // Phase 1.8: Pass config for value consistency check
             if anchor_bank.should_merge(global_tick) {
-                let remaps = anchor_bank.merge_similar();
+                let remaps = anchor_bank.merge_similar(Some(config));
                 if !remaps.is_empty() {
                     keyed_memory.apply_remaps(&remaps);
                 }
                 anchor_bank.mark_merge_done(global_tick);
+                // Phase 1.8: Also update stability after merge
+                anchor_bank.update_stability(global_tick, config);
             }
 
+            // Phase 1.8: Get dynamic gate params based on current mode
+            let gate_params = if anchor_bank.stable_mode {
+                GateParams::stable(config)
+            } else {
+                GateParams::explore(config)
+            };
+
             // Resolve signature to anchor with confidence gating
+            // Phase 1.8: Pass config for value-aware eviction
             let (anchor_id, _is_new, _match_dist) = anchor_bank.resolve_gated(
                 sig_mask,
                 global_tick,
                 Some(&confidence),
+                Some(config),
             );
 
             // Phase 1.7a: Update anchor prototype when gate passes
-            if confidence.passes_gate() && anchor_id != 0xFFFF {
+            // Phase 1.8: Use dynamic gate params
+            if confidence.passes_gate_with_params(&gate_params) && anchor_id != 0xFFFF {
                 anchor_bank.update_anchor_proto(anchor_id, &topk, config);
+                // Phase 1.7d: Add to probe set
+                if config.probe_enabled {
+                    probe_set.maybe_add(anchor_id, config.probe_size);
+                }
             }
 
             // Phase 1.7b: Compute reward and TD update for previous anchor
             if prev_anchor_id != 0xFFFF {
                 // Compute current V for TD target
-                let v_next = if confidence.passes_gate() && anchor_id != 0xFFFF {
+                // Phase 1.7c: Use v_abstain_margin for margin-fail cases
+                // Phase 1.8: Use dynamic gate params
+                let gate_passed = confidence.passes_gate_with_params(&gate_params);
+                let v_next = if gate_passed && anchor_id != 0xFFFF {
                     anchor_bank.get_value(anchor_id)
+                } else if topk_margin < ANCHOR_MARGIN_MIN * gate_params.margin_mult {
+                    // Margin fail: use negative bootstrap to penalize uncertain states
+                    config.v_abstain_margin
                 } else {
-                    0.0 // Abstain -> V_next = 0
+                    0.0 // Other abstain reasons -> V_next = 0
                 };
 
                 // Get previous anchor's current value (before update)
@@ -969,13 +1360,23 @@ fn run_demo_5b_keyed(config: &Config) -> (KeyedMemoryMetrics, AnchorStats, (usiz
 
                 // Compute reward based on previous tick's state
                 let delta_power = total_power - prev_power;
-                let reward = compute_reward(delta_power, prev_topk_margin, proto_align_for_reward, config);
+                let mut reward = compute_reward(delta_power, prev_topk_margin, proto_align_for_reward, config);
+
+                // Phase 1.7d: Optional advantage reward centering
+                reward_ema = (1.0 - config.reward_ema_beta) * reward_ema + config.reward_ema_beta * reward;
+                if config.use_advantage_reward {
+                    reward = reward - reward_ema;
+                }
 
                 // TD(0) error
                 let td = reward + config.gamma_v * v_next - v_prev;
 
                 // Update previous anchor's value
                 anchor_bank.update_anchor_value(prev_anchor_id, td, config);
+
+                // Phase 1.7c: Track clip rate
+                let v_after = anchor_bank.get_value(prev_anchor_id);
+                value_stats.record_v_update(v_prev, v_after, config.v_clip);
 
                 // Track reward-value correlation
                 value_stats.record_reward(v_prev, reward);
@@ -991,7 +1392,8 @@ fn run_demo_5b_keyed(config: &Config) -> (KeyedMemoryMetrics, AnchorStats, (usiz
             }
 
             // Phase 1.7b: Update previous state for next tick
-            if confidence.passes_gate() && anchor_id != 0xFFFF {
+            // Phase 1.8: Use dynamic gate params
+            if confidence.passes_gate_with_params(&gate_params) && anchor_id != 0xFFFF {
                 prev_anchor_id = anchor_id;
                 prev_power = total_power;
                 prev_topk_margin = topk_margin;
@@ -1031,11 +1433,24 @@ fn run_demo_5b_keyed(config: &Config) -> (KeyedMemoryMetrics, AnchorStats, (usiz
                 } else {
                     let true_label = current_sig.ctx_hat.unwrap_or(255) as u16;
                     let decision = keyed_memory.recall(key);
+                    // Phase 1.8: Record wins for correct positive recalls
+                    if let anchor::KeyedRecallDecision::Label(recalled_label, _) = &decision {
+                        if *recalled_label == true_label {
+                            anchor_bank.record_win(anchor_id);
+                        }
+                    }
                     metrics.record_positive(&decision, true_label);
                 }
             }
 
             global_tick += 1;
+
+            // Phase 1.7d: Periodic probe evaluation
+            if config.probe_enabled && probe_set.should_eval(global_tick, config.probe_eval_stride, config.probe_min_fill) {
+                let _stats = probe_set.eval(global_tick, |id| {
+                    Some(anchor_bank.get_value(id))
+                });
+            }
         }
     }
     println!("done.");
@@ -1083,7 +1498,32 @@ fn run_demo_5b_keyed(config: &Config) -> (KeyedMemoryMetrics, AnchorStats, (usiz
         keyed_memory.keys_remapped(),
     );
 
-    (metrics, anchor_stats, keyed_stats)
+    // Phase 1.7d: Store probe stats for reporting
+    let probe_stats = if config.probe_enabled {
+        Some((
+            probe_set.keys.len(),
+            probe_set.eval_count,
+            probe_set.last_mean_abs,
+            probe_set.last_p95_abs,
+            probe_set.missing,
+            probe_set.early_mean(),
+            probe_set.late_mean(),
+        ))
+    } else {
+        None
+    };
+
+    // Phase 1.8: Lifecycle stats
+    let (stable_count, stable_fraction, mode_transitions, _, final_mode) = anchor_bank.lifecycle_metrics();
+    let lifecycle_stats = LifecycleStats {
+        stable_count,
+        stable_fraction,
+        mode_transitions,
+        total_wins: anchor_bank.total_wins(),
+        final_mode,
+    };
+
+    (metrics, anchor_stats, keyed_stats, probe_stats, lifecycle_stats)
 }
 
 /// Simple bit flip helper for negative queries

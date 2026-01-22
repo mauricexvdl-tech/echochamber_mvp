@@ -1,5 +1,6 @@
 //! Configuration struct for Echo Chamber tunables.
 //! Phase 1.4c: Added competitive label binding with abstain.
+//! Phase 1.8: VALUE IS CONTROL - Memory lifecycle + self-regulation.
 
 use std::f64::consts::PI;
 
@@ -117,6 +118,24 @@ pub struct Config {
     pub r_p_clip: f32,
     /// Normalization factor for margin (margin/margin_norm maps to 0..1).
     pub margin_norm: f32,
+    /// Phase 1.7c: Bootstrap value when abstaining due to margin fail.
+    pub v_abstain_margin: f32,
+
+    // =========================================================================
+    // Phase 1.7d: Probe-set convergence metrics
+    // =========================================================================
+    /// Enable probe set for convergence tracking.
+    pub probe_enabled: bool,
+    /// Maximum number of keys in probe set.
+    pub probe_size: usize,
+    /// How often (in ticks) to evaluate probe deltas.
+    pub probe_eval_stride: u32,
+    /// Minimum keys before reporting probe metrics.
+    pub probe_min_fill: usize,
+    /// Use advantage-centered reward (r - r_ema).
+    pub use_advantage_reward: bool,
+    /// EMA coefficient for reward baseline (used when use_advantage_reward=true).
+    pub reward_ema_beta: f32,
 
     // =========================================================================
     // Phase 1.4c: Competitive Label Binding with ABSTAIN
@@ -143,6 +162,30 @@ pub struct Config {
     pub competitive_recall_stride: usize,
     /// Recall start tick within episode
     pub competitive_recall_start: usize,
+
+    // =========================================================================
+    // Phase 1.8: VALUE IS CONTROL (Memory lifecycle + self-regulation)
+    // =========================================================================
+    /// Weight for value component in keep_score() (eviction scoring).
+    pub evict_v_weight: f32,
+    /// Weight for usage component in keep_score().
+    pub evict_use_weight: f32,
+    /// Weight for age penalty in keep_score().
+    pub evict_age_weight: f32,
+    /// Decay constant for age penalty (ticks).
+    pub evict_age_tau: f64,
+    /// Maximum |v1 - v2| allowed for merging anchors.
+    pub merge_v_delta_max: f32,
+    /// Multiplier for gate thresholds in explore mode (more permissive).
+    pub gate_explore_mult: f64,
+    /// Multiplier for gate thresholds in stable mode (stricter).
+    pub gate_stable_mult: f64,
+    /// Minimum value V to become stable.
+    pub stable_v_min: f32,
+    /// Minimum wins to become stable.
+    pub stable_wins_min: u32,
+    /// Fraction of stable anchors needed to switch from explore to stable mode.
+    pub stable_mode_threshold: f64,
 }
 
 impl Default for Config {
@@ -224,9 +267,10 @@ impl Default for Config {
             proto_insert_margin: 0.02,
 
             // Phase 1.7b: Value Learning defaults
-            alpha_v: 0.05,
+            // Phase 1.7c: alpha_v 0.05->0.03, v_clip 1.0->0.7 for better calibration
+            alpha_v: 0.03,
             gamma_v: 0.95,
-            v_clip: 1.0,
+            v_clip: 0.7,
             v_td_ema: 0.02,
             v_beta: 0.10,
             r_w_power: 0.15,
@@ -235,6 +279,16 @@ impl Default for Config {
             r_w_margin: 0.15,
             r_p_clip: 1.0,
             margin_norm: 0.10,
+            // Phase 1.7c: negative bootstrap when abstaining due to margin fail
+            v_abstain_margin: -0.1,
+
+            // Phase 1.7d: Probe-set convergence metrics defaults
+            probe_enabled: true,
+            probe_size: 256,
+            probe_eval_stride: 200,
+            probe_min_fill: 64,
+            use_advantage_reward: false,
+            reward_ema_beta: 0.01,
 
             // Competitive Label Binding defaults (Phase 1.4c)
             competitive_num_labels: 8,
@@ -248,6 +302,18 @@ impl Default for Config {
             competitive_episode_ticks: 500,
             competitive_recall_stride: 5,
             competitive_recall_start: 260,
+
+            // Phase 1.8: VALUE IS CONTROL defaults
+            evict_v_weight: 0.5,
+            evict_use_weight: 0.3,
+            evict_age_weight: 0.2,
+            evict_age_tau: 10000.0,    // Age decay over ~10k ticks
+            merge_v_delta_max: 0.3,    // Allow merge if |v1-v2| < 0.3
+            gate_explore_mult: 0.5,    // Permissive: halve margin threshold
+            gate_stable_mult: 1.5,     // Strict: 50% higher margin threshold
+            stable_v_min: 0.4,         // Need V >= 0.4 to become stable
+            stable_wins_min: 5,        // Need >= 5 wins to become stable
+            stable_mode_threshold: 0.3, // 30% stable anchors → switch to stable mode
         }
     }
 }
