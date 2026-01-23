@@ -12,6 +12,7 @@ mod config;
 mod echo;
 mod memory;
 mod mode;
+mod regret;
 mod rng;
 
 use anchor::{
@@ -68,6 +69,11 @@ fn main() {
     if config.run_demo_10 {
         println!();
         demo_10_action_ablations(&config);
+    }
+
+    if config.run_demo_11 {
+        println!();
+        demo_11_trigger_matched(&config);
     }
 
     if config.run_capacity_sweep {
@@ -5128,4 +5134,1235 @@ fn run_sweep_point(
     };
 
     point
+}
+
+// =============================================================================
+// DEMO 11: Phase 2.0e - TRIGGER-MATCHED RANDOM + REGRET METRICS
+// =============================================================================
+
+fn demo_11_trigger_matched(config: &Config) {
+    use action::{Action, ActionConfig, ActionPolicy};
+    use action_ablate::{TriggerTrace, TriggerMatchedRandom, BudgetedRandomAction};
+    use mode::{ModePolicy, ModePolicyConfig};
+    use regret::{RegretConfig, RegretStats, RegretReport};
+
+    println!();
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("DEMO 11: Phase 2.0e - TRIGGER-MATCHED RANDOM + REGRET METRICS");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!();
+
+    if !config.enable_mode_policy || !config.enable_action_policy {
+        println!("Mode or action policy disabled. Skipping Demo 11.");
+        return;
+    }
+
+    let regret_config = RegretConfig {
+        margin_bad: config.regret_margin_bad,
+        proto_bad: config.regret_proto_bad,
+        v_bad: config.regret_v_bad,
+        td_spike: config.regret_td_spike,
+        pre_window: config.regret_pre_window,
+        post_window: config.regret_post_window,
+        post_gate_window: config.regret_post_gate_window,
+        recovery_good_threshold: config.regret_recovery_good_threshold,
+    };
+
+    // =========================================================================
+    // Step 1: Run FULL and capture trigger trace
+    // =========================================================================
+    print!("  Running FULL (capturing triggers)... ");
+    let (full_report, trigger_trace) = run_demo11_variant_full(config, &regret_config);
+    println!("done. ({} triggers)", trigger_trace.trigger_count());
+
+    // =========================================================================
+    // Step 2: Run RANDOM_BUDGETED (existing baseline)
+    // =========================================================================
+    print!("  Running RANDOM_BUDGETED... ");
+    let budgeted_report = run_demo11_variant_budgeted(
+        config,
+        &regret_config,
+        full_report.scan_rate,
+        full_report.perturb_rate,
+    );
+    println!("done.");
+
+    // =========================================================================
+    // Step 3: Run RANDOM_TRIGGER_MATCHED (new fair baseline)
+    // =========================================================================
+    print!("  Running RANDOM_TRIGGER_MATCHED... ");
+    let trigger_report = run_demo11_variant_trigger_matched(config, &regret_config, &trigger_trace);
+    println!("done.");
+
+    // =========================================================================
+    // Print Results Table
+    // =========================================================================
+    println!();
+    println!("═══════════════════════════════════════════════════════════════════");
+    println!("PHASE 2.0e RESULTS: FULL vs RANDOM_BUDGETED vs RANDOM_TRIGGER");
+    println!("═══════════════════════════════════════════════════════════════════");
+    println!();
+
+    // Standard metrics table
+    println!("Standard Metrics:");
+    println!(
+        "  {:16} | {:>7} | {:>7} | {:>5} | {:>11} | {:>6} | {:>6} | {:>8}",
+        "Variant", "Cover%", "SelAcc%", "FP%", "StableShare", "Scan%", "Focus%", "Perturb%"
+    );
+    println!("  {}", "-".repeat(85));
+
+    for report in [&full_report, &budgeted_report, &trigger_report] {
+        println!(
+            "  {:16} | {:6.1}% | {:6.1}% | {:4.1}% | {:10.1}% | {:5.1}% | {:5.1}% | {:7.2}%",
+            report.label,
+            report.coverage_pos * 100.0,
+            report.selective_accuracy * 100.0,
+            report.false_positive_rate * 100.0,
+            report.stable_time_share * 100.0,
+            report.scan_rate * 100.0,
+            report.focus_rate * 100.0,
+            report.perturb_rate * 100.0,
+        );
+    }
+
+    // Regret metrics table
+    println!();
+    println!("Regret/Recovery Metrics:");
+    println!(
+        "  {:16} | {:>10} | {:>12} | {:>12} | {:>10} | {:>10}",
+        "Variant", "BadState%", "TDSpike/10k", "RecovImprv%", "RecovGood%", "Regret%"
+    );
+    println!("  {}", "-".repeat(80));
+
+    for report in [&full_report, &budgeted_report, &trigger_report] {
+        println!(
+            "  {:16} | {:9.1}% | {:11.1} | {:11.1}% | {:9.1}% | {:9.1}%",
+            report.label,
+            report.bad_state_share * 100.0,
+            report.td_spike_rate,
+            report.recovery_improve_mean * 100.0,
+            report.recovery_good_rate * 100.0,
+            report.regret_rate * 100.0,
+        );
+    }
+
+    // Trigger match verification
+    println!();
+    println!("Trigger Match Verification:");
+    let full_trigger_rate = (full_report.scan_rate + full_report.perturb_rate) * 100.0;
+    let trigger_action_rate = (trigger_report.scan_rate + trigger_report.perturb_rate) * 100.0;
+    let trigger_delta = (trigger_action_rate - full_trigger_rate).abs();
+    println!(
+        "  FULL trigger rate:   {:.2}% (Scan + Perturb)",
+        full_trigger_rate
+    );
+    println!(
+        "  TRIGGER trigger rate: {:.2}% (delta: {:.3}%)",
+        trigger_action_rate, trigger_delta
+    );
+
+    // =========================================================================
+    // Acceptance Criteria
+    // =========================================================================
+    println!();
+    println!("═══════════════════════════════════════════════════════════════════");
+    println!("PHASE 2.0e ACCEPTANCE:");
+    println!("═══════════════════════════════════════════════════════════════════");
+
+    // C1) Trigger match within ±1%
+    println!();
+    println!("C1) Trigger match (action_rate within ±1%):");
+    let trigger_match_ok = trigger_delta < 1.0;
+    println!(
+        "  [{}] Trigger delta < 1%: {:.3}%",
+        if trigger_match_ok { "✓" } else { "✗" },
+        trigger_delta
+    );
+
+    // C2) FULL beats RANDOM_TRIGGER on at least TWO regret metrics
+    println!();
+    println!("C2) Directional effects (FULL vs RANDOM_TRIGGER):");
+
+    // Bad state share: FULL should be lower by >= 2.0 pp
+    let bad_state_drop = trigger_report.bad_state_share - full_report.bad_state_share;
+    let bad_state_ok = bad_state_drop >= 0.02;
+    println!(
+        "  [{}] bad_state_share drop >= 2.0pp: {:.1}% vs {:.1}% (drop: {:.2}pp)",
+        if bad_state_ok { "✓" } else { "~" },
+        full_report.bad_state_share * 100.0,
+        trigger_report.bad_state_share * 100.0,
+        bad_state_drop * 100.0
+    );
+
+    // TD spike rate: FULL should be lower by >= 10%
+    let td_spike_improve = if trigger_report.td_spike_rate > 0.001 {
+        (trigger_report.td_spike_rate - full_report.td_spike_rate) / trigger_report.td_spike_rate
+    } else {
+        0.0
+    };
+    let td_spike_ok = td_spike_improve >= 0.10;
+    println!(
+        "  [{}] td_spike_rate improve >= 10%: {:.1} vs {:.1} (improve: {:.1}%)",
+        if td_spike_ok { "✓" } else { "~" },
+        full_report.td_spike_rate,
+        trigger_report.td_spike_rate,
+        td_spike_improve * 100.0
+    );
+
+    // Recovery improve: FULL should be better by >= 10% relative
+    let recovery_diff = full_report.recovery_improve_mean - trigger_report.recovery_improve_mean;
+    let recovery_ok = recovery_diff >= 0.10 || full_report.recovery_improve_mean >= trigger_report.recovery_improve_mean + 0.05;
+    println!(
+        "  [{}] recovery_improve better: {:.1}% vs {:.1}% (diff: {:.2}pp)",
+        if recovery_ok { "✓" } else { "~" },
+        full_report.recovery_improve_mean * 100.0,
+        trigger_report.recovery_improve_mean * 100.0,
+        recovery_diff * 100.0
+    );
+
+    // Regret rate: FULL should be lower by >= 10% relative
+    let regret_improve = if trigger_report.regret_rate > 0.001 {
+        (trigger_report.regret_rate - full_report.regret_rate) / trigger_report.regret_rate
+    } else {
+        0.0
+    };
+    let regret_ok = regret_improve >= 0.10;
+    println!(
+        "  [{}] regret_rate improve >= 10%: {:.1}% vs {:.1}% (improve: {:.1}%)",
+        if regret_ok { "✓" } else { "~" },
+        full_report.regret_rate * 100.0,
+        trigger_report.regret_rate * 100.0,
+        regret_improve * 100.0
+    );
+
+    let regret_wins = [bad_state_ok, td_spike_ok, recovery_ok, regret_ok]
+        .iter()
+        .filter(|&&x| x)
+        .count();
+    let directional_ok = regret_wins >= 2;
+    println!(
+        "  [{}] FULL beats TRIGGER on >= 2 regret metrics: {}/4",
+        if directional_ok { "✓" } else { "✗" },
+        regret_wins
+    );
+
+    // C3) Regression guard for FULL
+    println!();
+    println!("C3) Regression guard (FULL variant):");
+
+    let coverage_ok = full_report.coverage_pos >= 0.70;
+    let selective_ok = full_report.selective_accuracy >= 0.80;
+    let fp_ok = full_report.false_positive_rate == 0.0;
+
+    println!(
+        "  [{}] coverage_pos >= 70%: {:.1}%",
+        if coverage_ok { "✓" } else { "✗" },
+        full_report.coverage_pos * 100.0
+    );
+    println!(
+        "  [{}] selective_accuracy >= 80%: {:.1}%",
+        if selective_ok { "✓" } else { "✗" },
+        full_report.selective_accuracy * 100.0
+    );
+    println!(
+        "  [{}] false_positive == 0%: {:.1}%",
+        if fp_ok { "✓" } else { "✗" },
+        full_report.false_positive_rate * 100.0
+    );
+
+    let regression_ok = coverage_ok && selective_ok && fp_ok;
+
+    // Summary
+    let all_ok = trigger_match_ok && directional_ok && regression_ok;
+    println!();
+    if all_ok {
+        println!("  → Phase 2.0e: ALL ACCEPTANCE CRITERIA MET!");
+    } else {
+        if trigger_match_ok && regression_ok {
+            println!("  → Phase 2.0e: Trigger match and regression OK. Directional effects need work.");
+        } else if directional_ok && regression_ok {
+            println!("  → Phase 2.0e: Directional and regression OK. Trigger match needs tuning.");
+        } else {
+            println!("  → Phase 2.0e: Multiple criteria not met. Tuning needed.");
+        }
+    }
+}
+
+/// Run FULL variant and capture trigger trace for Demo 11.
+fn run_demo11_variant_full(
+    config: &Config,
+    regret_config: &regret::RegretConfig,
+) -> (regret::RegretReport, action_ablate::TriggerTrace) {
+    use action::{Action, ActionConfig, ActionPolicy};
+    use action_ablate::TriggerTrace;
+    use mode::{ModePolicy, ModePolicyConfig};
+    use regret::RegretStats;
+
+    let mode_policy_config = ModePolicyConfig {
+        explore_v_max: config.mode_explore_v_max,
+        exploit_v_min: config.mode_exploit_v_min,
+        reset_td_min: config.mode_reset_td_min,
+        reset_value_drop: config.mode_reset_value_drop,
+        reset_fail_streak: config.mode_reset_fail_streak,
+        post_reset_cooldown: config.mode_post_reset_cooldown,
+        explore_margin_min_scale: config.mode_explore_margin_scale,
+        exploit_margin_min_scale: config.mode_exploit_margin_scale,
+        reset_dampen: config.mode_reset_dampen,
+        reset_dampen_top_k: config.mode_reset_dampen_top_k,
+        window_size: config.mode_window_size,
+    };
+    let mut mode_policy = ModePolicy::new(mode_policy_config);
+
+    let action_config = ActionConfig {
+        scan_topk_scale: config.scan_topk_scale,
+        focus_topk_scale: config.focus_topk_scale,
+        scan_margin_scale: config.scan_margin_scale,
+        focus_margin_scale: config.focus_margin_scale,
+        perturb_noise_amp: config.perturb_noise_amp,
+    };
+    let mut action_policy = ActionPolicy::new(action_config);
+
+    let mut rng = Rng::new(config.seed.wrapping_add(0x7A7A_7A7A));
+    let mut chamber = EchoChamber::random_graph(config.clone(), &mut rng);
+    let causes = Causes::new(&config, &mut rng);
+
+    // Pre-train
+    for _ in 0..10000 {
+        let (active_mask, _) = causes.sample_active(&mut rng);
+        let z_inj = causes.compute_z_inj(active_mask);
+        causes.inject_for_tick(&mut rng, &mut chamber, active_mask);
+        let topk = get_top_k(&chamber, config.top_k);
+        let topk_ids: Vec<usize> = topk.iter().map(|(id, _)| *id).collect();
+        chamber.tick_with_context_plasticity(z_inj, &topk_ids, true);
+    }
+
+    let mut anchor_bank = AnchorBank::new();
+    let keyed_config = KeyedMemoryConfig {
+        label_min_p: 0.50,
+        label_margin: 0.10,
+        alpha: 0.5,
+        num_labels: config.num_ctx,
+    };
+    let mut keyed_memory = KeyedMemoryStore::new(keyed_config);
+    let mut metrics = KeyedMemoryMetrics::new();
+    let mut regret_stats = RegretStats::new(regret_config);
+
+    let mut window = RollingWindow::new(config.num_nodes, config.num_ctx);
+    let bind_ticks = config.competitive_bind_ticks();
+    let mut global_tick: u64 = 0;
+
+    let mut prev_anchor_id: u16 = 0xFFFF;
+    let mut prev_power: f64 = 0.0;
+    let mut prev_topk_margin: f64 = 0.0;
+    let mut prev_proto_align: f32 = 0.0;
+    let mut reward_ema: f32 = 0.0;
+
+    let total_ticks_expected = config.competitive_episodes * config.competitive_episode_ticks;
+    let mut trigger_trace = TriggerTrace::with_capacity(total_ticks_expected);
+
+    let mut total_stable_ticks: usize = 0;
+    let mut total_ticks: usize = 0;
+
+    for _ep in 0..config.competitive_episodes {
+        window.reset();
+
+        for t in 0..config.competitive_episode_ticks {
+            let (active_mask, _) = causes.sample_active(&mut rng);
+            let z_inj = causes.compute_z_inj(active_mask);
+            causes.inject_for_tick(&mut rng, &mut chamber, active_mask);
+
+            let base_topk = get_top_k(&chamber, config.top_k);
+            let tick_metrics = chamber.tick_with_context_plasticity(z_inj, &[], false);
+
+            let ctx_hat = tick_metrics.ctx.map(|c| c as u8);
+            let topk_ids: Vec<usize> = base_topk.iter().map(|(id, _)| *id).collect();
+            window.push(&topk_ids, ctx_hat);
+
+            if !window.is_ready() {
+                trigger_trace.record(Action::Focus); // Placeholder
+                global_tick += 1;
+                continue;
+            }
+
+            let current_sig = window.competitive_sig();
+            let sig_mask = current_sig.mask;
+
+            let topk_margin = if base_topk.len() >= 2 {
+                base_topk[0].1 - base_topk[1].1
+            } else if !base_topk.is_empty() {
+                base_topk[0].1
+            } else {
+                0.0
+            };
+            let total_power = tick_metrics.tot_pow_post;
+            let confidence = ConfidenceInfo::new(topk_margin, total_power);
+
+            if anchor_bank.should_merge(global_tick) {
+                let remaps = anchor_bank.merge_similar(Some(config));
+                if !remaps.is_empty() {
+                    keyed_memory.apply_remaps(&remaps);
+                }
+                anchor_bank.mark_merge_done(global_tick);
+            }
+
+            if anchor_bank.should_scan_merges(global_tick, config) {
+                let remaps = anchor_bank.scan_and_merge(config);
+                if !remaps.is_empty() {
+                    keyed_memory.apply_remaps(&remaps);
+                }
+                anchor_bank.mark_scan_done(global_tick);
+            }
+
+            anchor_bank.update_stability(global_tick, config);
+
+            let base_gate_params = if anchor_bank.stable_mode {
+                GateParams::stable(config)
+            } else {
+                GateParams::explore(config)
+            };
+
+            let (anchor_id, _is_new, _match_dist) =
+                anchor_bank.resolve_gated(sig_mask, global_tick, Some(&confidence), Some(config));
+
+            let anchor_value = if anchor_id != 0xFFFF {
+                anchor_bank.get_value(anchor_id)
+            } else {
+                0.0
+            };
+
+            let is_stable = if anchor_id != 0xFFFF {
+                anchor_bank
+                    .get_anchor(anchor_id)
+                    .map(|a| a.stable)
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+
+            let proto_align = if anchor_id != 0xFFFF {
+                anchor_bank
+                    .get_anchor(anchor_id)
+                    .map(|a| a.proto_score(&base_topk, config.proto_m))
+                    .unwrap_or(0.0)
+            } else {
+                0.0
+            };
+
+            let abs_td = if prev_anchor_id != 0xFFFF {
+                let gate_passed = confidence.passes_gate_with_params(&base_gate_params);
+                let v_next = if gate_passed && anchor_id != 0xFFFF {
+                    anchor_bank.get_value(anchor_id)
+                } else if topk_margin < ANCHOR_MARGIN_MIN * base_gate_params.margin_mult {
+                    config.v_abstain_margin
+                } else {
+                    0.0
+                };
+                let v_prev = anchor_bank.get_value(prev_anchor_id);
+                let delta_power = total_power - prev_power;
+                let reward =
+                    compute_reward(delta_power, prev_topk_margin, prev_proto_align, config);
+                let td = reward + config.gamma_v * v_next - v_prev;
+                td.abs()
+            } else {
+                0.0
+            };
+
+            total_ticks += 1;
+            if is_stable {
+                total_stable_ticks += 1;
+            }
+
+            let base_gate_passed = confidence.passes_gate_with_params(&base_gate_params);
+            mode_policy.observe(global_tick, anchor_value, abs_td as f32, base_gate_passed);
+
+            let mode = mode_policy.choose_mode(global_tick);
+            let action = action_policy.choose_action(mode);
+
+            // Record trigger trace
+            trigger_trace.record(action);
+
+            let action_overrides = action_policy.get_overrides(action);
+
+            let mut adjusted_gate_params = base_gate_params.clone();
+            adjusted_gate_params.margin_mult *= action_overrides.margin_scale as f64;
+
+            let gate_passed = confidence.passes_gate_with_params(&adjusted_gate_params);
+
+            action_policy.record_tick(action, gate_passed, abs_td as f32, anchor_value, is_stable);
+
+            // Record regret stats
+            regret_stats.observe_tick(
+                regret_config,
+                global_tick,
+                abs_td as f32,
+                topk_margin,
+                proto_align,
+                anchor_value,
+                gate_passed,
+            );
+            regret_stats.observe_action(global_tick, action);
+            regret_stats.check_pending_actions(regret_config, global_tick);
+
+            if action_overrides.apply_noise && action_overrides.noise_amp > 0.0 {
+                let noise_nodes: Vec<usize> = base_topk
+                    .iter()
+                    .take(config.mode_reset_dampen_top_k)
+                    .map(|(id, _)| *id)
+                    .collect();
+                chamber.apply_noise(&noise_nodes, action_overrides.noise_amp, &mut rng);
+            }
+
+            let partition_mask = current_sig.ctx_hat.unwrap_or(0) as u64;
+            anchor_bank.update_anchor_partition(anchor_id, partition_mask, ctx_hat);
+
+            if gate_passed && anchor_id != 0xFFFF {
+                anchor_bank.update_anchor_proto(anchor_id, &base_topk, config);
+            }
+
+            if prev_anchor_id != 0xFFFF {
+                let v_next = if gate_passed && anchor_id != 0xFFFF {
+                    anchor_bank.get_value(anchor_id)
+                } else if topk_margin < ANCHOR_MARGIN_MIN * adjusted_gate_params.margin_mult {
+                    config.v_abstain_margin
+                } else {
+                    0.0
+                };
+                let v_prev = anchor_bank.get_value(prev_anchor_id);
+                let delta_power = total_power - prev_power;
+                let mut reward =
+                    compute_reward(delta_power, prev_topk_margin, prev_proto_align, config);
+                reward_ema =
+                    (1.0 - config.reward_ema_beta) * reward_ema + config.reward_ema_beta * reward;
+                if config.use_advantage_reward {
+                    reward = reward - reward_ema;
+                }
+                let td = reward + config.gamma_v * v_next - v_prev;
+                anchor_bank.update_anchor_value(prev_anchor_id, td, config);
+            }
+
+            if gate_passed && anchor_id != 0xFFFF {
+                prev_anchor_id = anchor_id;
+                prev_power = total_power;
+                prev_topk_margin = topk_margin;
+                if let Some(anchor) = anchor_bank.get_anchor(anchor_id) {
+                    prev_proto_align = anchor.proto_score(&base_topk, config.proto_m);
+                } else {
+                    prev_proto_align = 0.0;
+                }
+            } else {
+                prev_anchor_id = 0xFFFF;
+            }
+
+            let learned_mask = current_sig.ctx_hat.unwrap_or(0) as u64;
+            let key = MemoryKey::new(anchor_id, learned_mask);
+
+            if bind_ticks.contains(&t) {
+                let label = current_sig.ctx_hat.unwrap_or(0) as u16;
+                keyed_memory.store(key, label);
+            }
+
+            if t >= config.competitive_recall_start && t % config.competitive_recall_stride == 0 {
+                let is_negative = rng.next_f64() < config.competitive_p_neg;
+
+                if is_negative {
+                    let neg_sig_mask = flip_bits_simple(
+                        sig_mask,
+                        config.competitive_neg_flip_bits,
+                        rng.next_u64(),
+                    );
+                    let (neg_anchor_id, _, _) = anchor_bank.resolve(neg_sig_mask, global_tick);
+                    let neg_key = MemoryKey::new(neg_anchor_id, learned_mask);
+                    let decision = keyed_memory.recall(neg_key);
+                    metrics.record_negative(&decision);
+                } else {
+                    let true_label = current_sig.ctx_hat.unwrap_or(255) as u16;
+                    let decision = keyed_memory.recall(key);
+                    if let anchor::KeyedRecallDecision::Label(recalled_label, _) = &decision {
+                        if *recalled_label == true_label {
+                            anchor_bank.record_win(anchor_id);
+                        }
+                    }
+                    metrics.record_positive(&decision, true_label);
+                }
+            }
+
+            global_tick += 1;
+        }
+    }
+
+    regret_stats.finalize(regret_config);
+
+    let action_stats = &action_policy.stats;
+
+    let mut report = regret::RegretReport::new("FULL");
+    report.scan_rate = action_stats.scan_rate();
+    report.focus_rate = action_stats.focus_rate();
+    report.perturb_rate = action_stats.perturb_rate();
+    report.trigger_count = action_stats.scan_count + action_stats.perturb_count;
+    report.coverage_pos = metrics.coverage_pos();
+    report.selective_accuracy = metrics.selective_accuracy();
+    report.false_positive_rate = metrics.false_positive_rate();
+    report.stable_time_share = if total_ticks > 0 {
+        total_stable_ticks as f64 / total_ticks as f64
+    } else {
+        0.0
+    };
+    report.bad_state_share = regret_stats.bad_state_share();
+    report.td_spike_rate = regret_stats.td_spike_rate();
+    report.recovery_improve_mean = regret_stats.recovery_improve_mean();
+    report.recovery_good_rate = regret_stats.recovery_good_rate();
+    report.regret_rate = regret_stats.regret_rate();
+
+    (report, trigger_trace)
+}
+
+/// Run RANDOM_BUDGETED variant for Demo 11.
+fn run_demo11_variant_budgeted(
+    config: &Config,
+    regret_config: &regret::RegretConfig,
+    scan_target: f64,
+    perturb_target: f64,
+) -> regret::RegretReport {
+    use action::{Action, ActionConfig, ActionPolicy};
+    use action_ablate::BudgetedRandomAction;
+    use mode::{ModePolicy, ModePolicyConfig};
+    use regret::RegretStats;
+
+    let mode_policy_config = ModePolicyConfig {
+        explore_v_max: config.mode_explore_v_max,
+        exploit_v_min: config.mode_exploit_v_min,
+        reset_td_min: config.mode_reset_td_min,
+        reset_value_drop: config.mode_reset_value_drop,
+        reset_fail_streak: config.mode_reset_fail_streak,
+        post_reset_cooldown: config.mode_post_reset_cooldown,
+        explore_margin_min_scale: config.mode_explore_margin_scale,
+        exploit_margin_min_scale: config.mode_exploit_margin_scale,
+        reset_dampen: config.mode_reset_dampen,
+        reset_dampen_top_k: config.mode_reset_dampen_top_k,
+        window_size: config.mode_window_size,
+    };
+    let mut mode_policy = ModePolicy::new(mode_policy_config);
+
+    let action_config = ActionConfig {
+        scan_topk_scale: config.scan_topk_scale,
+        focus_topk_scale: config.focus_topk_scale,
+        scan_margin_scale: config.scan_margin_scale,
+        focus_margin_scale: config.focus_margin_scale,
+        perturb_noise_amp: config.perturb_noise_amp,
+    };
+    let mut action_policy = ActionPolicy::new(action_config);
+    let mut budgeted_random = BudgetedRandomAction::new(scan_target, perturb_target);
+
+    let mut rng = Rng::new(config.seed.wrapping_add(0x7A7A_7A7A));
+    let mut chamber = EchoChamber::random_graph(config.clone(), &mut rng);
+    let causes = Causes::new(&config, &mut rng);
+
+    // Pre-train
+    for _ in 0..10000 {
+        let (active_mask, _) = causes.sample_active(&mut rng);
+        let z_inj = causes.compute_z_inj(active_mask);
+        causes.inject_for_tick(&mut rng, &mut chamber, active_mask);
+        let topk = get_top_k(&chamber, config.top_k);
+        let topk_ids: Vec<usize> = topk.iter().map(|(id, _)| *id).collect();
+        chamber.tick_with_context_plasticity(z_inj, &topk_ids, true);
+    }
+
+    let mut anchor_bank = AnchorBank::new();
+    let keyed_config = KeyedMemoryConfig {
+        label_min_p: 0.50,
+        label_margin: 0.10,
+        alpha: 0.5,
+        num_labels: config.num_ctx,
+    };
+    let mut keyed_memory = KeyedMemoryStore::new(keyed_config);
+    let mut metrics = KeyedMemoryMetrics::new();
+    let mut regret_stats = RegretStats::new(regret_config);
+
+    let mut window = RollingWindow::new(config.num_nodes, config.num_ctx);
+    let bind_ticks = config.competitive_bind_ticks();
+    let mut global_tick: u64 = 0;
+
+    let mut prev_anchor_id: u16 = 0xFFFF;
+    let mut prev_power: f64 = 0.0;
+    let mut prev_topk_margin: f64 = 0.0;
+    let mut prev_proto_align: f32 = 0.0;
+    let mut reward_ema: f32 = 0.0;
+
+    let mut total_stable_ticks: usize = 0;
+    let mut total_ticks: usize = 0;
+
+    for _ep in 0..config.competitive_episodes {
+        window.reset();
+
+        for t in 0..config.competitive_episode_ticks {
+            let (active_mask, _) = causes.sample_active(&mut rng);
+            let z_inj = causes.compute_z_inj(active_mask);
+            causes.inject_for_tick(&mut rng, &mut chamber, active_mask);
+
+            let base_topk = get_top_k(&chamber, config.top_k);
+            let tick_metrics = chamber.tick_with_context_plasticity(z_inj, &[], false);
+
+            let ctx_hat = tick_metrics.ctx.map(|c| c as u8);
+            let topk_ids: Vec<usize> = base_topk.iter().map(|(id, _)| *id).collect();
+            window.push(&topk_ids, ctx_hat);
+
+            if !window.is_ready() {
+                global_tick += 1;
+                continue;
+            }
+
+            let current_sig = window.competitive_sig();
+            let sig_mask = current_sig.mask;
+
+            let topk_margin = if base_topk.len() >= 2 {
+                base_topk[0].1 - base_topk[1].1
+            } else if !base_topk.is_empty() {
+                base_topk[0].1
+            } else {
+                0.0
+            };
+            let total_power = tick_metrics.tot_pow_post;
+            let confidence = ConfidenceInfo::new(topk_margin, total_power);
+
+            if anchor_bank.should_merge(global_tick) {
+                let remaps = anchor_bank.merge_similar(Some(config));
+                if !remaps.is_empty() {
+                    keyed_memory.apply_remaps(&remaps);
+                }
+                anchor_bank.mark_merge_done(global_tick);
+            }
+
+            if anchor_bank.should_scan_merges(global_tick, config) {
+                let remaps = anchor_bank.scan_and_merge(config);
+                if !remaps.is_empty() {
+                    keyed_memory.apply_remaps(&remaps);
+                }
+                anchor_bank.mark_scan_done(global_tick);
+            }
+
+            anchor_bank.update_stability(global_tick, config);
+
+            let base_gate_params = if anchor_bank.stable_mode {
+                GateParams::stable(config)
+            } else {
+                GateParams::explore(config)
+            };
+
+            let (anchor_id, _is_new, _match_dist) =
+                anchor_bank.resolve_gated(sig_mask, global_tick, Some(&confidence), Some(config));
+
+            let anchor_value = if anchor_id != 0xFFFF {
+                anchor_bank.get_value(anchor_id)
+            } else {
+                0.0
+            };
+
+            let is_stable = if anchor_id != 0xFFFF {
+                anchor_bank
+                    .get_anchor(anchor_id)
+                    .map(|a| a.stable)
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+
+            let proto_align = if anchor_id != 0xFFFF {
+                anchor_bank
+                    .get_anchor(anchor_id)
+                    .map(|a| a.proto_score(&base_topk, config.proto_m))
+                    .unwrap_or(0.0)
+            } else {
+                0.0
+            };
+
+            let abs_td = if prev_anchor_id != 0xFFFF {
+                let gate_passed = confidence.passes_gate_with_params(&base_gate_params);
+                let v_next = if gate_passed && anchor_id != 0xFFFF {
+                    anchor_bank.get_value(anchor_id)
+                } else if topk_margin < ANCHOR_MARGIN_MIN * base_gate_params.margin_mult {
+                    config.v_abstain_margin
+                } else {
+                    0.0
+                };
+                let v_prev = anchor_bank.get_value(prev_anchor_id);
+                let delta_power = total_power - prev_power;
+                let reward =
+                    compute_reward(delta_power, prev_topk_margin, prev_proto_align, config);
+                let td = reward + config.gamma_v * v_next - v_prev;
+                td.abs()
+            } else {
+                0.0
+            };
+
+            total_ticks += 1;
+            if is_stable {
+                total_stable_ticks += 1;
+            }
+
+            let base_gate_passed = confidence.passes_gate_with_params(&base_gate_params);
+            mode_policy.observe(global_tick, anchor_value, abs_td as f32, base_gate_passed);
+
+            // Use budgeted random action selection
+            let rng_val = rng.next_f64();
+            let action = budgeted_random.choose(rng_val);
+
+            let action_overrides = action_policy.get_overrides(action);
+
+            let mut adjusted_gate_params = base_gate_params.clone();
+            adjusted_gate_params.margin_mult *= action_overrides.margin_scale as f64;
+
+            let gate_passed = confidence.passes_gate_with_params(&adjusted_gate_params);
+
+            action_policy.record_tick(action, gate_passed, abs_td as f32, anchor_value, is_stable);
+
+            // Record regret stats
+            regret_stats.observe_tick(
+                regret_config,
+                global_tick,
+                abs_td as f32,
+                topk_margin,
+                proto_align,
+                anchor_value,
+                gate_passed,
+            );
+            regret_stats.observe_action(global_tick, action);
+            regret_stats.check_pending_actions(regret_config, global_tick);
+
+            if action_overrides.apply_noise && action_overrides.noise_amp > 0.0 {
+                let noise_nodes: Vec<usize> = base_topk
+                    .iter()
+                    .take(config.mode_reset_dampen_top_k)
+                    .map(|(id, _)| *id)
+                    .collect();
+                chamber.apply_noise(&noise_nodes, action_overrides.noise_amp, &mut rng);
+            }
+
+            let partition_mask = current_sig.ctx_hat.unwrap_or(0) as u64;
+            anchor_bank.update_anchor_partition(anchor_id, partition_mask, ctx_hat);
+
+            if gate_passed && anchor_id != 0xFFFF {
+                anchor_bank.update_anchor_proto(anchor_id, &base_topk, config);
+            }
+
+            if prev_anchor_id != 0xFFFF {
+                let v_next = if gate_passed && anchor_id != 0xFFFF {
+                    anchor_bank.get_value(anchor_id)
+                } else if topk_margin < ANCHOR_MARGIN_MIN * adjusted_gate_params.margin_mult {
+                    config.v_abstain_margin
+                } else {
+                    0.0
+                };
+                let v_prev = anchor_bank.get_value(prev_anchor_id);
+                let delta_power = total_power - prev_power;
+                let mut reward =
+                    compute_reward(delta_power, prev_topk_margin, prev_proto_align, config);
+                reward_ema =
+                    (1.0 - config.reward_ema_beta) * reward_ema + config.reward_ema_beta * reward;
+                if config.use_advantage_reward {
+                    reward = reward - reward_ema;
+                }
+                let td = reward + config.gamma_v * v_next - v_prev;
+                anchor_bank.update_anchor_value(prev_anchor_id, td, config);
+            }
+
+            if gate_passed && anchor_id != 0xFFFF {
+                prev_anchor_id = anchor_id;
+                prev_power = total_power;
+                prev_topk_margin = topk_margin;
+                if let Some(anchor) = anchor_bank.get_anchor(anchor_id) {
+                    prev_proto_align = anchor.proto_score(&base_topk, config.proto_m);
+                } else {
+                    prev_proto_align = 0.0;
+                }
+            } else {
+                prev_anchor_id = 0xFFFF;
+            }
+
+            let learned_mask = current_sig.ctx_hat.unwrap_or(0) as u64;
+            let key = MemoryKey::new(anchor_id, learned_mask);
+
+            if bind_ticks.contains(&t) {
+                let label = current_sig.ctx_hat.unwrap_or(0) as u16;
+                keyed_memory.store(key, label);
+            }
+
+            if t >= config.competitive_recall_start && t % config.competitive_recall_stride == 0 {
+                let is_negative = rng.next_f64() < config.competitive_p_neg;
+
+                if is_negative {
+                    let neg_sig_mask = flip_bits_simple(
+                        sig_mask,
+                        config.competitive_neg_flip_bits,
+                        rng.next_u64(),
+                    );
+                    let (neg_anchor_id, _, _) = anchor_bank.resolve(neg_sig_mask, global_tick);
+                    let neg_key = MemoryKey::new(neg_anchor_id, learned_mask);
+                    let decision = keyed_memory.recall(neg_key);
+                    metrics.record_negative(&decision);
+                } else {
+                    let true_label = current_sig.ctx_hat.unwrap_or(255) as u16;
+                    let decision = keyed_memory.recall(key);
+                    if let anchor::KeyedRecallDecision::Label(recalled_label, _) = &decision {
+                        if *recalled_label == true_label {
+                            anchor_bank.record_win(anchor_id);
+                        }
+                    }
+                    metrics.record_positive(&decision, true_label);
+                }
+            }
+
+            global_tick += 1;
+        }
+    }
+
+    regret_stats.finalize(regret_config);
+
+    let action_stats = &action_policy.stats;
+
+    let mut report = regret::RegretReport::new("RANDOM_BUDGETED");
+    report.scan_rate = action_stats.scan_rate();
+    report.focus_rate = action_stats.focus_rate();
+    report.perturb_rate = action_stats.perturb_rate();
+    report.trigger_count = action_stats.scan_count + action_stats.perturb_count;
+    report.coverage_pos = metrics.coverage_pos();
+    report.selective_accuracy = metrics.selective_accuracy();
+    report.false_positive_rate = metrics.false_positive_rate();
+    report.stable_time_share = if total_ticks > 0 {
+        total_stable_ticks as f64 / total_ticks as f64
+    } else {
+        0.0
+    };
+    report.bad_state_share = regret_stats.bad_state_share();
+    report.td_spike_rate = regret_stats.td_spike_rate();
+    report.recovery_improve_mean = regret_stats.recovery_improve_mean();
+    report.recovery_good_rate = regret_stats.recovery_good_rate();
+    report.regret_rate = regret_stats.regret_rate();
+
+    report
+}
+
+/// Run RANDOM_TRIGGER_MATCHED variant for Demo 11.
+fn run_demo11_variant_trigger_matched(
+    config: &Config,
+    regret_config: &regret::RegretConfig,
+    trigger_trace: &action_ablate::TriggerTrace,
+) -> regret::RegretReport {
+    use action::{Action, ActionConfig, ActionPolicy};
+    use action_ablate::TriggerMatchedRandom;
+    use mode::{ModePolicy, ModePolicyConfig};
+    use regret::RegretStats;
+
+    let mode_policy_config = ModePolicyConfig {
+        explore_v_max: config.mode_explore_v_max,
+        exploit_v_min: config.mode_exploit_v_min,
+        reset_td_min: config.mode_reset_td_min,
+        reset_value_drop: config.mode_reset_value_drop,
+        reset_fail_streak: config.mode_reset_fail_streak,
+        post_reset_cooldown: config.mode_post_reset_cooldown,
+        explore_margin_min_scale: config.mode_explore_margin_scale,
+        exploit_margin_min_scale: config.mode_exploit_margin_scale,
+        reset_dampen: config.mode_reset_dampen,
+        reset_dampen_top_k: config.mode_reset_dampen_top_k,
+        window_size: config.mode_window_size,
+    };
+    let mut mode_policy = ModePolicy::new(mode_policy_config);
+
+    let action_config = ActionConfig {
+        scan_topk_scale: config.scan_topk_scale,
+        focus_topk_scale: config.focus_topk_scale,
+        scan_margin_scale: config.scan_margin_scale,
+        focus_margin_scale: config.focus_margin_scale,
+        perturb_noise_amp: config.perturb_noise_amp,
+    };
+    let mut action_policy = ActionPolicy::new(action_config);
+    let mut trigger_matched = TriggerMatchedRandom::new(trigger_trace.clone());
+
+    let mut rng = Rng::new(config.seed.wrapping_add(0x7A7A_7A7A));
+    let mut chamber = EchoChamber::random_graph(config.clone(), &mut rng);
+    let causes = Causes::new(&config, &mut rng);
+
+    // Pre-train
+    for _ in 0..10000 {
+        let (active_mask, _) = causes.sample_active(&mut rng);
+        let z_inj = causes.compute_z_inj(active_mask);
+        causes.inject_for_tick(&mut rng, &mut chamber, active_mask);
+        let topk = get_top_k(&chamber, config.top_k);
+        let topk_ids: Vec<usize> = topk.iter().map(|(id, _)| *id).collect();
+        chamber.tick_with_context_plasticity(z_inj, &topk_ids, true);
+    }
+
+    let mut anchor_bank = AnchorBank::new();
+    let keyed_config = KeyedMemoryConfig {
+        label_min_p: 0.50,
+        label_margin: 0.10,
+        alpha: 0.5,
+        num_labels: config.num_ctx,
+    };
+    let mut keyed_memory = KeyedMemoryStore::new(keyed_config);
+    let mut metrics = KeyedMemoryMetrics::new();
+    let mut regret_stats = RegretStats::new(regret_config);
+
+    let mut window = RollingWindow::new(config.num_nodes, config.num_ctx);
+    let bind_ticks = config.competitive_bind_ticks();
+    let mut global_tick: u64 = 0;
+
+    let mut prev_anchor_id: u16 = 0xFFFF;
+    let mut prev_power: f64 = 0.0;
+    let mut prev_topk_margin: f64 = 0.0;
+    let mut prev_proto_align: f32 = 0.0;
+    let mut reward_ema: f32 = 0.0;
+
+    let mut total_stable_ticks: usize = 0;
+    let mut total_ticks: usize = 0;
+
+    for _ep in 0..config.competitive_episodes {
+        window.reset();
+
+        for t in 0..config.competitive_episode_ticks {
+            let (active_mask, _) = causes.sample_active(&mut rng);
+            let z_inj = causes.compute_z_inj(active_mask);
+            causes.inject_for_tick(&mut rng, &mut chamber, active_mask);
+
+            let base_topk = get_top_k(&chamber, config.top_k);
+            let tick_metrics = chamber.tick_with_context_plasticity(z_inj, &[], false);
+
+            let ctx_hat = tick_metrics.ctx.map(|c| c as u8);
+            let topk_ids: Vec<usize> = base_topk.iter().map(|(id, _)| *id).collect();
+            window.push(&topk_ids, ctx_hat);
+
+            if !window.is_ready() {
+                // Consume trigger trace tick even when window not ready
+                let _ = trigger_matched.choose(rng.next_f64());
+                global_tick += 1;
+                continue;
+            }
+
+            let current_sig = window.competitive_sig();
+            let sig_mask = current_sig.mask;
+
+            let topk_margin = if base_topk.len() >= 2 {
+                base_topk[0].1 - base_topk[1].1
+            } else if !base_topk.is_empty() {
+                base_topk[0].1
+            } else {
+                0.0
+            };
+            let total_power = tick_metrics.tot_pow_post;
+            let confidence = ConfidenceInfo::new(topk_margin, total_power);
+
+            if anchor_bank.should_merge(global_tick) {
+                let remaps = anchor_bank.merge_similar(Some(config));
+                if !remaps.is_empty() {
+                    keyed_memory.apply_remaps(&remaps);
+                }
+                anchor_bank.mark_merge_done(global_tick);
+            }
+
+            if anchor_bank.should_scan_merges(global_tick, config) {
+                let remaps = anchor_bank.scan_and_merge(config);
+                if !remaps.is_empty() {
+                    keyed_memory.apply_remaps(&remaps);
+                }
+                anchor_bank.mark_scan_done(global_tick);
+            }
+
+            anchor_bank.update_stability(global_tick, config);
+
+            let base_gate_params = if anchor_bank.stable_mode {
+                GateParams::stable(config)
+            } else {
+                GateParams::explore(config)
+            };
+
+            let (anchor_id, _is_new, _match_dist) =
+                anchor_bank.resolve_gated(sig_mask, global_tick, Some(&confidence), Some(config));
+
+            let anchor_value = if anchor_id != 0xFFFF {
+                anchor_bank.get_value(anchor_id)
+            } else {
+                0.0
+            };
+
+            let is_stable = if anchor_id != 0xFFFF {
+                anchor_bank
+                    .get_anchor(anchor_id)
+                    .map(|a| a.stable)
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+
+            let proto_align = if anchor_id != 0xFFFF {
+                anchor_bank
+                    .get_anchor(anchor_id)
+                    .map(|a| a.proto_score(&base_topk, config.proto_m))
+                    .unwrap_or(0.0)
+            } else {
+                0.0
+            };
+
+            let abs_td = if prev_anchor_id != 0xFFFF {
+                let gate_passed = confidence.passes_gate_with_params(&base_gate_params);
+                let v_next = if gate_passed && anchor_id != 0xFFFF {
+                    anchor_bank.get_value(anchor_id)
+                } else if topk_margin < ANCHOR_MARGIN_MIN * base_gate_params.margin_mult {
+                    config.v_abstain_margin
+                } else {
+                    0.0
+                };
+                let v_prev = anchor_bank.get_value(prev_anchor_id);
+                let delta_power = total_power - prev_power;
+                let reward =
+                    compute_reward(delta_power, prev_topk_margin, prev_proto_align, config);
+                let td = reward + config.gamma_v * v_next - v_prev;
+                td.abs()
+            } else {
+                0.0
+            };
+
+            total_ticks += 1;
+            if is_stable {
+                total_stable_ticks += 1;
+            }
+
+            let base_gate_passed = confidence.passes_gate_with_params(&base_gate_params);
+            mode_policy.observe(global_tick, anchor_value, abs_td as f32, base_gate_passed);
+
+            // Use trigger-matched random action selection
+            let rng_val = rng.next_f64();
+            let action = trigger_matched.choose(rng_val);
+
+            let action_overrides = action_policy.get_overrides(action);
+
+            let mut adjusted_gate_params = base_gate_params.clone();
+            adjusted_gate_params.margin_mult *= action_overrides.margin_scale as f64;
+
+            let gate_passed = confidence.passes_gate_with_params(&adjusted_gate_params);
+
+            action_policy.record_tick(action, gate_passed, abs_td as f32, anchor_value, is_stable);
+
+            // Record regret stats
+            regret_stats.observe_tick(
+                regret_config,
+                global_tick,
+                abs_td as f32,
+                topk_margin,
+                proto_align,
+                anchor_value,
+                gate_passed,
+            );
+            regret_stats.observe_action(global_tick, action);
+            regret_stats.check_pending_actions(regret_config, global_tick);
+
+            if action_overrides.apply_noise && action_overrides.noise_amp > 0.0 {
+                let noise_nodes: Vec<usize> = base_topk
+                    .iter()
+                    .take(config.mode_reset_dampen_top_k)
+                    .map(|(id, _)| *id)
+                    .collect();
+                chamber.apply_noise(&noise_nodes, action_overrides.noise_amp, &mut rng);
+            }
+
+            let partition_mask = current_sig.ctx_hat.unwrap_or(0) as u64;
+            anchor_bank.update_anchor_partition(anchor_id, partition_mask, ctx_hat);
+
+            if gate_passed && anchor_id != 0xFFFF {
+                anchor_bank.update_anchor_proto(anchor_id, &base_topk, config);
+            }
+
+            if prev_anchor_id != 0xFFFF {
+                let v_next = if gate_passed && anchor_id != 0xFFFF {
+                    anchor_bank.get_value(anchor_id)
+                } else if topk_margin < ANCHOR_MARGIN_MIN * adjusted_gate_params.margin_mult {
+                    config.v_abstain_margin
+                } else {
+                    0.0
+                };
+                let v_prev = anchor_bank.get_value(prev_anchor_id);
+                let delta_power = total_power - prev_power;
+                let mut reward =
+                    compute_reward(delta_power, prev_topk_margin, prev_proto_align, config);
+                reward_ema =
+                    (1.0 - config.reward_ema_beta) * reward_ema + config.reward_ema_beta * reward;
+                if config.use_advantage_reward {
+                    reward = reward - reward_ema;
+                }
+                let td = reward + config.gamma_v * v_next - v_prev;
+                anchor_bank.update_anchor_value(prev_anchor_id, td, config);
+            }
+
+            if gate_passed && anchor_id != 0xFFFF {
+                prev_anchor_id = anchor_id;
+                prev_power = total_power;
+                prev_topk_margin = topk_margin;
+                if let Some(anchor) = anchor_bank.get_anchor(anchor_id) {
+                    prev_proto_align = anchor.proto_score(&base_topk, config.proto_m);
+                } else {
+                    prev_proto_align = 0.0;
+                }
+            } else {
+                prev_anchor_id = 0xFFFF;
+            }
+
+            let learned_mask = current_sig.ctx_hat.unwrap_or(0) as u64;
+            let key = MemoryKey::new(anchor_id, learned_mask);
+
+            if bind_ticks.contains(&t) {
+                let label = current_sig.ctx_hat.unwrap_or(0) as u16;
+                keyed_memory.store(key, label);
+            }
+
+            if t >= config.competitive_recall_start && t % config.competitive_recall_stride == 0 {
+                let is_negative = rng.next_f64() < config.competitive_p_neg;
+
+                if is_negative {
+                    let neg_sig_mask = flip_bits_simple(
+                        sig_mask,
+                        config.competitive_neg_flip_bits,
+                        rng.next_u64(),
+                    );
+                    let (neg_anchor_id, _, _) = anchor_bank.resolve(neg_sig_mask, global_tick);
+                    let neg_key = MemoryKey::new(neg_anchor_id, learned_mask);
+                    let decision = keyed_memory.recall(neg_key);
+                    metrics.record_negative(&decision);
+                } else {
+                    let true_label = current_sig.ctx_hat.unwrap_or(255) as u16;
+                    let decision = keyed_memory.recall(key);
+                    if let anchor::KeyedRecallDecision::Label(recalled_label, _) = &decision {
+                        if *recalled_label == true_label {
+                            anchor_bank.record_win(anchor_id);
+                        }
+                    }
+                    metrics.record_positive(&decision, true_label);
+                }
+            }
+
+            global_tick += 1;
+        }
+    }
+
+    regret_stats.finalize(regret_config);
+
+    let action_stats = &action_policy.stats;
+
+    let mut report = regret::RegretReport::new("RANDOM_TRIGGER");
+    report.scan_rate = action_stats.scan_rate();
+    report.focus_rate = action_stats.focus_rate();
+    report.perturb_rate = action_stats.perturb_rate();
+    report.trigger_count = action_stats.scan_count + action_stats.perturb_count;
+    report.coverage_pos = metrics.coverage_pos();
+    report.selective_accuracy = metrics.selective_accuracy();
+    report.false_positive_rate = metrics.false_positive_rate();
+    report.stable_time_share = if total_ticks > 0 {
+        total_stable_ticks as f64 / total_ticks as f64
+    } else {
+        0.0
+    };
+    report.bad_state_share = regret_stats.bad_state_share();
+    report.td_spike_rate = regret_stats.td_spike_rate();
+    report.recovery_improve_mean = regret_stats.recovery_improve_mean();
+    report.recovery_good_rate = regret_stats.recovery_good_rate();
+    report.regret_rate = regret_stats.regret_rate();
+
+    report
 }

@@ -203,6 +203,28 @@ pub struct Config {
     pub run_demo_9: bool,
     /// Run demo 10 (Phase 2.0d Action Ablations + Sweep).
     pub run_demo_10: bool,
+    /// Run demo 11 (Phase 2.0e Trigger-Matched Random + Regret Metrics).
+    pub run_demo_11: bool,
+
+    // =========================================================================
+    // Phase 2.0e: Regret/Recovery Metrics Configuration
+    // =========================================================================
+    /// Margin threshold for "bad state" (topk_margin < margin_bad).
+    pub regret_margin_bad: f64,
+    /// Proto alignment threshold for "bad state".
+    pub regret_proto_bad: f32,
+    /// Value threshold for "bad state".
+    pub regret_v_bad: f32,
+    /// TD spike threshold (abs_td > td_spike counts as spike).
+    pub regret_td_spike: f32,
+    /// Window size for pre-action measurement.
+    pub regret_pre_window: usize,
+    /// Window size for post-action measurement.
+    pub regret_post_window: usize,
+    /// Window size for gate pass rate tracking.
+    pub regret_post_gate_window: usize,
+    /// Minimum improvement ratio to count as "good" recovery.
+    pub regret_recovery_good_threshold: f64,
 
     // =========================================================================
     // Phase 2.0a: Mode Policy Configuration
@@ -452,6 +474,17 @@ impl Default for Config {
             run_demo_8: true, // Phase 2.0b: Ablations + Mode Metrics demo
             run_demo_9: true, // Phase 2.0c: Mode → Action Loop demo
             run_demo_10: true, // Phase 2.0d: Action Ablations + Sweep demo
+            run_demo_11: true, // Phase 2.0e: Trigger-Matched Random + Regret Metrics demo
+
+            // Phase 2.0e: Regret/Recovery Metrics defaults
+            regret_margin_bad: 0.02,
+            regret_proto_bad: 0.20,
+            regret_v_bad: 0.15,
+            regret_td_spike: 0.55,
+            regret_pre_window: 10,
+            regret_post_window: 10,
+            regret_post_gate_window: 50,
+            regret_recovery_good_threshold: 0.10,
 
             // Phase 2.0a: Mode Policy defaults
             enable_mode_policy: true,

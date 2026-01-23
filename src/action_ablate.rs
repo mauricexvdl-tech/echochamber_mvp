@@ -20,6 +20,8 @@ pub enum ActionAblationVariant {
     Random,
     /// Budget-matched random: same action rates as FULL, but random timing
     RandomBudgeted,
+    /// Trigger-matched random: same trigger moments as FULL, but random action choice
+    RandomTriggerMatched,
 }
 
 impl ActionAblationVariant {
@@ -31,6 +33,7 @@ impl ActionAblationVariant {
             Self::NoFocus => "NO_FOCUS",
             Self::Random => "RANDOM",
             Self::RandomBudgeted => "RANDOM_BUDGETED",
+            Self::RandomTriggerMatched => "RANDOM_TRIGGER",
         }
     }
 
@@ -41,6 +44,15 @@ impl ActionAblationVariant {
             Self::NoPerturb,
             Self::NoFocus,
             Self::RandomBudgeted, // Use budgeted random instead of pure random
+        ]
+    }
+
+    /// Variants for Demo 11 (trigger-matched comparison).
+    pub fn demo11_variants() -> Vec<Self> {
+        vec![
+            Self::Full,
+            Self::RandomBudgeted,
+            Self::RandomTriggerMatched,
         ]
     }
 }
@@ -58,6 +70,8 @@ pub struct VariantConfig {
     pub random_actions: bool,
     /// Use budget-matched random action selection
     pub budgeted_random: bool,
+    /// Use trigger-matched random action selection
+    pub trigger_matched: bool,
 }
 
 impl VariantConfig {
@@ -69,6 +83,7 @@ impl VariantConfig {
                 disable_perturb: false,
                 random_actions: false,
                 budgeted_random: false,
+                trigger_matched: false,
             },
             ActionAblationVariant::NoScan => Self {
                 disable_scan: true,
@@ -76,6 +91,7 @@ impl VariantConfig {
                 disable_perturb: false,
                 random_actions: false,
                 budgeted_random: false,
+                trigger_matched: false,
             },
             ActionAblationVariant::NoPerturb => Self {
                 disable_scan: false,
@@ -83,6 +99,7 @@ impl VariantConfig {
                 disable_perturb: true,
                 random_actions: false,
                 budgeted_random: false,
+                trigger_matched: false,
             },
             ActionAblationVariant::NoFocus => Self {
                 disable_scan: false,
@@ -90,6 +107,7 @@ impl VariantConfig {
                 disable_perturb: false,
                 random_actions: false,
                 budgeted_random: false,
+                trigger_matched: false,
             },
             ActionAblationVariant::Random => Self {
                 disable_scan: false,
@@ -97,6 +115,7 @@ impl VariantConfig {
                 disable_perturb: false,
                 random_actions: true,
                 budgeted_random: false,
+                trigger_matched: false,
             },
             ActionAblationVariant::RandomBudgeted => Self {
                 disable_scan: false,
@@ -104,6 +123,15 @@ impl VariantConfig {
                 disable_perturb: false,
                 random_actions: false,
                 budgeted_random: true,
+                trigger_matched: false,
+            },
+            ActionAblationVariant::RandomTriggerMatched => Self {
+                disable_scan: false,
+                disable_focus: false,
+                disable_perturb: false,
+                random_actions: false,
+                budgeted_random: false,
+                trigger_matched: true,
             },
         }
     }
@@ -394,5 +422,118 @@ impl BudgetedRandomAction {
         self.scan_count = 0;
         self.perturb_count = 0;
         self.buffer_full = false;
+    }
+}
+
+// =============================================================================
+// Phase 2.0e: Trigger-Matched Random Baseline
+// =============================================================================
+
+/// Records FULL policy's trigger decisions for replay by trigger-matched baseline.
+#[derive(Clone, Debug)]
+pub struct TriggerTrace {
+    /// Per-tick: true if FULL chose a non-Focus action (Scan or Perturb)
+    pub should_act: Vec<bool>,
+    /// Per-tick: the actual action FULL chose (for reference, optional matching)
+    pub actions: Vec<Action>,
+}
+
+impl TriggerTrace {
+    pub fn new() -> Self {
+        Self {
+            should_act: Vec::new(),
+            actions: Vec::new(),
+        }
+    }
+
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            should_act: Vec::with_capacity(capacity),
+            actions: Vec::with_capacity(capacity),
+        }
+    }
+
+    /// Record FULL's action at a tick.
+    pub fn record(&mut self, action: Action) {
+        let is_trigger = action != Action::Focus;
+        self.should_act.push(is_trigger);
+        self.actions.push(action);
+    }
+
+    /// Get whether this tick should trigger an action.
+    pub fn should_act_at(&self, tick: usize) -> bool {
+        self.should_act.get(tick).copied().unwrap_or(false)
+    }
+
+    /// Get FULL's action at this tick (for type-matched variant if needed).
+    pub fn action_at(&self, tick: usize) -> Option<Action> {
+        self.actions.get(tick).copied()
+    }
+
+    /// Count of trigger ticks.
+    pub fn trigger_count(&self) -> usize {
+        self.should_act.iter().filter(|&&x| x).count()
+    }
+
+    /// Total ticks recorded.
+    pub fn len(&self) -> usize {
+        self.should_act.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.should_act.is_empty()
+    }
+}
+
+impl Default for TriggerTrace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Trigger-matched random action selector.
+/// Uses FULL's trigger trace to decide WHEN to act, but chooses randomly WHAT action.
+#[derive(Clone, Debug)]
+pub struct TriggerMatchedRandom {
+    /// Reference to the trigger trace from FULL run
+    trigger_trace: TriggerTrace,
+    /// Current tick position
+    tick: usize,
+}
+
+impl TriggerMatchedRandom {
+    pub fn new(trigger_trace: TriggerTrace) -> Self {
+        Self {
+            trigger_trace,
+            tick: 0,
+        }
+    }
+
+    /// Choose action for current tick, then advance.
+    /// rng_value should be in [0.0, 1.0).
+    pub fn choose(&mut self, rng_value: f64) -> Action {
+        let should_act = self.trigger_trace.should_act_at(self.tick);
+        self.tick += 1;
+
+        if should_act {
+            // Choose randomly between Scan and Perturb
+            if rng_value < 0.5 {
+                Action::Scan
+            } else {
+                Action::Perturb
+            }
+        } else {
+            Action::Focus
+        }
+    }
+
+    /// Reset for a new run.
+    pub fn reset(&mut self) {
+        self.tick = 0;
+    }
+
+    /// Get trigger count from the trace.
+    pub fn trigger_count(&self) -> usize {
+        self.trigger_trace.trigger_count()
     }
 }
