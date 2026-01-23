@@ -86,12 +86,7 @@ impl Causes {
     }
 
     /// Inject signals for active causes + background noise.
-    pub fn inject_for_tick(
-        &self,
-        rng: &mut Rng,
-        chamber: &mut EchoChamber,
-        active_mask: u8,
-    ) {
+    pub fn inject_for_tick(&self, rng: &mut Rng, chamber: &mut EchoChamber, active_mask: u8) {
         let n_nodes = chamber.nodes.len();
 
         // Inject for each active cause

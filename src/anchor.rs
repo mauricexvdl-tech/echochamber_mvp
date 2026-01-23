@@ -6,8 +6,8 @@
 //! Phase 1.8: VALUE IS CONTROL - Memory lifecycle + self-regulation.
 //! Phase 1.9: CONSOLIDATION - Proto-based merging + stability hysteresis.
 
-use std::collections::HashMap;
 use crate::config::Config;
+use std::collections::HashMap;
 
 // =============================================================================
 // Configuration Constants
@@ -60,14 +60,14 @@ pub enum MergeBlockReason {
     StabilityMixed,
     UsageTooHigh,
     // Phase 1.9d: Cross-partition specific blocks
-    ExploreIsolated,        // Explore bucket must stay isolated
-    MaskHammingTooHigh,     // Cross-mask Hamming > mask_eps
-    CrossModeVDelta,        // Cross-mode |dv| > mode_merge_v_eps
-    CrossModeProtoLow,      // Cross-mode proto < proto_min_stable_cross_mode
-    CrossMaskProtoLow,      // Cross-mask proto < proto_min_cross_mask
-    CrossMaskVDelta,        // Cross-mask |dv| > value_eps_cross_mask
-    CrossModeNotStable,     // Cross-mode requires both stable
-    CrossMaskNotStable,     // Cross-mask requires both stable
+    ExploreIsolated,    // Explore bucket must stay isolated
+    MaskHammingTooHigh, // Cross-mask Hamming > mask_eps
+    CrossModeVDelta,    // Cross-mode |dv| > mode_merge_v_eps
+    CrossModeProtoLow,  // Cross-mode proto < proto_min_stable_cross_mode
+    CrossMaskProtoLow,  // Cross-mask proto < proto_min_cross_mask
+    CrossMaskVDelta,    // Cross-mask |dv| > value_eps_cross_mask
+    CrossModeNotStable, // Cross-mode requires both stable
+    CrossMaskNotStable, // Cross-mask requires both stable
 }
 
 /// Phase 1.9b/d: Merge statistics for reporting.
@@ -107,6 +107,27 @@ pub struct MergeStats {
     pub cross_mask_hamming_count: usize,
     /// Cross-partition merges blocked due to rate limiting.
     pub blocked_cross_rate_limited: usize,
+}
+
+/// Phase 1.9f: Comprehensive stable anchor statistics.
+#[derive(Clone, Debug, Default)]
+pub struct StableAnchorStats {
+    /// Number of stable anchors at end of run.
+    pub count: usize,
+    /// Sum of proto_support over stable anchors (stable mass).
+    pub mass_sum: u64,
+    /// Mean proto_support among stable anchors.
+    pub mass_mean: f64,
+    /// p50 (median) of proto_support among stable anchors.
+    pub support_p50: u32,
+    /// p90 of proto_support among stable anchors.
+    pub support_p90: u32,
+    /// Mean value (v) among stable anchors.
+    pub value_mean: f64,
+    /// Mean entropy_ema among stable anchors.
+    pub entropy_mean: f64,
+    /// Mean v_ema_abs_td among stable anchors.
+    pub td_mean: f64,
 }
 
 /// Phase 1.9c: Top blocked merge candidate for diagnostics.
@@ -276,8 +297,7 @@ impl Anchor {
 
         // Rule 3: Soft ctx compatibility
         // Same ctx_best OR high cosine similarity (>= 0.90)
-        let ctx_ok = self.ctx_best == other.ctx_best
-            || self.ctx_cosine_similarity(other) >= 0.90;
+        let ctx_ok = self.ctx_best == other.ctx_best || self.ctx_cosine_similarity(other) >= 0.90;
         if !ctx_ok {
             return (false, MergeBlockReason::CtxMismatch);
         }
@@ -306,10 +326,15 @@ impl Anchor {
         let mask_hamming = (self.learned_mask ^ other.learned_mask).count_ones();
 
         // Check ctx compatibility (same as before)
-        let ctx_ok = self.ctx_best == other.ctx_best
-            || self.ctx_cosine_similarity(other) >= 0.90;
+        let ctx_ok = self.ctx_best == other.ctx_best || self.ctx_cosine_similarity(other) >= 0.90;
         if !ctx_ok {
-            return (false, MergeBlockReason::CtxMismatch, modes_differ, masks_differ, mask_hamming);
+            return (
+                false,
+                MergeBlockReason::CtxMismatch,
+                modes_differ,
+                masks_differ,
+                mask_hamming,
+            );
         }
 
         // Phase 1.9d Rule 1: Explore bucket must stay isolated
@@ -317,27 +342,58 @@ impl Anchor {
         let self_is_explore = self_mode == 0;
         let other_is_explore = other_mode == 0;
         if modes_differ && (self_is_explore || other_is_explore) {
-            return (false, MergeBlockReason::ExploreIsolated, true, masks_differ, mask_hamming);
+            return (
+                false,
+                MergeBlockReason::ExploreIsolated,
+                true,
+                masks_differ,
+                mask_hamming,
+            );
         }
 
         // Phase 1.9d Rule 2: Cross-mode merges (Mid<->Stable)
         if modes_differ {
             // Must both be stable for cross-mode merge
             if !both_stable {
-                return (false, MergeBlockReason::CrossModeNotStable, true, masks_differ, mask_hamming);
+                return (
+                    false,
+                    MergeBlockReason::CrossModeNotStable,
+                    true,
+                    masks_differ,
+                    mask_hamming,
+                );
             }
             // Check if Mid<->Stable is allowed
-            let is_mid_stable = (self_mode == 1 && other_mode == 2) || (self_mode == 2 && other_mode == 1);
+            let is_mid_stable =
+                (self_mode == 1 && other_mode == 2) || (self_mode == 2 && other_mode == 1);
             if is_mid_stable && !config.allow_mid_stable_cross_mode {
-                return (false, MergeBlockReason::ModeMismatch, true, masks_differ, mask_hamming);
+                return (
+                    false,
+                    MergeBlockReason::ModeMismatch,
+                    true,
+                    masks_differ,
+                    mask_hamming,
+                );
             }
             // Value delta check for cross-mode
             if v_delta > config.mode_merge_v_eps {
-                return (false, MergeBlockReason::CrossModeVDelta, true, masks_differ, mask_hamming);
+                return (
+                    false,
+                    MergeBlockReason::CrossModeVDelta,
+                    true,
+                    masks_differ,
+                    mask_hamming,
+                );
             }
             // Proto score check for cross-mode
             if proto_score < config.proto_min_stable_cross_mode {
-                return (false, MergeBlockReason::CrossModeProtoLow, true, masks_differ, mask_hamming);
+                return (
+                    false,
+                    MergeBlockReason::CrossModeProtoLow,
+                    true,
+                    masks_differ,
+                    mask_hamming,
+                );
             }
         }
 
@@ -345,24 +401,54 @@ impl Anchor {
         if masks_differ {
             // Must both be stable for cross-mask merge
             if !both_stable {
-                return (false, MergeBlockReason::CrossMaskNotStable, modes_differ, true, mask_hamming);
+                return (
+                    false,
+                    MergeBlockReason::CrossMaskNotStable,
+                    modes_differ,
+                    true,
+                    mask_hamming,
+                );
             }
             // Hamming distance check
             if mask_hamming > config.mask_eps {
-                return (false, MergeBlockReason::MaskHammingTooHigh, modes_differ, true, mask_hamming);
+                return (
+                    false,
+                    MergeBlockReason::MaskHammingTooHigh,
+                    modes_differ,
+                    true,
+                    mask_hamming,
+                );
             }
             // Proto score check for cross-mask
             if proto_score < config.proto_min_cross_mask {
-                return (false, MergeBlockReason::CrossMaskProtoLow, modes_differ, true, mask_hamming);
+                return (
+                    false,
+                    MergeBlockReason::CrossMaskProtoLow,
+                    modes_differ,
+                    true,
+                    mask_hamming,
+                );
             }
             // Value delta check for cross-mask
             if v_delta > config.value_eps_cross_mask {
-                return (false, MergeBlockReason::CrossMaskVDelta, modes_differ, true, mask_hamming);
+                return (
+                    false,
+                    MergeBlockReason::CrossMaskVDelta,
+                    modes_differ,
+                    true,
+                    mask_hamming,
+                );
             }
         }
 
         // All checks passed - cross-partition merge is allowed
-        (true, MergeBlockReason::None, modes_differ, masks_differ, mask_hamming)
+        (
+            true,
+            MergeBlockReason::None,
+            modes_differ,
+            masks_differ,
+            mask_hamming,
+        )
     }
 
     /// Helper: Check if this anchor is in Explore bucket.
@@ -642,7 +728,8 @@ impl Anchor {
             let past_min_ticks = ticks_stable >= config.stable_min_ticks_on as u64;
 
             // Catastrophic drop: immediate exit if V drops significantly below threshold
-            let catastrophic_v_drop = self.v < config.stable_v_min - config.stable_catastrophic_v_drop;
+            let catastrophic_v_drop =
+                self.v < config.stable_v_min - config.stable_catastrophic_v_drop;
 
             // Check EXIT thresholds (looser than entry)
             let support_exit = self.proto_support < config.stable_min_support_exit;
@@ -706,7 +793,10 @@ pub struct GateParams {
 
 impl GateParams {
     pub fn new(margin_mult: f64, power_min_mult: f64) -> Self {
-        GateParams { margin_mult, power_min_mult }
+        GateParams {
+            margin_mult,
+            power_min_mult,
+        }
     }
 
     /// Create gate params for explore mode (more permissive).
@@ -751,7 +841,10 @@ pub struct ConfidenceInfo {
 
 impl ConfidenceInfo {
     pub fn new(topk_margin: f64, total_power: f64) -> Self {
-        ConfidenceInfo { topk_margin, total_power }
+        ConfidenceInfo {
+            topk_margin,
+            total_power,
+        }
     }
 
     /// Check if confidence passes the gate for anchor creation (default thresholds).
@@ -1049,7 +1142,8 @@ impl AnchorBank {
 
         let new_id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
-        self.anchors.insert(new_id, Anchor::new(signature, current_tick));
+        self.anchors
+            .insert(new_id, Anchor::new(signature, current_tick));
         self.anchor_creates += 1;
 
         (new_id, true, 0)
@@ -1119,7 +1213,8 @@ impl AnchorBank {
         let merge_v_delta_max = config.map(|c| c.merge_v_delta_max).unwrap_or(1.0);
 
         // Collect alive anchor IDs
-        let ids: Vec<u16> = self.anchors
+        let ids: Vec<u16> = self
+            .anchors
             .iter()
             .filter(|(_, a)| a.alive)
             .map(|(&id, _)| id)
@@ -1197,7 +1292,8 @@ impl AnchorBank {
     /// Phase 1.9b: Check if it's time for a proto-based merge scan.
     /// Triggers more aggressively when anchor utilization is high (>90%).
     pub fn should_scan_merges(&self, current_tick: u64, config: &Config) -> bool {
-        let period_elapsed = current_tick >= self.last_merge_scan_tick + config.merge_scan_period as u64;
+        let period_elapsed =
+            current_tick >= self.last_merge_scan_tick + config.merge_scan_period as u64;
         let high_utilization = self.anchor_utilization() > 0.90;
 
         // Scan if period elapsed, OR if high utilization (encourage consolidation)
@@ -1233,9 +1329,12 @@ impl AnchorBank {
         let max_usage = config.merge_max_usage;
 
         // Collect alive anchors with sufficient support AND not too high usage
-        let eligible: Vec<(u16, &Anchor)> = self.anchors
+        let eligible: Vec<(u16, &Anchor)> = self
+            .anchors
             .iter()
-            .filter(|(_, a)| a.alive && a.proto_support >= min_support && a.usage_count <= max_usage)
+            .filter(|(_, a)| {
+                a.alive && a.proto_support >= min_support && a.usage_count <= max_usage
+            })
             .map(|(&id, a)| (id, a))
             .collect();
 
@@ -1273,7 +1372,9 @@ impl AnchorBank {
             };
 
             for j in compare_range {
-                if j == i { continue; }
+                if j == i {
+                    continue;
+                }
                 let (id2, a2) = sorted[j];
                 self.pairs_checked += 1;
 
@@ -1285,7 +1386,8 @@ impl AnchorBank {
                 };
 
                 // If same_key_only, check signatures match closely first
-                let same_key = (a_low.proto_signature ^ a_high.proto_signature).count_ones() <= MERGE_HAMMING;
+                let same_key =
+                    (a_low.proto_signature ^ a_high.proto_signature).count_ones() <= MERGE_HAMMING;
                 if same_key_only && !same_key {
                     continue;
                 }
@@ -1321,11 +1423,19 @@ impl AnchorBank {
                             MergeBlockReason::ExploreIsolated => self.blocked_explore_isolated += 1,
                             MergeBlockReason::MaskHammingTooHigh => self.blocked_mask_hamming += 1,
                             MergeBlockReason::CrossModeVDelta => self.blocked_cross_mode_v += 1,
-                            MergeBlockReason::CrossModeProtoLow => self.blocked_cross_mode_proto += 1,
-                            MergeBlockReason::CrossMaskProtoLow => self.blocked_cross_mask_proto += 1,
+                            MergeBlockReason::CrossModeProtoLow => {
+                                self.blocked_cross_mode_proto += 1
+                            }
+                            MergeBlockReason::CrossMaskProtoLow => {
+                                self.blocked_cross_mask_proto += 1
+                            }
                             MergeBlockReason::CrossMaskVDelta => self.blocked_cross_mask_v += 1,
-                            MergeBlockReason::CrossModeNotStable => self.blocked_cross_mode_not_stable += 1,
-                            MergeBlockReason::CrossMaskNotStable => self.blocked_cross_mask_not_stable += 1,
+                            MergeBlockReason::CrossModeNotStable => {
+                                self.blocked_cross_mode_not_stable += 1
+                            }
+                            MergeBlockReason::CrossMaskNotStable => {
+                                self.blocked_cross_mask_not_stable += 1
+                            }
                             _ => {}
                         }
                         continue;
@@ -1340,7 +1450,12 @@ impl AnchorBank {
                 if proto_score < threshold {
                     self.merge_blocked_proto += 1;
                     if proto_score >= 0.70 {
-                        blocked_to_track.push(BlockedMergeInfo { id_a: id_low, id_b: id_high, proto_score, reason: MergeBlockReason::ProtoScore });
+                        blocked_to_track.push(BlockedMergeInfo {
+                            id_a: id_low,
+                            id_b: id_high,
+                            proto_score,
+                            reason: MergeBlockReason::ProtoScore,
+                        });
                     }
                     continue;
                 }
@@ -1353,7 +1468,12 @@ impl AnchorBank {
                     // One stable, one non-stable - skip to preserve stability
                     self.merge_blocked_stability += 1;
                     if proto_score >= 0.70 {
-                        blocked_to_track.push(BlockedMergeInfo { id_a: id_low, id_b: id_high, proto_score, reason: MergeBlockReason::StabilityMixed });
+                        blocked_to_track.push(BlockedMergeInfo {
+                            id_a: id_low,
+                            id_b: id_high,
+                            proto_score,
+                            reason: MergeBlockReason::StabilityMixed,
+                        });
                     }
                     continue;
                 }
@@ -1379,7 +1499,12 @@ impl AnchorBank {
                     if v_delta >= v_eps {
                         self.merge_blocked_value += 1;
                         if proto_score >= 0.70 {
-                            blocked_to_track.push(BlockedMergeInfo { id_a: id_low, id_b: id_high, proto_score, reason: MergeBlockReason::ValueDelta });
+                            blocked_to_track.push(BlockedMergeInfo {
+                                id_a: id_low,
+                                id_b: id_high,
+                                proto_score,
+                                reason: MergeBlockReason::ValueDelta,
+                            });
                         }
                         continue;
                     }
@@ -1387,7 +1512,15 @@ impl AnchorBank {
 
                 // This pair is a merge candidate
                 self.merge_candidates_found += 1;
-                extended_candidates.push((id_low, id_high, proto_score, is_cross_mode, is_cross_mask, mask_hamming, v_delta));
+                extended_candidates.push((
+                    id_low,
+                    id_high,
+                    proto_score,
+                    is_cross_mode,
+                    is_cross_mask,
+                    mask_hamming,
+                    v_delta,
+                ));
             }
         }
 
@@ -1397,7 +1530,10 @@ impl AnchorBank {
         }
 
         // Update RNG state for next scan
-        self.merge_rng_state = self.merge_rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        self.merge_rng_state = self
+            .merge_rng_state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1);
 
         // Phase 1.9d: Sort by (1) proto_score desc, (2) min(v) desc, (3) combined support desc
         extended_candidates.sort_by(|a, b| {
@@ -1413,7 +1549,11 @@ impl AnchorBank {
         // Deduplicate pairs (may have duplicates from sampling)
         let mut seen: std::collections::HashSet<(u16, u16)> = std::collections::HashSet::new();
         extended_candidates.retain(|(id1, id2, _, _, _, _, _)| {
-            let key = if id1 < id2 { (*id1, *id2) } else { (*id2, *id1) };
+            let key = if id1 < id2 {
+                (*id1, *id2)
+            } else {
+                (*id2, *id1)
+            };
             seen.insert(key)
         });
 
@@ -1423,7 +1563,9 @@ impl AnchorBank {
         let mut cross_count = 0;
         let mut final_candidates: Vec<(u16, u16, f32, bool, bool)> = Vec::new();
 
-        for (id_low, id_high, proto_score, is_cross_mode, is_cross_mask, _mask_hamming, _v_delta) in extended_candidates {
+        for (id_low, id_high, proto_score, is_cross_mode, is_cross_mask, _mask_hamming, _v_delta) in
+            extended_candidates
+        {
             let is_cross = is_cross_mode || is_cross_mask;
 
             if is_cross {
@@ -1450,7 +1592,16 @@ impl AnchorBank {
         let proto_m = config.proto_m.min(DEFAULT_PROTO_M);
 
         // Verify both anchors are alive and collect state
-        let (can_merge, u_low, u_high, low_stable, high_stable, low_support, high_support, earliest_stable_tick) = {
+        let (
+            can_merge,
+            u_low,
+            u_high,
+            low_stable,
+            high_stable,
+            low_support,
+            high_support,
+            earliest_stable_tick,
+        ) = {
             let a_low = match self.anchors.get(&id_low) {
                 Some(a) if a.alive => a,
                 _ => return false,
@@ -1461,9 +1612,16 @@ impl AnchorBank {
             };
             // Use the earlier stable_since_tick (more established stability)
             let earliest = a_low.stable_since_tick.min(a_high.stable_since_tick);
-            (true, a_low.usage_count, a_high.usage_count,
-             a_low.stable, a_high.stable,
-             a_low.proto_support, a_high.proto_support, earliest)
+            (
+                true,
+                a_low.usage_count,
+                a_high.usage_count,
+                a_low.stable,
+                a_high.stable,
+                a_low.proto_support,
+                a_high.proto_support,
+                earliest,
+            )
         };
 
         if !can_merge {
@@ -1473,13 +1631,23 @@ impl AnchorBank {
         // Extract values from low-usage anchor
         let (v_low, wins_low, proto_w_low, proto_nodes_low, entropy_low, abs_td_low) = {
             let a = &self.anchors[&id_low];
-            (a.v, a.wins, a.proto_w.clone(), a.proto_nodes.clone(),
-             a.entropy(proto_m), a.v_ema_abs_td)
+            (
+                a.v,
+                a.wins,
+                a.proto_w.clone(),
+                a.proto_nodes.clone(),
+                a.entropy(proto_m),
+                a.v_ema_abs_td,
+            )
         };
 
         // Compute weighted average factor (low_usage / total_usage)
         let total_u = u_low + u_high;
-        let w_low = if total_u > 0 { u_low as f32 / total_u as f32 } else { 0.5 };
+        let w_low = if total_u > 0 {
+            u_low as f32 / total_u as f32
+        } else {
+            0.5
+        };
         let eta = config.merge_proto_eta;
 
         // Mark id_low as dead
@@ -1505,7 +1673,8 @@ impl AnchorBank {
                     for j in 0..proto_m {
                         if a_high.proto_nodes[j] == node_low && a_high.proto_w[j] > 0.0 {
                             // Blend weights
-                            a_high.proto_w[j] = (1.0 - eta) * a_high.proto_w[j] + eta * proto_w_low[i];
+                            a_high.proto_w[j] =
+                                (1.0 - eta) * a_high.proto_w[j] + eta * proto_w_low[i];
                             found = true;
                             break;
                         }
@@ -1533,7 +1702,8 @@ impl AnchorBank {
 
             // Blend EMA fields
             a_high.v_ema_abs_td = (1.0 - w_low) * a_high.v_ema_abs_td + w_low * abs_td_low;
-            a_high.proto_entropy_ema = (1.0 - w_low) * a_high.proto_entropy_ema + w_low * entropy_low;
+            a_high.proto_entropy_ema =
+                (1.0 - w_low) * a_high.proto_entropy_ema + w_low * entropy_low;
 
             // Phase 1.9b: Stability handling for merged anchor
             if low_stable && high_stable {
@@ -1724,8 +1894,12 @@ impl AnchorBank {
     /// Print diagnostics.
     pub fn print_stats(&self) {
         println!("AnchorBank Stats (Phase 1.6):");
-        println!("  anchors_used={} / {} ({:.1}% utilization)",
-            self.anchors_used(), MAX_ANCHORS, self.anchor_utilization() * 100.0);
+        println!(
+            "  anchors_used={} / {} ({:.1}% utilization)",
+            self.anchors_used(),
+            MAX_ANCHORS,
+            self.anchor_utilization() * 100.0
+        );
         println!("  anchor_creates={}", self.anchor_creates);
         println!("  anchor_evictions={}", self.anchor_evictions);
         println!("  anchor_merges={}", self.anchor_merges);
@@ -1823,17 +1997,13 @@ impl AnchorBank {
 
     /// Average proto_support across active anchors.
     pub fn avg_proto_support(&self) -> f64 {
-        let alive_anchors: Vec<&Anchor> = self.anchors.values()
-            .filter(|a| a.alive)
-            .collect();
+        let alive_anchors: Vec<&Anchor> = self.anchors.values().filter(|a| a.alive).collect();
 
         if alive_anchors.is_empty() {
             return 0.0;
         }
 
-        let total_support: u32 = alive_anchors.iter()
-            .map(|a| a.proto_support)
-            .sum();
+        let total_support: u32 = alive_anchors.iter().map(|a| a.proto_support).sum();
 
         total_support as f64 / alive_anchors.len() as f64
     }
@@ -1851,7 +2021,9 @@ impl AnchorBank {
     /// Returns (avg_entropy, count_of_anchors_used).
     pub fn proto_entropy_top_n(&self, n: usize, proto_m: usize) -> (f32, usize) {
         // Collect alive anchors with their usage counts
-        let mut anchors_by_usage: Vec<(&Anchor, u32)> = self.anchors.values()
+        let mut anchors_by_usage: Vec<(&Anchor, u32)> = self
+            .anchors
+            .values()
             .filter(|a| a.alive && a.proto_support > 0)
             .map(|a| (a, a.usage_count))
             .collect();
@@ -1860,18 +2032,13 @@ impl AnchorBank {
         anchors_by_usage.sort_by(|a, b| b.1.cmp(&a.1));
 
         // Take top N
-        let top_n: Vec<&Anchor> = anchors_by_usage.iter()
-            .take(n)
-            .map(|(a, _)| *a)
-            .collect();
+        let top_n: Vec<&Anchor> = anchors_by_usage.iter().take(n).map(|(a, _)| *a).collect();
 
         if top_n.is_empty() {
             return (0.0, 0);
         }
 
-        let total_entropy: f32 = top_n.iter()
-            .map(|a| a.entropy(proto_m))
-            .sum();
+        let total_entropy: f32 = top_n.iter().map(|a| a.entropy(proto_m)).sum();
 
         (total_entropy / top_n.len() as f32, top_n.len())
     }
@@ -1895,7 +2062,8 @@ impl AnchorBank {
             return 0.0;
         }
         let resolved_id = self.resolve_id(anchor_id);
-        self.anchors.get(&resolved_id)
+        self.anchors
+            .get(&resolved_id)
             .filter(|a| a.alive)
             .map(|a| a.v)
             .unwrap_or(0.0)
@@ -1917,7 +2085,9 @@ impl AnchorBank {
     /// Get value metrics: (total_v_updates, avg_v_used, avg_abs_td_used)
     /// Only counts anchors with at least one v_update.
     pub fn value_metrics(&self) -> (usize, f64, f64) {
-        let used_anchors: Vec<&Anchor> = self.anchors.values()
+        let used_anchors: Vec<&Anchor> = self
+            .anchors
+            .values()
             .filter(|a| a.alive && a.v_updates > 0)
             .collect();
 
@@ -1925,17 +2095,16 @@ impl AnchorBank {
             return (0, 0.0, 0.0);
         }
 
-        let total_updates: usize = used_anchors.iter()
-            .map(|a| a.v_updates as usize)
-            .sum();
+        let total_updates: usize = used_anchors.iter().map(|a| a.v_updates as usize).sum();
 
-        let avg_v: f64 = used_anchors.iter()
-            .map(|a| a.v as f64)
-            .sum::<f64>() / used_anchors.len() as f64;
+        let avg_v: f64 =
+            used_anchors.iter().map(|a| a.v as f64).sum::<f64>() / used_anchors.len() as f64;
 
-        let avg_abs_td: f64 = used_anchors.iter()
+        let avg_abs_td: f64 = used_anchors
+            .iter()
             .map(|a| a.v_ema_abs_td as f64)
-            .sum::<f64>() / used_anchors.len() as f64;
+            .sum::<f64>()
+            / used_anchors.len() as f64;
 
         (total_updates, avg_v, avg_abs_td)
     }
@@ -1943,15 +2112,22 @@ impl AnchorBank {
     /// Get top-N anchors by value.
     /// Returns Vec of (anchor_id, v, entropy_ema, proto_support, v_updates).
     pub fn top_n_by_value(&self, n: usize, proto_m: usize) -> Vec<(u16, f32, f32, u32, u32)> {
-        let mut anchors_with_v: Vec<(u16, &Anchor)> = self.anchors.iter()
+        let mut anchors_with_v: Vec<(u16, &Anchor)> = self
+            .anchors
+            .iter()
             .filter(|(_, a)| a.alive && a.v_updates > 0)
             .map(|(&id, a)| (id, a))
             .collect();
 
         // Sort by value descending
-        anchors_with_v.sort_by(|a, b| b.1.v.partial_cmp(&a.1.v).unwrap_or(std::cmp::Ordering::Equal));
+        anchors_with_v.sort_by(|a, b| {
+            b.1.v
+                .partial_cmp(&a.1.v)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
 
-        anchors_with_v.iter()
+        anchors_with_v
+            .iter()
             .take(n)
             .map(|(id, a)| (*id, a.v, a.entropy(proto_m), a.proto_support, a.v_updates))
             .collect()
@@ -1982,11 +2158,8 @@ impl AnchorBank {
 
         for anchor in self.anchors.values_mut() {
             if anchor.alive {
-                let (stable, entered, dropped) = anchor.check_stability_hysteresis(
-                    current_tick,
-                    config,
-                    proto_m,
-                );
+                let (stable, entered, dropped) =
+                    anchor.check_stability_hysteresis(current_tick, config, proto_m);
                 if stable {
                     new_stable_count += 1;
                 }
@@ -2057,10 +2230,12 @@ impl AnchorBank {
         let proto_score = info.proto_score;
         if self.top_blocked.len() < 5 {
             self.top_blocked.push(info);
-            self.top_blocked.sort_by(|a, b| b.proto_score.partial_cmp(&a.proto_score).unwrap());
+            self.top_blocked
+                .sort_by(|a, b| b.proto_score.partial_cmp(&a.proto_score).unwrap());
         } else if proto_score > self.top_blocked[4].proto_score {
             self.top_blocked[4] = info;
-            self.top_blocked.sort_by(|a, b| b.proto_score.partial_cmp(&a.proto_score).unwrap());
+            self.top_blocked
+                .sort_by(|a, b| b.proto_score.partial_cmp(&a.proto_score).unwrap());
         }
     }
 
@@ -2145,7 +2320,9 @@ impl AnchorBank {
     /// Phase 1.9e: Get averages for stable anchors (support, entropy, |TD|).
     /// Returns (avg_support, avg_entropy, avg_abs_td, count).
     pub fn stable_anchor_averages(&self) -> (f64, f64, f64, usize) {
-        let stable_anchors: Vec<_> = self.anchors.values()
+        let stable_anchors: Vec<_> = self
+            .anchors
+            .values()
             .filter(|a| a.alive && a.stable)
             .collect();
 
@@ -2166,9 +2343,68 @@ impl AnchorBank {
         )
     }
 
+    /// Phase 1.9f: Check if a specific anchor is stable.
+    pub fn is_anchor_stable(&self, anchor_id: u16) -> bool {
+        self.anchors
+            .get(&anchor_id)
+            .map(|a| a.alive && a.stable)
+            .unwrap_or(false)
+    }
+
+    /// Phase 1.9f: Comprehensive stable anchor statistics.
+    /// Returns StableAnchorStats with count, mass, percentiles, and averages.
+    pub fn stable_anchor_stats(&self) -> StableAnchorStats {
+        let mut supports: Vec<u32> = self
+            .anchors
+            .values()
+            .filter(|a| a.alive && a.stable)
+            .map(|a| a.proto_support)
+            .collect();
+
+        let count = supports.len();
+        if count == 0 {
+            return StableAnchorStats::default();
+        }
+
+        // Sort for percentiles
+        supports.sort_unstable();
+
+        let mass_sum: u64 = supports.iter().map(|&s| s as u64).sum();
+        let mass_mean = mass_sum as f64 / count as f64;
+
+        // Percentiles (0-indexed)
+        let p50_idx = count / 2;
+        let p90_idx = (count * 9) / 10;
+        let support_p50 = supports.get(p50_idx).copied().unwrap_or(0);
+        let support_p90 = supports.get(p90_idx).copied().unwrap_or(0);
+
+        // Compute means for v, entropy, abs_td
+        let stable_anchors: Vec<_> = self
+            .anchors
+            .values()
+            .filter(|a| a.alive && a.stable)
+            .collect();
+
+        let value_sum: f32 = stable_anchors.iter().map(|a| a.v).sum();
+        let entropy_sum: f32 = stable_anchors.iter().map(|a| a.proto_entropy_ema).sum();
+        let td_sum: f32 = stable_anchors.iter().map(|a| a.v_ema_abs_td).sum();
+
+        StableAnchorStats {
+            count,
+            mass_sum,
+            mass_mean,
+            support_p50,
+            support_p90,
+            value_mean: value_sum as f64 / count as f64,
+            entropy_mean: entropy_sum as f64 / count as f64,
+            td_mean: td_sum as f64 / count as f64,
+        }
+    }
+
     /// Get total wins across all anchors.
     pub fn total_wins(&self) -> u32 {
-        self.anchors.values()
+        self.anchors
+            .values()
             .filter(|a| a.alive)
             .map(|a| a.wins)
             .sum()
@@ -2177,7 +2413,9 @@ impl AnchorBank {
     /// Get top-N anchors by wins.
     /// Returns Vec of (anchor_id, wins, v, stable).
     pub fn top_n_by_wins(&self, n: usize) -> Vec<(u16, u32, f32, bool)> {
-        let mut anchors_with_wins: Vec<(u16, &Anchor)> = self.anchors.iter()
+        let mut anchors_with_wins: Vec<(u16, &Anchor)> = self
+            .anchors
+            .iter()
             .filter(|(_, a)| a.alive)
             .map(|(&id, a)| (id, a))
             .collect();
@@ -2185,7 +2423,8 @@ impl AnchorBank {
         // Sort by wins descending
         anchors_with_wins.sort_by(|a, b| b.1.wins.cmp(&a.1.wins));
 
-        anchors_with_wins.iter()
+        anchors_with_wins
+            .iter()
             .take(n)
             .map(|(id, a)| (*id, a.wins, a.v, a.stable))
             .collect()
@@ -2205,7 +2444,10 @@ pub struct MemoryKey {
 
 impl MemoryKey {
     pub fn new(anchor_id: u16, learned_mask: u64) -> Self {
-        MemoryKey { anchor_id, learned_mask }
+        MemoryKey {
+            anchor_id,
+            learned_mask,
+        }
     }
 }
 
@@ -2337,7 +2579,10 @@ impl KeyedMemoryStore {
         if key.anchor_id == 0xFFFF {
             return;
         }
-        self.entries.entry(key).or_insert_with(LabelStats::new).observe(label);
+        self.entries
+            .entry(key)
+            .or_insert_with(LabelStats::new)
+            .observe(label);
         self.total_stores += 1;
     }
 
@@ -2377,7 +2622,8 @@ impl KeyedMemoryStore {
     /// Moves all entries with old_anchor_id to new_anchor_id.
     pub fn remap_anchor(&mut self, old_id: u16, new_id: u16) {
         // Collect keys to remap
-        let keys_to_remap: Vec<MemoryKey> = self.entries
+        let keys_to_remap: Vec<MemoryKey> = self
+            .entries
             .keys()
             .filter(|k| k.anchor_id == old_id)
             .copied()
@@ -2510,24 +2756,42 @@ impl KeyedMemoryMetrics {
     }
 
     pub fn coverage_pos(&self) -> f64 {
-        if self.pos_queries == 0 { 0.0 } else { self.pos_answered as f64 / self.pos_queries as f64 }
+        if self.pos_queries == 0 {
+            0.0
+        } else {
+            self.pos_answered as f64 / self.pos_queries as f64
+        }
     }
 
     pub fn accuracy_pos(&self) -> f64 {
-        if self.pos_answered == 0 { 0.0 } else { self.pos_correct as f64 / self.pos_answered as f64 }
+        if self.pos_answered == 0 {
+            0.0
+        } else {
+            self.pos_correct as f64 / self.pos_answered as f64
+        }
     }
 
     pub fn abstain_neg_rate(&self) -> f64 {
-        if self.neg_queries == 0 { 0.0 } else { self.neg_abstain as f64 / self.neg_queries as f64 }
+        if self.neg_queries == 0 {
+            0.0
+        } else {
+            self.neg_abstain as f64 / self.neg_queries as f64
+        }
     }
 
     pub fn false_positive_rate(&self) -> f64 {
-        if self.neg_queries == 0 { 0.0 } else { self.neg_false_positive as f64 / self.neg_queries as f64 }
+        if self.neg_queries == 0 {
+            0.0
+        } else {
+            self.neg_false_positive as f64 / self.neg_queries as f64
+        }
     }
 
     pub fn selective_accuracy(&self) -> f64 {
         let total = self.pos_queries + self.neg_queries;
-        if total == 0 { return 0.0; }
+        if total == 0 {
+            return 0.0;
+        }
         let correct = self.pos_correct + self.neg_abstain;
         correct as f64 / total as f64
     }
@@ -2536,31 +2800,56 @@ impl KeyedMemoryMetrics {
         println!("Keyed Memory Metrics (Phase 1.6):");
         println!();
         println!("  Positive Queries:");
-        println!("    total={}, answered={}, correct={}, wrong={}, abstain={}",
-            self.pos_queries, self.pos_answered, self.pos_correct, self.pos_wrong, self.pos_abstain);
-        println!("    coverage_pos={:.1}%, accuracy_pos={:.1}%",
-            self.coverage_pos() * 100.0, self.accuracy_pos() * 100.0);
+        println!(
+            "    total={}, answered={}, correct={}, wrong={}, abstain={}",
+            self.pos_queries, self.pos_answered, self.pos_correct, self.pos_wrong, self.pos_abstain
+        );
+        println!(
+            "    coverage_pos={:.1}%, accuracy_pos={:.1}%",
+            self.coverage_pos() * 100.0,
+            self.accuracy_pos() * 100.0
+        );
         println!();
         println!("  Negative Queries:");
-        println!("    total={}, abstain={}, false_positive={}",
-            self.neg_queries, self.neg_abstain, self.neg_false_positive);
-        println!("    abstain_neg={:.1}%, false_positive_rate={:.1}%",
-            self.abstain_neg_rate() * 100.0, self.false_positive_rate() * 100.0);
+        println!(
+            "    total={}, abstain={}, false_positive={}",
+            self.neg_queries, self.neg_abstain, self.neg_false_positive
+        );
+        println!(
+            "    abstain_neg={:.1}%, false_positive_rate={:.1}%",
+            self.abstain_neg_rate() * 100.0,
+            self.false_positive_rate() * 100.0
+        );
         println!();
         println!("  Overall:");
-        println!("    selective_accuracy={:.1}%", self.selective_accuracy() * 100.0);
+        println!(
+            "    selective_accuracy={:.1}%",
+            self.selective_accuracy() * 100.0
+        );
         println!();
         println!("  Abstain Breakdown:");
         let total_abstain = self.pos_abstain + self.neg_abstain;
         if total_abstain > 0 {
-            println!("    no_entry={} ({:.1}%)", self.abstain_no_entry,
-                self.abstain_no_entry as f64 / total_abstain as f64 * 100.0);
-            println!("    low_confidence={} ({:.1}%)", self.abstain_low_conf,
-                self.abstain_low_conf as f64 / total_abstain as f64 * 100.0);
-            println!("    insufficient_margin={} ({:.1}%)", self.abstain_margin,
-                self.abstain_margin as f64 / total_abstain as f64 * 100.0);
-            println!("    no_anchor (gate blocked)={} ({:.1}%)", self.abstain_no_anchor,
-                self.abstain_no_anchor as f64 / total_abstain as f64 * 100.0);
+            println!(
+                "    no_entry={} ({:.1}%)",
+                self.abstain_no_entry,
+                self.abstain_no_entry as f64 / total_abstain as f64 * 100.0
+            );
+            println!(
+                "    low_confidence={} ({:.1}%)",
+                self.abstain_low_conf,
+                self.abstain_low_conf as f64 / total_abstain as f64 * 100.0
+            );
+            println!(
+                "    insufficient_margin={} ({:.1}%)",
+                self.abstain_margin,
+                self.abstain_margin as f64 / total_abstain as f64 * 100.0
+            );
+            println!(
+                "    no_anchor (gate blocked)={} ({:.1}%)",
+                self.abstain_no_anchor,
+                self.abstain_no_anchor as f64 / total_abstain as f64 * 100.0
+            );
         }
     }
 }

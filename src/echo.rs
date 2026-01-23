@@ -20,7 +20,7 @@ pub fn wrap_to_pi(angle: f64) -> f64 {
 /// Quantize phase angle to context bin.
 pub fn quantize_phase_to_ctx(phi: f64, num_ctx: usize) -> usize {
     // phi in [-π, +π] -> bin in [0, num_ctx-1]
-    let normalized = (phi + PI) / (2.0 * PI);  // [0, 1)
+    let normalized = (phi + PI) / (2.0 * PI); // [0, 1)
     let bin = (normalized * num_ctx as f64).floor() as usize;
     bin.min(num_ctx - 1)
 }
@@ -36,9 +36,7 @@ pub struct Edge {
 impl Edge {
     /// Create a new edge with random initial phases per context channel.
     pub fn new_random(to: usize, num_ctx: usize, rng: &mut Rng) -> Self {
-        let phase_by_ctx: Vec<f64> = (0..num_ctx)
-            .map(|_| rng.next_range(-PI, PI))
-            .collect();
+        let phase_by_ctx: Vec<f64> = (0..num_ctx).map(|_| rng.next_range(-PI, PI)).collect();
         Edge { to, phase_by_ctx }
     }
 
@@ -114,7 +112,7 @@ impl Node {
         if best_val >= aff_margin && (best_val - second_best) >= aff_margin {
             Some(best_ctx)
         } else {
-            None  // Not yet specialized
+            None // Not yet specialized
         }
     }
 
@@ -224,7 +222,9 @@ impl EchoChamber {
 
     pub fn add_edge_random(&mut self, from: usize, to: usize, rng: &mut Rng) {
         let num_ctx = self.config.num_ctx;
-        self.nodes[from].edges.push(Edge::new_random(to, num_ctx, rng));
+        self.nodes[from]
+            .edges
+            .push(Edge::new_random(to, num_ctx, rng));
     }
 
     pub fn inject(&mut self, node_id: usize, signal: Complex) {
@@ -470,9 +470,15 @@ impl EchoChamber {
             .collect();
 
         let num_ctx = chamber.config.num_ctx;
-        chamber.nodes[0].edges.push(Edge::new_fixed(1, num_ctx, 0.0));
-        chamber.nodes[1].edges.push(Edge::new_fixed(2, num_ctx, 0.0));
-        chamber.nodes[0].edges.push(Edge::new_fixed(3, num_ctx, 0.0));
+        chamber.nodes[0]
+            .edges
+            .push(Edge::new_fixed(1, num_ctx, 0.0));
+        chamber.nodes[1]
+            .edges
+            .push(Edge::new_fixed(2, num_ctx, 0.0));
+        chamber.nodes[0]
+            .edges
+            .push(Edge::new_fixed(3, num_ctx, 0.0));
         chamber.nodes[3].edges.push(Edge::new_fixed(2, num_ctx, PI));
         chamber
     }
@@ -489,5 +495,16 @@ impl EchoChamber {
             }
         }
         chamber
+    }
+
+    /// Dampen node buffers by a factor in (0, 1].
+    /// Used by Reset mode to reduce dominant node amplitudes.
+    pub fn dampen_nodes(&mut self, node_ids: &[usize], factor: f32) {
+        let factor = factor.clamp(0.0, 1.0) as f64;
+        for &node_id in node_ids {
+            if node_id < self.nodes.len() {
+                self.nodes[node_id].buffer *= factor;
+            }
+        }
     }
 }

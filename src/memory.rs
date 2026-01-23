@@ -210,30 +210,63 @@ impl MemoryMetrics {
     }
 
     pub fn coverage(&self) -> f64 {
-        if self.attempts == 0 { 0.0 } else { self.hits as f64 / self.attempts as f64 }
+        if self.attempts == 0 {
+            0.0
+        } else {
+            self.hits as f64 / self.attempts as f64
+        }
     }
 
     pub fn accuracy(&self) -> f64 {
-        if self.hits == 0 { 0.0 } else { self.correct as f64 / self.hits as f64 }
+        if self.hits == 0 {
+            0.0
+        } else {
+            self.correct as f64 / self.hits as f64
+        }
     }
 
     pub fn false_rate(&self) -> f64 {
-        if self.hits == 0 { 0.0 } else { self.false_recalls as f64 / self.hits as f64 }
+        if self.hits == 0 {
+            0.0
+        } else {
+            self.false_recalls as f64 / self.hits as f64
+        }
     }
 
     pub fn avg_hamming(&self) -> f64 {
-        if self.hits == 0 { 0.0 } else { self.hamming_sum as f64 / self.hits as f64 }
+        if self.hits == 0 {
+            0.0
+        } else {
+            self.hamming_sum as f64 / self.hits as f64
+        }
     }
 
     pub fn avg_age(&self) -> f64 {
-        if self.hits == 0 { 0.0 } else { self.age_sum as f64 / self.hits as f64 }
+        if self.hits == 0 {
+            0.0
+        } else {
+            self.age_sum as f64 / self.hits as f64
+        }
     }
 
     pub fn print(&self) {
         println!("Memory Recall Metrics:");
-        println!("  attempts={}, hits={} (coverage={:.1}%)", self.attempts, self.hits, self.coverage() * 100.0);
-        println!("  acc@1={:.1}%, false_recall={:.1}%", self.accuracy() * 100.0, self.false_rate() * 100.0);
-        println!("  avg_hamming={:.2}, avg_age={:.1}", self.avg_hamming(), self.avg_age());
+        println!(
+            "  attempts={}, hits={} (coverage={:.1}%)",
+            self.attempts,
+            self.hits,
+            self.coverage() * 100.0
+        );
+        println!(
+            "  acc@1={:.1}%, false_recall={:.1}%",
+            self.accuracy() * 100.0,
+            self.false_rate() * 100.0
+        );
+        println!(
+            "  avg_hamming={:.2}, avg_age={:.1}",
+            self.avg_hamming(),
+            self.avg_age()
+        );
         println!("  stores={}", self.stores);
     }
 }
@@ -272,14 +305,21 @@ impl LabelMemoryStore {
     }
 
     pub fn from_config(config: &Config) -> Self {
-        Self::new(config.label_memory_max_entries, config.label_memory_max_hamming)
+        Self::new(
+            config.label_memory_max_entries,
+            config.label_memory_max_hamming,
+        )
     }
 
     pub fn store(&mut self, label: u16, tick: u64, signature: u64) {
         if self.entries.len() >= self.max_entries {
             self.entries.remove(0);
         }
-        self.entries.push(LabelEntry { label, stored_tick: tick, signature });
+        self.entries.push(LabelEntry {
+            label,
+            stored_tick: tick,
+            signature,
+        });
     }
 
     pub fn recall(&self, current_tick: u64, signature: u64) -> Option<LabelRecallResult> {
@@ -298,15 +338,23 @@ impl LabelMemoryStore {
             if hamming_dist < best_hamming {
                 best_hamming = hamming_dist;
                 let age = current_tick.saturating_sub(entry.stored_tick);
-                best = Some(LabelRecallResult { label: entry.label, hamming_dist, age });
+                best = Some(LabelRecallResult {
+                    label: entry.label,
+                    hamming_dist,
+                    age,
+                });
             }
         }
         best
     }
 
-    pub fn len(&self) -> usize { self.entries.len() }
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
 
-    pub fn clear(&mut self) { self.entries.clear(); }
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
 
     pub fn entries_per_label(&self, top_n: usize) -> Vec<(u16, usize)> {
         let mut counts: std::collections::HashMap<u16, usize> = std::collections::HashMap::new();
@@ -335,15 +383,24 @@ pub struct LabelBindingMetrics {
 impl LabelBindingMetrics {
     pub fn new() -> Self {
         LabelBindingMetrics {
-            episodes: 0, binds_done: 0, recall_queries: 0, recall_hits: 0,
-            recall_correct: 0, hamming_sum: 0, age_sum: 0,
+            episodes: 0,
+            binds_done: 0,
+            recall_queries: 0,
+            recall_hits: 0,
+            recall_correct: 0,
+            hamming_sum: 0,
+            age_sum: 0,
             label_hits: std::collections::HashMap::new(),
             label_correct: std::collections::HashMap::new(),
         }
     }
 
-    pub fn record_episode(&mut self) { self.episodes += 1; }
-    pub fn record_bind(&mut self) { self.binds_done += 1; }
+    pub fn record_episode(&mut self) {
+        self.episodes += 1;
+    }
+    pub fn record_bind(&mut self) {
+        self.binds_done += 1;
+    }
 
     pub fn record_recall_query(&mut self, result: Option<&LabelRecallResult>, true_label: u16) {
         self.recall_queries += 1;
@@ -360,23 +417,45 @@ impl LabelBindingMetrics {
     }
 
     pub fn coverage(&self) -> f64 {
-        if self.recall_queries == 0 { 0.0 } else { self.recall_hits as f64 / self.recall_queries as f64 }
+        if self.recall_queries == 0 {
+            0.0
+        } else {
+            self.recall_hits as f64 / self.recall_queries as f64
+        }
     }
     pub fn accuracy(&self) -> f64 {
-        if self.recall_hits == 0 { 0.0 } else { self.recall_correct as f64 / self.recall_hits as f64 }
+        if self.recall_hits == 0 {
+            0.0
+        } else {
+            self.recall_correct as f64 / self.recall_hits as f64
+        }
     }
     pub fn false_rate(&self) -> f64 {
-        if self.recall_hits == 0 { 0.0 } else { (self.recall_hits - self.recall_correct) as f64 / self.recall_hits as f64 }
+        if self.recall_hits == 0 {
+            0.0
+        } else {
+            (self.recall_hits - self.recall_correct) as f64 / self.recall_hits as f64
+        }
     }
     pub fn avg_hamming(&self) -> f64 {
-        if self.recall_hits == 0 { 0.0 } else { self.hamming_sum as f64 / self.recall_hits as f64 }
+        if self.recall_hits == 0 {
+            0.0
+        } else {
+            self.hamming_sum as f64 / self.recall_hits as f64
+        }
     }
     pub fn avg_age(&self) -> f64 {
-        if self.recall_hits == 0 { 0.0 } else { self.age_sum as f64 / self.recall_hits as f64 }
+        if self.recall_hits == 0 {
+            0.0
+        } else {
+            self.age_sum as f64 / self.recall_hits as f64
+        }
     }
 
     pub fn top_labels_by_hits(&self, n: usize) -> Vec<(u16, usize, usize)> {
-        let mut result: Vec<(u16, usize, usize)> = self.label_hits.iter()
+        let mut result: Vec<(u16, usize, usize)> = self
+            .label_hits
+            .iter()
             .map(|(&label, &hits)| (label, hits, *self.label_correct.get(&label).unwrap_or(&0)))
             .collect();
         result.sort_by(|a, b| b.1.cmp(&a.1));
@@ -386,17 +465,36 @@ impl LabelBindingMetrics {
 
     pub fn print(&self) {
         println!("Label Binding Metrics:");
-        println!("  episodes={}, binds_done={}", self.episodes, self.binds_done);
-        println!("  recall_queries={}, recall_hits={} (coverage={:.1}%)",
-            self.recall_queries, self.recall_hits, self.coverage() * 100.0);
-        println!("  recall_correct={}, accuracy@1={:.1}%, false_recall={:.1}%",
-            self.recall_correct, self.accuracy() * 100.0, self.false_rate() * 100.0);
-        println!("  avg_hamming={:.2}, avg_age={:.1} ticks", self.avg_hamming(), self.avg_age());
+        println!(
+            "  episodes={}, binds_done={}",
+            self.episodes, self.binds_done
+        );
+        println!(
+            "  recall_queries={}, recall_hits={} (coverage={:.1}%)",
+            self.recall_queries,
+            self.recall_hits,
+            self.coverage() * 100.0
+        );
+        println!(
+            "  recall_correct={}, accuracy@1={:.1}%, false_recall={:.1}%",
+            self.recall_correct,
+            self.accuracy() * 100.0,
+            self.false_rate() * 100.0
+        );
+        println!(
+            "  avg_hamming={:.2}, avg_age={:.1} ticks",
+            self.avg_hamming(),
+            self.avg_age()
+        );
         let top5 = self.top_labels_by_hits(5);
         if !top5.is_empty() {
             print!("  top 5 labels by hits: ");
             for (label, hits, correct) in &top5 {
-                let acc = if *hits > 0 { *correct as f64 / *hits as f64 * 100.0 } else { 0.0 };
+                let acc = if *hits > 0 {
+                    *correct as f64 / *hits as f64 * 100.0
+                } else {
+                    0.0
+                };
                 print!("L{}({},{:.0}%) ", label, hits, acc);
             }
             println!();
@@ -460,7 +558,8 @@ impl RollingWindow {
             }
             if let Some(old_ctx) = self.ctx_buffer[self.pos] {
                 if (old_ctx as usize) < self.num_ctx {
-                    self.ctx_counts[old_ctx as usize] = self.ctx_counts[old_ctx as usize].saturating_sub(1);
+                    self.ctx_counts[old_ctx as usize] =
+                        self.ctx_counts[old_ctx as usize].saturating_sub(1);
                 }
             }
         }
@@ -522,7 +621,8 @@ impl RollingWindow {
         }
 
         // Get top M nodes by frequency
-        let mut node_freqs: Vec<(usize, u32)> = self.node_counts
+        let mut node_freqs: Vec<(usize, u32)> = self
+            .node_counts
             .iter()
             .enumerate()
             .filter(|(_, &c)| c > 0)
@@ -590,7 +690,7 @@ impl CompetitiveSig {
         match (self.ctx_hat, other.ctx_hat) {
             (Some(a), Some(b)) if a == b => Some((self.mask ^ other.mask).count_ones()),
             (None, _) | (_, None) => Some((self.mask ^ other.mask).count_ones()), // allow if either unknown
-            _ => None, // ctx mismatch
+            _ => None,                                                            // ctx mismatch
         }
     }
 }
@@ -611,7 +711,7 @@ pub struct GlobalLabelEntry {
 /// Recall decision: either a label or abstain (unknown).
 #[derive(Clone, Debug, PartialEq)]
 pub enum RecallDecision {
-    Label(u16, u32),  // (label, hamming_dist)
+    Label(u16, u32), // (label, hamming_dist)
     Unknown,
 }
 
@@ -683,11 +783,22 @@ impl GlobalLabelMemoryStore {
 
     /// Store with simple u64 mask (backward compatibility).
     pub fn store(&mut self, label: u16, tick: u64, signature: u64) {
-        self.store_competitive(label, tick, CompetitiveSig { ctx_hat: None, mask: signature });
+        self.store_competitive(
+            label,
+            tick,
+            CompetitiveSig {
+                ctx_hat: None,
+                mask: signature,
+            },
+        );
     }
 
     /// Recall with ABSTAIN based on margin, ambiguity gating, and ctx filtering.
-    pub fn recall_competitive(&mut self, current_tick: u64, query_sig: &CompetitiveSig) -> GlobalRecallResult {
+    pub fn recall_competitive(
+        &mut self,
+        current_tick: u64,
+        query_sig: &CompetitiveSig,
+    ) -> GlobalRecallResult {
         if self.entries.is_empty() {
             return GlobalRecallResult {
                 decision: RecallDecision::Unknown,
@@ -718,7 +829,9 @@ impl GlobalLabelMemoryStore {
 
         // Gate 1: No candidates after ctx filter
         if candidates.is_empty() {
-            let reason = if total_ctx_matched == 0 && self.entries.iter().any(|e| e.signature.ctx_hat.is_some()) {
+            let reason = if total_ctx_matched == 0
+                && self.entries.iter().any(|e| e.signature.ctx_hat.is_some())
+            {
                 AbstainReason::CtxMismatch
             } else {
                 AbstainReason::NoCandidates
@@ -738,7 +851,11 @@ impl GlobalLabelMemoryStore {
         if candidates_in_radius > MAX_CANDIDATES {
             candidates.sort_by_key(|c| c.1);
             let best_dist = candidates[0].1;
-            let second_dist = if candidates.len() > 1 { Some(candidates[1].1) } else { None };
+            let second_dist = if candidates.len() > 1 {
+                Some(candidates[1].1)
+            } else {
+                None
+            };
             let margin = second_dist.map(|sd| sd.saturating_sub(best_dist));
 
             return GlobalRecallResult {
@@ -756,7 +873,11 @@ impl GlobalLabelMemoryStore {
         candidates.sort_by_key(|c| c.1);
 
         let (best_idx, best_dist, best_label) = candidates[0];
-        let second_dist = if candidates.len() > 1 { Some(candidates[1].1) } else { None };
+        let second_dist = if candidates.len() > 1 {
+            Some(candidates[1].1)
+        } else {
+            None
+        };
 
         // Compute margin
         let margin = second_dist.map(|sd| sd.saturating_sub(best_dist));
@@ -791,12 +912,24 @@ impl GlobalLabelMemoryStore {
 
     /// Backward compatible recall (without competitive sig).
     pub fn recall_or_abstain(&mut self, current_tick: u64, signature: u64) -> GlobalRecallResult {
-        self.recall_competitive(current_tick, &CompetitiveSig { ctx_hat: None, mask: signature })
+        self.recall_competitive(
+            current_tick,
+            &CompetitiveSig {
+                ctx_hat: None,
+                mask: signature,
+            },
+        )
     }
 
-    pub fn len(&self) -> usize { self.entries.len() }
-    pub fn evictions(&self) -> usize { self.evictions }
-    pub fn hit_updates(&self) -> usize { self.hit_updates }
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+    pub fn evictions(&self) -> usize {
+        self.evictions
+    }
+    pub fn hit_updates(&self) -> usize {
+        self.hit_updates
+    }
 
     pub fn entries_per_label(&self, top_n: usize) -> Vec<(u16, usize)> {
         let mut counts: std::collections::HashMap<u16, usize> = std::collections::HashMap::new();
@@ -973,30 +1106,52 @@ impl GlobalLabelMetrics {
 
     // Positive metrics
     pub fn coverage_pos(&self) -> f64 {
-        if self.pos_queries == 0 { 0.0 } else { self.pos_non_abstain as f64 / self.pos_queries as f64 }
+        if self.pos_queries == 0 {
+            0.0
+        } else {
+            self.pos_non_abstain as f64 / self.pos_queries as f64
+        }
     }
 
     pub fn accuracy_pos(&self) -> f64 {
-        if self.pos_non_abstain == 0 { 0.0 } else { self.pos_correct as f64 / self.pos_non_abstain as f64 }
+        if self.pos_non_abstain == 0 {
+            0.0
+        } else {
+            self.pos_correct as f64 / self.pos_non_abstain as f64
+        }
     }
 
     pub fn abstain_pos_rate(&self) -> f64 {
-        if self.pos_queries == 0 { 0.0 } else { self.pos_abstain as f64 / self.pos_queries as f64 }
+        if self.pos_queries == 0 {
+            0.0
+        } else {
+            self.pos_abstain as f64 / self.pos_queries as f64
+        }
     }
 
     // Negative metrics
     pub fn abstain_neg_rate(&self) -> f64 {
-        if self.neg_queries == 0 { 0.0 } else { self.neg_abstain as f64 / self.neg_queries as f64 }
+        if self.neg_queries == 0 {
+            0.0
+        } else {
+            self.neg_abstain as f64 / self.neg_queries as f64
+        }
     }
 
     pub fn false_positive_rate(&self) -> f64 {
-        if self.neg_queries == 0 { 0.0 } else { self.neg_false_positive as f64 / self.neg_queries as f64 }
+        if self.neg_queries == 0 {
+            0.0
+        } else {
+            self.neg_false_positive as f64 / self.neg_queries as f64
+        }
     }
 
     // Overall selective accuracy
     pub fn selective_accuracy(&self) -> f64 {
         let total = self.pos_queries + self.neg_queries;
-        if total == 0 { return 0.0; }
+        if total == 0 {
+            return 0.0;
+        }
         let correct = self.pos_correct + self.neg_abstain;
         correct as f64 / total as f64
     }
@@ -1004,90 +1159,212 @@ impl GlobalLabelMetrics {
     // Collision metrics
     pub fn avg_candidates(&self) -> f64 {
         let total = self.pos_queries + self.neg_queries;
-        if total == 0 { 0.0 } else { self.total_candidates_sum as f64 / total as f64 }
+        if total == 0 {
+            0.0
+        } else {
+            self.total_candidates_sum as f64 / total as f64
+        }
     }
 
     pub fn avg_ctx_matched(&self) -> f64 {
         let total = self.pos_queries + self.neg_queries;
-        if total == 0 { 0.0 } else { self.total_ctx_matched_sum as f64 / total as f64 }
+        if total == 0 {
+            0.0
+        } else {
+            self.total_ctx_matched_sum as f64 / total as f64
+        }
     }
 
     pub fn pct_2plus_candidates(&self) -> f64 {
         let total = self.pos_queries + self.neg_queries;
-        if total == 0 { 0.0 } else { self.queries_with_2plus_candidates as f64 / total as f64 }
+        if total == 0 {
+            0.0
+        } else {
+            self.queries_with_2plus_candidates as f64 / total as f64
+        }
     }
 
     pub fn avg_margin(&self) -> f64 {
-        if self.margin_count == 0 { 0.0 } else { self.margin_sum as f64 / self.margin_count as f64 }
+        if self.margin_count == 0 {
+            0.0
+        } else {
+            self.margin_sum as f64 / self.margin_count as f64
+        }
     }
 
     pub fn avg_hamming(&self) -> f64 {
-        if self.hamming_count == 0 { 0.0 } else { self.hamming_sum as f64 / self.hamming_count as f64 }
+        if self.hamming_count == 0 {
+            0.0
+        } else {
+            self.hamming_sum as f64 / self.hamming_count as f64
+        }
     }
 
     // Abstain breakdown percentages
     pub fn pct_abstain_margin(&self) -> f64 {
         let total_abstain = self.pos_abstain + self.neg_abstain;
-        if total_abstain == 0 { 0.0 } else { self.abstain_margin as f64 / total_abstain as f64 }
+        if total_abstain == 0 {
+            0.0
+        } else {
+            self.abstain_margin as f64 / total_abstain as f64
+        }
     }
 
     pub fn pct_abstain_too_many(&self) -> f64 {
         let total_abstain = self.pos_abstain + self.neg_abstain;
-        if total_abstain == 0 { 0.0 } else { self.abstain_too_many as f64 / total_abstain as f64 }
+        if total_abstain == 0 {
+            0.0
+        } else {
+            self.abstain_too_many as f64 / total_abstain as f64
+        }
     }
 
     pub fn pct_abstain_no_candidates(&self) -> f64 {
         let total_abstain = self.pos_abstain + self.neg_abstain;
-        if total_abstain == 0 { 0.0 } else { self.abstain_no_candidates as f64 / total_abstain as f64 }
+        if total_abstain == 0 {
+            0.0
+        } else {
+            self.abstain_no_candidates as f64 / total_abstain as f64
+        }
     }
 
     pub fn pct_abstain_ctx_mismatch(&self) -> f64 {
         let total_abstain = self.pos_abstain + self.neg_abstain;
-        if total_abstain == 0 { 0.0 } else { self.abstain_ctx_mismatch as f64 / total_abstain as f64 }
+        if total_abstain == 0 {
+            0.0
+        } else {
+            self.abstain_ctx_mismatch as f64 / total_abstain as f64
+        }
     }
 
     pub fn print(&self) {
         println!("Competitive Label Binding Metrics (Phase 1.4c):");
         println!();
-        println!("  Window Params: W={}, M={}", self.window_size, self.window_top_m);
+        println!(
+            "  Window Params: W={}, M={}",
+            self.window_size, self.window_top_m
+        );
         println!();
         println!("  Positive Queries:");
-        println!("    total={}, non_abstain={}, correct={}, wrong={}, abstain={}",
-            self.pos_queries, self.pos_non_abstain, self.pos_correct, self.pos_wrong, self.pos_abstain);
-        println!("    coverage_pos={:.1}%, accuracy_pos={:.1}%, abstain_pos={:.1}%",
-            self.coverage_pos() * 100.0, self.accuracy_pos() * 100.0, self.abstain_pos_rate() * 100.0);
+        println!(
+            "    total={}, non_abstain={}, correct={}, wrong={}, abstain={}",
+            self.pos_queries,
+            self.pos_non_abstain,
+            self.pos_correct,
+            self.pos_wrong,
+            self.pos_abstain
+        );
+        println!(
+            "    coverage_pos={:.1}%, accuracy_pos={:.1}%, abstain_pos={:.1}%",
+            self.coverage_pos() * 100.0,
+            self.accuracy_pos() * 100.0,
+            self.abstain_pos_rate() * 100.0
+        );
         println!();
         println!("  Negative Queries:");
-        println!("    total={}, abstain={}, false_positive={}",
-            self.neg_queries, self.neg_abstain, self.neg_false_positive);
-        println!("    abstain_neg={:.1}%, false_positive_rate={:.1}%",
-            self.abstain_neg_rate() * 100.0, self.false_positive_rate() * 100.0);
+        println!(
+            "    total={}, abstain={}, false_positive={}",
+            self.neg_queries, self.neg_abstain, self.neg_false_positive
+        );
+        println!(
+            "    abstain_neg={:.1}%, false_positive_rate={:.1}%",
+            self.abstain_neg_rate() * 100.0,
+            self.false_positive_rate() * 100.0
+        );
         println!();
         println!("  Overall:");
-        println!("    selective_accuracy={:.1}%", self.selective_accuracy() * 100.0);
+        println!(
+            "    selective_accuracy={:.1}%",
+            self.selective_accuracy() * 100.0
+        );
         println!();
-        println!("  Abstain Breakdown (of total {} abstentions):",
-            self.pos_abstain + self.neg_abstain);
-        println!("    no_candidates={} ({:.1}%)", self.abstain_no_candidates, self.pct_abstain_no_candidates() * 100.0);
-        println!("    insufficient_margin={} ({:.1}%)", self.abstain_margin, self.pct_abstain_margin() * 100.0);
-        println!("    too_many_candidates={} ({:.1}%)", self.abstain_too_many, self.pct_abstain_too_many() * 100.0);
-        println!("    ctx_mismatch={} ({:.1}%)", self.abstain_ctx_mismatch, self.pct_abstain_ctx_mismatch() * 100.0);
+        println!(
+            "  Abstain Breakdown (of total {} abstentions):",
+            self.pos_abstain + self.neg_abstain
+        );
+        println!(
+            "    no_candidates={} ({:.1}%)",
+            self.abstain_no_candidates,
+            self.pct_abstain_no_candidates() * 100.0
+        );
+        println!(
+            "    insufficient_margin={} ({:.1}%)",
+            self.abstain_margin,
+            self.pct_abstain_margin() * 100.0
+        );
+        println!(
+            "    too_many_candidates={} ({:.1}%)",
+            self.abstain_too_many,
+            self.pct_abstain_too_many() * 100.0
+        );
+        println!(
+            "    ctx_mismatch={} ({:.1}%)",
+            self.abstain_ctx_mismatch,
+            self.pct_abstain_ctx_mismatch() * 100.0
+        );
         println!();
         println!("  Candidate Distribution (after ctx filter):");
         let total_q = self.pos_queries + self.neg_queries;
-        println!("    [0]: {} ({:.1}%)", self.bucket_0, if total_q > 0 { self.bucket_0 as f64 / total_q as f64 * 100.0 } else { 0.0 });
-        println!("    [1-2]: {} ({:.1}%)", self.bucket_1_2, if total_q > 0 { self.bucket_1_2 as f64 / total_q as f64 * 100.0 } else { 0.0 });
-        println!("    [3-5]: {} ({:.1}%)", self.bucket_3_5, if total_q > 0 { self.bucket_3_5 as f64 / total_q as f64 * 100.0 } else { 0.0 });
-        println!("    [6-8]: {} ({:.1}%)", self.bucket_6_8, if total_q > 0 { self.bucket_6_8 as f64 / total_q as f64 * 100.0 } else { 0.0 });
-        println!("    [>8]: {} ({:.1}%)", self.bucket_gt8, if total_q > 0 { self.bucket_gt8 as f64 / total_q as f64 * 100.0 } else { 0.0 });
+        println!(
+            "    [0]: {} ({:.1}%)",
+            self.bucket_0,
+            if total_q > 0 {
+                self.bucket_0 as f64 / total_q as f64 * 100.0
+            } else {
+                0.0
+            }
+        );
+        println!(
+            "    [1-2]: {} ({:.1}%)",
+            self.bucket_1_2,
+            if total_q > 0 {
+                self.bucket_1_2 as f64 / total_q as f64 * 100.0
+            } else {
+                0.0
+            }
+        );
+        println!(
+            "    [3-5]: {} ({:.1}%)",
+            self.bucket_3_5,
+            if total_q > 0 {
+                self.bucket_3_5 as f64 / total_q as f64 * 100.0
+            } else {
+                0.0
+            }
+        );
+        println!(
+            "    [6-8]: {} ({:.1}%)",
+            self.bucket_6_8,
+            if total_q > 0 {
+                self.bucket_6_8 as f64 / total_q as f64 * 100.0
+            } else {
+                0.0
+            }
+        );
+        println!(
+            "    [>8]: {} ({:.1}%)",
+            self.bucket_gt8,
+            if total_q > 0 {
+                self.bucket_gt8 as f64 / total_q as f64 * 100.0
+            } else {
+                0.0
+            }
+        );
         println!();
         println!("  Collision Metrics:");
         println!("    avg_candidates_in_radius={:.2}", self.avg_candidates());
         println!("    avg_ctx_matched={:.2}", self.avg_ctx_matched());
-        println!("    pct_queries_with_2+_candidates={:.1}%", self.pct_2plus_candidates() * 100.0);
+        println!(
+            "    pct_queries_with_2+_candidates={:.1}%",
+            self.pct_2plus_candidates() * 100.0
+        );
         if self.margin_count > 0 {
-            println!("    avg_margin={:.2}, min={}, max={}",
-                self.avg_margin(), self.margin_min_seen, self.margin_max_seen);
+            println!(
+                "    avg_margin={:.2}, min={}, max={}",
+                self.avg_margin(),
+                self.margin_min_seen,
+                self.margin_max_seen
+            );
         }
         println!("    avg_hamming={:.2}", self.avg_hamming());
     }
@@ -1096,7 +1373,10 @@ impl GlobalLabelMetrics {
         self.print();
         println!();
         println!("  Stability:");
-        println!("    ctx_stability={:.1}% (pct ticks where ctx_hat == window mode)", stability * 100.0);
+        println!(
+            "    ctx_stability={:.1}% (pct ticks where ctx_hat == window mode)",
+            stability * 100.0
+        );
     }
 }
 

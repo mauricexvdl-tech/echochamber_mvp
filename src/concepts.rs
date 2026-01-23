@@ -55,7 +55,8 @@ impl ConceptPrototype {
 
     /// Get top N nodes by probability.
     pub fn top_nodes(&self, n: usize) -> Vec<(usize, f64)> {
-        let mut indexed: Vec<(usize, f64)> = self.node_probs
+        let mut indexed: Vec<(usize, f64)> = self
+            .node_probs
             .iter()
             .enumerate()
             .map(|(i, &p)| (i, p))
@@ -67,7 +68,8 @@ impl ConceptPrototype {
     /// Score a set of Top-K nodes against this prototype.
     /// Returns sum of probabilities for the given nodes.
     pub fn score(&self, topk_nodes: &[usize]) -> f64 {
-        topk_nodes.iter()
+        topk_nodes
+            .iter()
             .filter(|&&n| n < self.node_probs.len())
             .map(|&n| self.node_probs[n])
             .sum()
@@ -158,7 +160,9 @@ pub struct ConceptBank {
 impl ConceptBank {
     pub fn new(num_ctx: usize, num_nodes: usize) -> Self {
         ConceptBank {
-            prototypes: (0..num_ctx).map(|_| ConceptPrototype::new(num_nodes)).collect(),
+            prototypes: (0..num_ctx)
+                .map(|_| ConceptPrototype::new(num_nodes))
+                .collect(),
             num_nodes,
         }
     }
