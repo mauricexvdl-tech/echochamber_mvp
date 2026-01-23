@@ -2,6 +2,8 @@
 //! Phase 1.9: CONSOLIDATION - Make merges happen + reduce stability flicker.
 
 mod ablate;
+mod action;
+mod action_ablate;
 mod anchor;
 mod causes;
 mod complex;
@@ -56,6 +58,16 @@ fn main() {
     if config.run_demo_8 {
         println!();
         demo_8_ablations(&config);
+    }
+
+    if config.run_demo_9 {
+        println!();
+        demo_9_action_loop(&config);
+    }
+
+    if config.run_demo_10 {
+        println!();
+        demo_10_action_ablations(&config);
     }
 
     if config.run_capacity_sweep {
@@ -3587,4 +3599,1533 @@ fn run_ablation_variant(
     report.reset_target_stats = reset_target_stats;
 
     report
+}
+
+// =============================================================================
+// DEMO 9: Phase 2.0c - Mode → Action Loop
+// =============================================================================
+
+fn demo_9_action_loop(config: &Config) {
+    use action::{Action, ActionConfig, ActionPolicy};
+    use mode::{Mode, ModePolicy, ModePolicyConfig};
+
+    println!();
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("DEMO 9: Phase 2.0c - MODE → ACTION LOOP");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!();
+
+    if !config.enable_mode_policy {
+        println!("Mode policy disabled in config. Skipping Demo 9.");
+        return;
+    }
+
+    if !config.enable_action_policy {
+        println!("Action policy disabled in config. Skipping Demo 9.");
+        return;
+    }
+
+    // Initialize mode policy from config
+    let mode_policy_config = ModePolicyConfig {
+        explore_v_max: config.mode_explore_v_max,
+        exploit_v_min: config.mode_exploit_v_min,
+        reset_td_min: config.mode_reset_td_min,
+        reset_value_drop: config.mode_reset_value_drop,
+        reset_fail_streak: config.mode_reset_fail_streak,
+        post_reset_cooldown: config.mode_post_reset_cooldown,
+        explore_margin_min_scale: config.mode_explore_margin_scale,
+        exploit_margin_min_scale: config.mode_exploit_margin_scale,
+        reset_dampen: config.mode_reset_dampen,
+        reset_dampen_top_k: config.mode_reset_dampen_top_k,
+        window_size: config.mode_window_size,
+    };
+    let mut mode_policy = ModePolicy::new(mode_policy_config);
+
+    // Initialize action policy from config
+    let action_config = ActionConfig {
+        scan_topk_scale: config.scan_topk_scale,
+        focus_topk_scale: config.focus_topk_scale,
+        scan_margin_scale: config.scan_margin_scale,
+        focus_margin_scale: config.focus_margin_scale,
+        perturb_noise_amp: config.perturb_noise_amp,
+    };
+    let mut action_policy = ActionPolicy::new(action_config);
+
+    // Use same seed as Demo 7 for comparable mode distribution
+    let mut rng = Rng::new(config.seed.wrapping_add(0x7A7A_7A7A));
+    let mut chamber = EchoChamber::random_graph(config.clone(), &mut rng);
+    let causes = Causes::new(&config, &mut rng);
+
+    // Pre-train phase (same as Demo 7)
+    for _ in 0..10000 {
+        let (active_mask, _) = causes.sample_active(&mut rng);
+        let z_inj = causes.compute_z_inj(active_mask);
+        causes.inject_for_tick(&mut rng, &mut chamber, active_mask);
+        let topk = get_top_k(&chamber, config.top_k);
+        let topk_ids: Vec<usize> = topk.iter().map(|(id, _)| *id).collect();
+        chamber.tick_with_context_plasticity(z_inj, &topk_ids, true);
+    }
+
+    // Phase 1.6 components
+    let mut anchor_bank = AnchorBank::new();
+    let keyed_config = KeyedMemoryConfig {
+        label_min_p: 0.50,
+        label_margin: 0.10,
+        alpha: 0.5,
+        num_labels: config.num_ctx,
+    };
+    let mut keyed_memory = KeyedMemoryStore::new(keyed_config);
+    let mut metrics = KeyedMemoryMetrics::new();
+
+    let mut window = RollingWindow::new(config.num_nodes, config.num_ctx);
+    let bind_ticks = config.competitive_bind_ticks();
+    let mut global_tick: u64 = 0;
+
+    // Phase 1.7b: Value learning state
+    let mut prev_anchor_id: u16 = 0xFFFF;
+    let mut prev_power: f64 = 0.0;
+    let mut prev_topk_margin: f64 = 0.0;
+    let mut prev_proto_align: f32 = 0.0;
+    let mut reward_ema: f32 = 0.0;
+
+    // Perturb effectiveness tracking
+    let mut perturb_pre_td_buffer: Vec<f32> = Vec::new();
+    let mut perturb_tick_buffer: Vec<u64> = Vec::new();
+
+    print!(
+        "  Running {} episodes with action policy... ",
+        config.competitive_episodes
+    );
+
+    for _ep in 0..config.competitive_episodes {
+        window.reset();
+
+        for t in 0..config.competitive_episode_ticks {
+            let (active_mask, _) = causes.sample_active(&mut rng);
+            let z_inj = causes.compute_z_inj(active_mask);
+            causes.inject_for_tick(&mut rng, &mut chamber, active_mask);
+
+            // Get base Top-K
+            let base_topk = get_top_k(&chamber, config.top_k);
+            let tick_metrics = chamber.tick_with_context_plasticity(z_inj, &[], false);
+
+            let ctx_hat = tick_metrics.ctx.map(|c| c as u8);
+            let topk_ids: Vec<usize> = base_topk.iter().map(|(id, _)| *id).collect();
+            window.push(&topk_ids, ctx_hat);
+
+            if !window.is_ready() {
+                global_tick += 1;
+                continue;
+            }
+
+            let current_sig = window.competitive_sig();
+            let sig_mask = current_sig.mask;
+
+            // Compute confidence info from base topk
+            let topk_margin = if base_topk.len() >= 2 {
+                base_topk[0].1 - base_topk[1].1
+            } else if !base_topk.is_empty() {
+                base_topk[0].1
+            } else {
+                0.0
+            };
+            let total_power = tick_metrics.tot_pow_post;
+            let confidence = ConfidenceInfo::new(topk_margin, total_power);
+
+            // Periodic merges
+            if anchor_bank.should_merge(global_tick) {
+                let remaps = anchor_bank.merge_similar(Some(config));
+                if !remaps.is_empty() {
+                    keyed_memory.apply_remaps(&remaps);
+                }
+                anchor_bank.mark_merge_done(global_tick);
+            }
+
+            if anchor_bank.should_scan_merges(global_tick, config) {
+                let remaps = anchor_bank.scan_and_merge(config);
+                if !remaps.is_empty() {
+                    keyed_memory.apply_remaps(&remaps);
+                }
+                anchor_bank.mark_scan_done(global_tick);
+            }
+
+            anchor_bank.update_stability(global_tick, config);
+
+            // Get base gate params
+            let base_gate_params = if anchor_bank.stable_mode {
+                GateParams::stable(config)
+            } else {
+                GateParams::explore(config)
+            };
+
+            // Resolve signature to anchor
+            let (anchor_id, _is_new, _match_dist) =
+                anchor_bank.resolve_gated(sig_mask, global_tick, Some(&confidence), Some(config));
+
+            // Get anchor value for mode policy observation
+            let anchor_value = if anchor_id != 0xFFFF {
+                anchor_bank.get_value(anchor_id)
+            } else {
+                0.0
+            };
+
+            // Check if anchor is stable
+            let is_stable = if anchor_id != 0xFFFF {
+                anchor_bank
+                    .get_anchor(anchor_id)
+                    .map(|a| a.stable)
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+
+            // Compute TD for this tick
+            let abs_td = if prev_anchor_id != 0xFFFF {
+                let gate_passed = confidence.passes_gate_with_params(&base_gate_params);
+                let v_next = if gate_passed && anchor_id != 0xFFFF {
+                    anchor_bank.get_value(anchor_id)
+                } else if topk_margin < ANCHOR_MARGIN_MIN * base_gate_params.margin_mult {
+                    config.v_abstain_margin
+                } else {
+                    0.0
+                };
+                let v_prev = anchor_bank.get_value(prev_anchor_id);
+                let delta_power = total_power - prev_power;
+                let reward =
+                    compute_reward(delta_power, prev_topk_margin, prev_proto_align, config);
+                let td = reward + config.gamma_v * v_next - v_prev;
+                td.abs()
+            } else {
+                0.0
+            };
+
+            // Check if base gate passes
+            let base_gate_passed = confidence.passes_gate_with_params(&base_gate_params);
+
+            // Observe state for mode policy
+            mode_policy.observe(global_tick, anchor_value, abs_td as f32, base_gate_passed);
+
+            // Choose mode
+            let mode = mode_policy.choose_mode(global_tick);
+
+            // Map Mode → Action
+            let action = action_policy.choose_action(mode);
+
+            // Get action overrides
+            let action_overrides = action_policy.get_overrides(action);
+
+            // Apply action-adjusted gate params
+            // Action policy takes over margin scaling from mode policy
+            let mut adjusted_gate_params = base_gate_params.clone();
+            adjusted_gate_params.margin_mult *= action_overrides.margin_scale as f64;
+
+            // Check gate with adjusted params
+            let gate_passed = confidence.passes_gate_with_params(&adjusted_gate_params);
+
+            // Record action stats
+            action_policy.record_tick(action, gate_passed, abs_td as f32, anchor_value, is_stable);
+
+            // Apply Perturb action effects (noise injection)
+            if action_overrides.apply_noise && action_overrides.noise_amp > 0.0 {
+                // Record pre-TD for effectiveness measurement
+                perturb_pre_td_buffer.push(abs_td as f32);
+                perturb_tick_buffer.push(global_tick);
+
+                // Apply tiny noise to top nodes (controlled perturbation)
+                let noise_nodes: Vec<usize> = base_topk
+                    .iter()
+                    .take(config.mode_reset_dampen_top_k)
+                    .map(|(id, _)| *id)
+                    .collect();
+                chamber.apply_noise(&noise_nodes, action_overrides.noise_amp, &mut rng);
+            }
+
+            // Check perturb effectiveness after 10 ticks
+            let mut i = 0;
+            while i < perturb_tick_buffer.len() {
+                if global_tick == perturb_tick_buffer[i] + 10 {
+                    let pre_td = perturb_pre_td_buffer[i];
+                    action_policy.record_perturb_effectiveness(pre_td, abs_td as f32);
+                    perturb_pre_td_buffer.remove(i);
+                    perturb_tick_buffer.remove(i);
+                } else {
+                    i += 1;
+                }
+            }
+
+            // Update partition info
+            let partition_mask = current_sig.ctx_hat.unwrap_or(0) as u64;
+            anchor_bank.update_anchor_partition(anchor_id, partition_mask, ctx_hat);
+
+            // Update prototype when gate passes
+            if gate_passed && anchor_id != 0xFFFF {
+                anchor_bank.update_anchor_proto(anchor_id, &base_topk, config);
+            }
+
+            // Value update for previous anchor
+            if prev_anchor_id != 0xFFFF {
+                let v_next = if gate_passed && anchor_id != 0xFFFF {
+                    anchor_bank.get_value(anchor_id)
+                } else if topk_margin < ANCHOR_MARGIN_MIN * adjusted_gate_params.margin_mult {
+                    config.v_abstain_margin
+                } else {
+                    0.0
+                };
+                let v_prev = anchor_bank.get_value(prev_anchor_id);
+                let delta_power = total_power - prev_power;
+                let mut reward =
+                    compute_reward(delta_power, prev_topk_margin, prev_proto_align, config);
+                reward_ema =
+                    (1.0 - config.reward_ema_beta) * reward_ema + config.reward_ema_beta * reward;
+                if config.use_advantage_reward {
+                    reward = reward - reward_ema;
+                }
+                let td = reward + config.gamma_v * v_next - v_prev;
+                anchor_bank.update_anchor_value(prev_anchor_id, td, config);
+            }
+
+            // Update previous state
+            if gate_passed && anchor_id != 0xFFFF {
+                prev_anchor_id = anchor_id;
+                prev_power = total_power;
+                prev_topk_margin = topk_margin;
+                if let Some(anchor) = anchor_bank.get_anchor(anchor_id) {
+                    prev_proto_align = anchor.proto_score(&base_topk, config.proto_m);
+                } else {
+                    prev_proto_align = 0.0;
+                }
+            } else {
+                prev_anchor_id = 0xFFFF;
+            }
+
+            // Memory store/recall
+            let learned_mask = current_sig.ctx_hat.unwrap_or(0) as u64;
+            let key = MemoryKey::new(anchor_id, learned_mask);
+
+            if bind_ticks.contains(&t) {
+                let label = current_sig.ctx_hat.unwrap_or(0) as u16;
+                keyed_memory.store(key, label);
+            }
+
+            if t >= config.competitive_recall_start && t % config.competitive_recall_stride == 0 {
+                let is_negative = rng.next_f64() < config.competitive_p_neg;
+
+                if is_negative {
+                    let neg_sig_mask = flip_bits_simple(
+                        sig_mask,
+                        config.competitive_neg_flip_bits,
+                        rng.next_u64(),
+                    );
+                    let (neg_anchor_id, _, _) = anchor_bank.resolve(neg_sig_mask, global_tick);
+                    let neg_key = MemoryKey::new(neg_anchor_id, learned_mask);
+                    let decision = keyed_memory.recall(neg_key);
+                    metrics.record_negative(&decision);
+                } else {
+                    let true_label = current_sig.ctx_hat.unwrap_or(255) as u16;
+                    let decision = keyed_memory.recall(key);
+                    if let anchor::KeyedRecallDecision::Label(recalled_label, _) = &decision {
+                        if *recalled_label == true_label {
+                            anchor_bank.record_win(anchor_id);
+                        }
+                    }
+                    metrics.record_positive(&decision, true_label);
+                }
+            }
+
+            global_tick += 1;
+        }
+    }
+    println!("done.");
+
+    // Get stats
+    let action_stats = &action_policy.stats;
+    let stable_drop_ratio = anchor_bank.stable_drop_ratio();
+
+    // Print results
+    println!();
+    println!("═══════════════════════════════════════════════════════════════════");
+    println!("PHASE 2.0c: Mode → Action Loop Results");
+    println!("═══════════════════════════════════════════════════════════════════");
+
+    // A) Action usage
+    println!();
+    println!("A) Action usage:");
+    println!(
+        "  scan_count:    {} ({:.1}%)",
+        action_stats.scan_count,
+        action_stats.scan_rate() * 100.0
+    );
+    println!(
+        "  focus_count:   {} ({:.1}%)",
+        action_stats.focus_count,
+        action_stats.focus_rate() * 100.0
+    );
+    println!(
+        "  perturb_count: {} ({:.2}%)",
+        action_stats.perturb_count,
+        action_stats.perturb_rate() * 100.0
+    );
+
+    // B) Per-action diagnostics
+    println!();
+    println!("B) Per-action diagnostics:");
+    println!(
+        "  {:8} | {:>10} | {:>8} | {:>12}",
+        "Action", "gate_pass%", "meanV", "stable_share%"
+    );
+    println!("  {}", "-".repeat(50));
+
+    for action in [Action::Scan, Action::Focus, Action::Perturb] {
+        let action_name = match action {
+            Action::Scan => "Scan",
+            Action::Focus => "Focus",
+            Action::Perturb => "Perturb",
+        };
+        let rate = match action {
+            Action::Scan => action_stats.scan_rate(),
+            Action::Focus => action_stats.focus_rate(),
+            Action::Perturb => action_stats.perturb_rate(),
+        };
+        if rate < 0.0001 {
+            continue; // Skip actions with no ticks
+        }
+        println!(
+            "  {:8} | {:9.1}% | {:+7.3} | {:11.1}%",
+            action_name,
+            action_stats.gate_pass_rate(action) * 100.0,
+            action_stats.mean_value(action),
+            action_stats.stable_share(action) * 100.0
+        );
+    }
+
+    // Perturb effectiveness
+    println!();
+    println!("  Perturb effectiveness:");
+    println!(
+        "    mean |TD| reduction: {:+.1}% (n={})",
+        action_stats.perturb_effectiveness() * 100.0,
+        action_stats.perturb_effectiveness_samples
+    );
+
+    // C) Regression guard
+    println!();
+    println!("C) Regression guard:");
+
+    let coverage_ok = metrics.coverage_pos() >= 0.70;
+    let selective_ok = metrics.selective_accuracy() >= 0.80;
+    let fp_ok = metrics.false_positive_rate() == 0.0;
+    let stable_drop_ok = stable_drop_ratio <= 0.005;
+
+    println!(
+        "  [{}] coverage_pos >= 70%: {:.1}%",
+        if coverage_ok { "✓" } else { "✗" },
+        metrics.coverage_pos() * 100.0
+    );
+    println!(
+        "  [{}] selective_accuracy >= 80%: {:.1}%",
+        if selective_ok { "✓" } else { "✗" },
+        metrics.selective_accuracy() * 100.0
+    );
+    println!(
+        "  [{}] false_positive == 0%: {:.1}%",
+        if fp_ok { "✓" } else { "✗" },
+        metrics.false_positive_rate() * 100.0
+    );
+    println!(
+        "  [{}] stable_drop_ratio <= 0.5%: {:.2}%",
+        if stable_drop_ok { "✓" } else { "✗" },
+        stable_drop_ratio * 100.0
+    );
+
+    // D) Behavioral differentiation
+    println!();
+    println!("D) Behavioral differentiation:");
+
+    // Focus has higher stable_share than Scan
+    let focus_stable = action_stats.stable_share(Action::Focus);
+    let scan_stable = action_stats.stable_share(Action::Scan);
+    let focus_more_stable = focus_stable > scan_stable;
+
+    println!(
+        "  Focus stable_share: {:.1}%, Scan stable_share: {:.1}%",
+        focus_stable * 100.0,
+        scan_stable * 100.0
+    );
+    println!(
+        "  [{}] Focus has higher stable_share than Scan",
+        if focus_more_stable { "✓" } else { "~" }
+    );
+
+    // Perturb reduces mean_abs_td within 10 ticks
+    let perturb_effective = action_stats.perturb_effectiveness() > 0.0;
+    println!(
+        "  [{}] Perturb reduces mean|TD| within 10 ticks: {:+.1}%",
+        if perturb_effective { "✓" } else { "~" },
+        action_stats.perturb_effectiveness() * 100.0
+    );
+
+    // Acceptance criteria summary
+    println!();
+    println!("═══════════════════════════════════════════════════════════════════");
+    println!("PHASE 2.0c ACCEPTANCE:");
+    println!("═══════════════════════════════════════════════════════════════════");
+
+    // A) Action usage acceptance
+    let scan_rate_ok = action_stats.scan_rate() >= 0.05;
+    let focus_rate_ok = action_stats.focus_rate() >= 0.50;
+    let perturb_rate_ok =
+        action_stats.perturb_rate() >= 0.005 && action_stats.perturb_rate() <= 0.05;
+
+    println!();
+    println!("A) Action usage:");
+    println!(
+        "  [{}] scan_rate >= 5%: {:.1}%",
+        if scan_rate_ok { "✓" } else { "✗" },
+        action_stats.scan_rate() * 100.0
+    );
+    println!(
+        "  [{}] focus_rate >= 50%: {:.1}%",
+        if focus_rate_ok { "✓" } else { "✗" },
+        action_stats.focus_rate() * 100.0
+    );
+    println!(
+        "  [{}] perturb_rate in [0.5%, 5%]: {:.2}%",
+        if perturb_rate_ok { "✓" } else { "✗" },
+        action_stats.perturb_rate() * 100.0
+    );
+
+    println!();
+    println!("B) Regression guard:");
+    println!(
+        "  [{}] coverage_pos >= 70%",
+        if coverage_ok { "✓" } else { "✗" }
+    );
+    println!(
+        "  [{}] selective_accuracy >= 80%",
+        if selective_ok { "✓" } else { "✗" }
+    );
+    println!(
+        "  [{}] false_positive == 0%",
+        if fp_ok { "✓" } else { "✗" }
+    );
+    println!(
+        "  [{}] stable_drop_ratio <= 0.5%",
+        if stable_drop_ok { "✓" } else { "✗" }
+    );
+
+    println!();
+    println!("C) Behavioral differentiation:");
+    println!(
+        "  [{}] Focus has higher stable_share than Scan",
+        if focus_more_stable { "✓" } else { "~" }
+    );
+    println!(
+        "  [{}] Perturb reduces mean|TD|",
+        if perturb_effective { "✓" } else { "~" }
+    );
+
+    let all_ok = scan_rate_ok
+        && focus_rate_ok
+        && perturb_rate_ok
+        && coverage_ok
+        && selective_ok
+        && fp_ok
+        && stable_drop_ok;
+
+    println!();
+    if all_ok {
+        println!("  → Phase 2.0c: ALL ACCEPTANCE CRITERIA MET!");
+    } else {
+        let usage_ok = scan_rate_ok && focus_rate_ok && perturb_rate_ok;
+        let regression_ok = coverage_ok && selective_ok && fp_ok && stable_drop_ok;
+
+        if usage_ok && regression_ok {
+            println!("  → Phase 2.0c: Usage and regression OK. Behavioral differentiation may need tuning.");
+        } else if usage_ok {
+            println!("  → Phase 2.0c: Usage OK. Regression guard failed - needs tuning.");
+        } else if regression_ok {
+            println!("  → Phase 2.0c: Regression OK. Action usage needs tuning.");
+        } else {
+            println!("  → Phase 2.0c: Multiple criteria not met. Tuning needed.");
+        }
+    }
+}
+
+// =============================================================================
+// DEMO 10: Phase 2.0d - Action Ablations + Sensitivity Sweep
+// =============================================================================
+
+fn demo_10_action_ablations(config: &Config) {
+    use action::{Action, ActionConfig, ActionPolicy};
+    use action_ablate::{
+        ActionAblationVariant, SweepConfig, SweepPoint, VariantConfig, VariantReport,
+    };
+    use mode::{ModePolicy, ModePolicyConfig};
+
+    println!();
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("DEMO 10: Phase 2.0d - ACTION ABLATIONS + SENSITIVITY SWEEP");
+    println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!();
+
+    if !config.enable_mode_policy || !config.enable_action_policy {
+        println!("Mode or action policy disabled. Skipping Demo 10.");
+        return;
+    }
+
+    // =========================================================================
+    // Part A: Ablation Variants
+    // =========================================================================
+    println!("Part A: Ablation Variants");
+    println!("{}", "-".repeat(65));
+
+    let variants = ActionAblationVariant::all_variants();
+    let mut reports: Vec<VariantReport> = Vec::new();
+
+    // Run FULL first to capture baseline rates for budgeted random
+    print!("  Running FULL (baseline)... ");
+    let full_variant_config = VariantConfig::from_variant(ActionAblationVariant::Full);
+    let full_report = run_action_variant(config, "FULL", &full_variant_config, None);
+    println!("done.");
+    let full_scan_rate = full_report.scan_rate;
+    let full_perturb_rate = full_report.perturb_rate;
+    reports.push(full_report);
+
+    println!(
+        "    → FULL baseline: scan_rate={:.2}%, perturb_rate={:.3}%",
+        full_scan_rate * 100.0,
+        full_perturb_rate * 100.0
+    );
+
+    // Run remaining variants, passing budget targets to RANDOM_BUDGETED
+    for variant in &variants {
+        // Skip FULL since we already ran it
+        if *variant == ActionAblationVariant::Full {
+            continue;
+        }
+        print!("  Running {}... ", variant.label());
+        let variant_config = VariantConfig::from_variant(*variant);
+        let budget_targets = if *variant == ActionAblationVariant::RandomBudgeted {
+            Some((full_scan_rate, full_perturb_rate))
+        } else {
+            None
+        };
+        let report = run_action_variant(config, variant.label(), &variant_config, budget_targets);
+        println!("done.");
+        reports.push(report);
+    }
+
+    // Print ablation results table
+    println!();
+    println!("Ablation Results:");
+    println!(
+        "  {:12} | {:>6} | {:>6} | {:>8} | {:>8} | {:>7} | {:>6} | {:>11}",
+        "Variant", "Scan%", "Focus%", "Perturb%", "Coverage", "SelAcc", "FP%", "StableShare"
+    );
+    println!("  {}", "-".repeat(85));
+
+    for report in &reports {
+        println!(
+            "  {:12} | {:5.1}% | {:5.1}% | {:7.2}% | {:7.1}% | {:6.1}% | {:5.1}% | {:10.1}%",
+            report.label,
+            report.scan_rate * 100.0,
+            report.focus_rate * 100.0,
+            report.perturb_rate * 100.0,
+            report.coverage_pos * 100.0,
+            report.selective_accuracy * 100.0,
+            report.false_positive_rate * 100.0,
+            report.stable_time_share * 100.0
+        );
+    }
+
+    // =========================================================================
+    // Part B: Sensitivity Sweep
+    // =========================================================================
+    println!();
+    println!("Part B: Sensitivity Sweep");
+    println!("{}", "-".repeat(65));
+
+    let sweep_config = SweepConfig::default();
+
+    // Sweep scan_rate_target by adjusting mode thresholds
+    println!();
+    println!("  Scan Rate Sweep (varying explore_v_max):");
+    let mut scan_sweep_points: Vec<SweepPoint> = Vec::new();
+
+    for &target in &sweep_config.scan_rate_targets {
+        // Adjust explore_v_max to hit target scan rate
+        // Higher explore_v_max -> more Explore mode -> more Scan
+        let adjusted_explore_v_max = if target == 0.0 {
+            0.0 // Never explore
+        } else if target <= 0.02 {
+            0.20
+        } else if target <= 0.05 {
+            0.35
+        } else if target <= 0.08 {
+            0.45
+        } else {
+            0.55 // Aggressive explore
+        };
+
+        let sweep_point = run_sweep_point(config, "scan_rate", target, Some(adjusted_explore_v_max), None);
+        scan_sweep_points.push(sweep_point);
+    }
+
+    println!(
+        "    {:>8} | {:>6} | {:>6} | {:>8} | {:>8} | {:>7} | {:>11} | {:>8}",
+        "Target", "Scan%", "Focus%", "Perturb%", "Coverage", "SelAcc", "StableShare", "mean|TD|"
+    );
+    println!("    {}", "-".repeat(85));
+
+    for point in &scan_sweep_points {
+        println!(
+            "    {:7.1}% | {:5.1}% | {:5.1}% | {:7.2}% | {:7.1}% | {:6.1}% | {:10.1}% | {:8.4}",
+            point.param_value * 100.0,
+            point.scan_rate * 100.0,
+            point.focus_rate * 100.0,
+            point.perturb_rate * 100.0,
+            point.coverage_pos * 100.0,
+            point.selective_accuracy * 100.0,
+            point.stable_time_share * 100.0,
+            point.mean_abs_td
+        );
+    }
+
+    // Sweep perturb_rate_target by adjusting reset thresholds
+    println!();
+    println!("  Perturb Rate Sweep (varying reset_td_min):");
+    let mut perturb_sweep_points: Vec<SweepPoint> = Vec::new();
+
+    for &target in &sweep_config.perturb_rate_targets {
+        // Adjust reset_td_min to hit target perturb rate
+        // Lower reset_td_min -> more Reset mode -> more Perturb
+        let adjusted_reset_td_min = if target == 0.0 {
+            1.0 // Never reset
+        } else if target <= 0.003 {
+            0.50
+        } else if target <= 0.007 {
+            0.40
+        } else if target <= 0.015 {
+            0.32
+        } else {
+            0.25 // Aggressive reset
+        };
+
+        let sweep_point = run_sweep_point(config, "perturb_rate", target, None, Some(adjusted_reset_td_min));
+        perturb_sweep_points.push(sweep_point);
+    }
+
+    println!(
+        "    {:>8} | {:>6} | {:>6} | {:>8} | {:>8} | {:>7} | {:>11} | {:>8}",
+        "Target", "Scan%", "Focus%", "Perturb%", "Coverage", "SelAcc", "StableShare", "mean|TD|"
+    );
+    println!("    {}", "-".repeat(85));
+
+    for point in &perturb_sweep_points {
+        println!(
+            "    {:7.1}% | {:5.1}% | {:5.1}% | {:7.2}% | {:7.1}% | {:6.1}% | {:10.1}% | {:8.4}",
+            point.param_value * 100.0,
+            point.scan_rate * 100.0,
+            point.focus_rate * 100.0,
+            point.perturb_rate * 100.0,
+            point.coverage_pos * 100.0,
+            point.selective_accuracy * 100.0,
+            point.stable_time_share * 100.0,
+            point.mean_abs_td
+        );
+    }
+
+    // =========================================================================
+    // Part C: Acceptance Criteria
+    // =========================================================================
+    println!();
+    println!("═══════════════════════════════════════════════════════════════════");
+    println!("PHASE 2.0d ACCEPTANCE:");
+    println!("═══════════════════════════════════════════════════════════════════");
+
+    let full_report = &reports[0]; // FULL variant
+    let no_scan_report = &reports[1];
+    let no_perturb_report = &reports[2];
+    let no_focus_report = &reports[3];
+    let random_report = &reports[4];
+
+    // C1) Directional effects
+    println!();
+    println!("C1) Directional effects:");
+
+    // NO_SCAN -> Scan rate ~0 and Focus rate increases
+    let no_scan_scan_low = no_scan_report.scan_rate < 0.01;
+    let no_scan_focus_up = no_scan_report.focus_rate > full_report.focus_rate;
+    println!(
+        "  [{}] NO_SCAN: scan_rate < 1%: {:.1}%",
+        if no_scan_scan_low { "✓" } else { "✗" },
+        no_scan_report.scan_rate * 100.0
+    );
+    println!(
+        "  [{}] NO_SCAN: focus_rate > FULL: {:.1}% vs {:.1}%",
+        if no_scan_focus_up { "✓" } else { "~" },
+        no_scan_report.focus_rate * 100.0,
+        full_report.focus_rate * 100.0
+    );
+
+    // NO_PERTURB -> Perturb rate ~0
+    let no_perturb_perturb_low = no_perturb_report.perturb_rate < 0.001;
+    println!(
+        "  [{}] NO_PERTURB: perturb_rate < 0.1%: {:.2}%",
+        if no_perturb_perturb_low { "✓" } else { "✗" },
+        no_perturb_report.perturb_rate * 100.0
+    );
+
+    // RANDOM_BUDGETED -> worse than FULL on selective_accuracy OR stable_time_share
+    // With budget-matched random, we test if *timing* matters, not just action rates
+    // A 1% drop is significant given matched budgets
+    let random_sel_acc_drop = full_report.selective_accuracy - random_report.selective_accuracy;
+    let random_stable_drop = full_report.stable_time_share - random_report.stable_time_share;
+    let random_worse = random_sel_acc_drop >= 0.01 || random_stable_drop >= 0.01;
+    println!(
+        "  [{}] RANDOM_BUDGETED: SelAcc drop >= 1%: {:.1}% (drop: {:.2}%)",
+        if random_sel_acc_drop >= 0.01 { "✓" } else { "~" },
+        random_report.selective_accuracy * 100.0,
+        random_sel_acc_drop * 100.0
+    );
+    println!(
+        "  [{}] RANDOM_BUDGETED: StableShare drop >= 1%: {:.1}% (drop: {:.2}%)",
+        if random_stable_drop >= 0.01 { "✓" } else { "~" },
+        random_report.stable_time_share * 100.0,
+        random_stable_drop * 100.0
+    );
+    println!(
+        "  [{}] RANDOM_BUDGETED worse than FULL on at least one metric",
+        if random_worse { "✓" } else { "✗" }
+    );
+    // Show budget match quality
+    println!(
+        "        Budget match: scan {:.2}% vs {:.2}%, perturb {:.3}% vs {:.3}%",
+        random_report.scan_rate * 100.0,
+        full_report.scan_rate * 100.0,
+        random_report.perturb_rate * 100.0,
+        full_report.perturb_rate * 100.0
+    );
+
+    // C2) Regression guard for FULL
+    println!();
+    println!("C2) Regression guard (FULL variant):");
+
+    let coverage_ok = full_report.coverage_pos >= 0.70;
+    let selective_ok = full_report.selective_accuracy >= 0.80;
+    let fp_ok = full_report.false_positive_rate == 0.0;
+    let stable_drop_ok = full_report.stable_drop_ratio <= 0.005;
+
+    println!(
+        "  [{}] coverage_pos >= 70%: {:.1}%",
+        if coverage_ok { "✓" } else { "✗" },
+        full_report.coverage_pos * 100.0
+    );
+    println!(
+        "  [{}] selective_accuracy >= 80%: {:.1}%",
+        if selective_ok { "✓" } else { "✗" },
+        full_report.selective_accuracy * 100.0
+    );
+    println!(
+        "  [{}] false_positive == 0%: {:.1}%",
+        if fp_ok { "✓" } else { "✗" },
+        full_report.false_positive_rate * 100.0
+    );
+    println!(
+        "  [{}] stable_drop_ratio <= 0.5%: {:.2}%",
+        if stable_drop_ok { "✓" } else { "✗" },
+        full_report.stable_drop_ratio * 100.0
+    );
+
+    // C3) Sweep produces non-trivial curve
+    println!();
+    println!("C3) Sweep produces non-trivial curve:");
+
+    // Find min/max selective_accuracy in scan sweep
+    let scan_sel_acc_min = scan_sweep_points.iter().map(|p| p.selective_accuracy).fold(f64::INFINITY, f64::min);
+    let scan_sel_acc_max = scan_sweep_points.iter().map(|p| p.selective_accuracy).fold(f64::NEG_INFINITY, f64::max);
+    let scan_sel_acc_range = scan_sel_acc_max - scan_sel_acc_min;
+    let scan_curve_ok = scan_sel_acc_range >= 0.01;
+
+    println!(
+        "  [{}] Scan sweep: SelAcc range >= 1%: {:.1}% (min {:.1}%, max {:.1}%)",
+        if scan_curve_ok { "✓" } else { "~" },
+        scan_sel_acc_range * 100.0,
+        scan_sel_acc_min * 100.0,
+        scan_sel_acc_max * 100.0
+    );
+
+    // Find min/max stable_time_share in perturb sweep
+    let perturb_stable_min = perturb_sweep_points.iter().map(|p| p.stable_time_share).fold(f64::INFINITY, f64::min);
+    let perturb_stable_max = perturb_sweep_points.iter().map(|p| p.stable_time_share).fold(f64::NEG_INFINITY, f64::max);
+    let perturb_stable_range = perturb_stable_max - perturb_stable_min;
+    let perturb_curve_ok = perturb_stable_range >= 0.03;
+
+    println!(
+        "  [{}] Perturb sweep: StableShare range >= 3%: {:.1}% (min {:.1}%, max {:.1}%)",
+        if perturb_curve_ok { "✓" } else { "~" },
+        perturb_stable_range * 100.0,
+        perturb_stable_min * 100.0,
+        perturb_stable_max * 100.0
+    );
+
+    // Summary
+    let directional_ok = no_scan_scan_low && no_perturb_perturb_low && random_worse;
+    let regression_ok = coverage_ok && selective_ok && fp_ok && stable_drop_ok;
+    let sweep_ok = scan_curve_ok || perturb_curve_ok;
+    let all_ok = directional_ok && regression_ok && sweep_ok;
+
+    println!();
+    if all_ok {
+        println!("  → Phase 2.0d: ALL ACCEPTANCE CRITERIA MET!");
+    } else {
+        if directional_ok && regression_ok {
+            println!("  → Phase 2.0d: Directional and regression OK. Sweep needs more variation.");
+        } else if directional_ok {
+            println!("  → Phase 2.0d: Directional OK. Regression failed.");
+        } else if regression_ok {
+            println!("  → Phase 2.0d: Regression OK. Directional effects not as expected.");
+        } else {
+            println!("  → Phase 2.0d: Multiple criteria not met. Tuning needed.");
+        }
+    }
+}
+
+/// Run an action variant and collect metrics.
+/// For budgeted_random variants, pass budget_targets (scan_rate, perturb_rate) from FULL baseline.
+fn run_action_variant(
+    config: &Config,
+    label: &str,
+    variant_config: &action_ablate::VariantConfig,
+    budget_targets: Option<(f64, f64)>, // (scan_rate, perturb_rate) for budgeted random
+) -> action_ablate::VariantReport {
+    use action::{Action, ActionConfig, ActionPolicy};
+    use action_ablate::{BudgetedRandomAction, VariantReport};
+    use mode::{ModePolicy, ModePolicyConfig};
+
+    let mode_policy_config = ModePolicyConfig {
+        explore_v_max: config.mode_explore_v_max,
+        exploit_v_min: config.mode_exploit_v_min,
+        reset_td_min: config.mode_reset_td_min,
+        reset_value_drop: config.mode_reset_value_drop,
+        reset_fail_streak: config.mode_reset_fail_streak,
+        post_reset_cooldown: config.mode_post_reset_cooldown,
+        explore_margin_min_scale: config.mode_explore_margin_scale,
+        exploit_margin_min_scale: config.mode_exploit_margin_scale,
+        reset_dampen: config.mode_reset_dampen,
+        reset_dampen_top_k: config.mode_reset_dampen_top_k,
+        window_size: config.mode_window_size,
+    };
+    let mut mode_policy = ModePolicy::new(mode_policy_config);
+
+    let action_config = ActionConfig {
+        scan_topk_scale: config.scan_topk_scale,
+        focus_topk_scale: config.focus_topk_scale,
+        scan_margin_scale: config.scan_margin_scale,
+        focus_margin_scale: config.focus_margin_scale,
+        perturb_noise_amp: config.perturb_noise_amp,
+    };
+    let mut action_policy = ActionPolicy::new(action_config);
+
+    // Create budgeted random action selector if needed
+    let mut budgeted_random = if variant_config.budgeted_random {
+        if let Some((scan_target, perturb_target)) = budget_targets {
+            Some(BudgetedRandomAction::new(scan_target, perturb_target))
+        } else {
+            // Fallback: use typical rates if no targets provided
+            Some(BudgetedRandomAction::new(0.05, 0.007))
+        }
+    } else {
+        None
+    };
+
+    // Use same seed as Demo 9 for consistency
+    let mut rng = Rng::new(config.seed.wrapping_add(0x7A7A_7A7A));
+    let mut chamber = EchoChamber::random_graph(config.clone(), &mut rng);
+    let causes = Causes::new(&config, &mut rng);
+
+    // Pre-train phase
+    for _ in 0..10000 {
+        let (active_mask, _) = causes.sample_active(&mut rng);
+        let z_inj = causes.compute_z_inj(active_mask);
+        causes.inject_for_tick(&mut rng, &mut chamber, active_mask);
+        let topk = get_top_k(&chamber, config.top_k);
+        let topk_ids: Vec<usize> = topk.iter().map(|(id, _)| *id).collect();
+        chamber.tick_with_context_plasticity(z_inj, &topk_ids, true);
+    }
+
+    let mut anchor_bank = AnchorBank::new();
+    let keyed_config = KeyedMemoryConfig {
+        label_min_p: 0.50,
+        label_margin: 0.10,
+        alpha: 0.5,
+        num_labels: config.num_ctx,
+    };
+    let mut keyed_memory = KeyedMemoryStore::new(keyed_config);
+    let mut metrics = KeyedMemoryMetrics::new();
+
+    let mut window = RollingWindow::new(config.num_nodes, config.num_ctx);
+    let bind_ticks = config.competitive_bind_ticks();
+    let mut global_tick: u64 = 0;
+
+    let mut prev_anchor_id: u16 = 0xFFFF;
+    let mut prev_power: f64 = 0.0;
+    let mut prev_topk_margin: f64 = 0.0;
+    let mut prev_proto_align: f32 = 0.0;
+    let mut reward_ema: f32 = 0.0;
+
+    let mut total_stable_ticks: usize = 0;
+    let mut total_ticks: usize = 0;
+    let mut total_abs_td_sum: f64 = 0.0;
+
+    for _ep in 0..config.competitive_episodes {
+        window.reset();
+
+        for t in 0..config.competitive_episode_ticks {
+            let (active_mask, _) = causes.sample_active(&mut rng);
+            let z_inj = causes.compute_z_inj(active_mask);
+            causes.inject_for_tick(&mut rng, &mut chamber, active_mask);
+
+            let base_topk = get_top_k(&chamber, config.top_k);
+            let tick_metrics = chamber.tick_with_context_plasticity(z_inj, &[], false);
+
+            let ctx_hat = tick_metrics.ctx.map(|c| c as u8);
+            let topk_ids: Vec<usize> = base_topk.iter().map(|(id, _)| *id).collect();
+            window.push(&topk_ids, ctx_hat);
+
+            if !window.is_ready() {
+                global_tick += 1;
+                continue;
+            }
+
+            let current_sig = window.competitive_sig();
+            let sig_mask = current_sig.mask;
+
+            let topk_margin = if base_topk.len() >= 2 {
+                base_topk[0].1 - base_topk[1].1
+            } else if !base_topk.is_empty() {
+                base_topk[0].1
+            } else {
+                0.0
+            };
+            let total_power = tick_metrics.tot_pow_post;
+            let confidence = ConfidenceInfo::new(topk_margin, total_power);
+
+            if anchor_bank.should_merge(global_tick) {
+                let remaps = anchor_bank.merge_similar(Some(config));
+                if !remaps.is_empty() {
+                    keyed_memory.apply_remaps(&remaps);
+                }
+                anchor_bank.mark_merge_done(global_tick);
+            }
+
+            if anchor_bank.should_scan_merges(global_tick, config) {
+                let remaps = anchor_bank.scan_and_merge(config);
+                if !remaps.is_empty() {
+                    keyed_memory.apply_remaps(&remaps);
+                }
+                anchor_bank.mark_scan_done(global_tick);
+            }
+
+            anchor_bank.update_stability(global_tick, config);
+
+            let base_gate_params = if anchor_bank.stable_mode {
+                GateParams::stable(config)
+            } else {
+                GateParams::explore(config)
+            };
+
+            let (anchor_id, _is_new, _match_dist) =
+                anchor_bank.resolve_gated(sig_mask, global_tick, Some(&confidence), Some(config));
+
+            let anchor_value = if anchor_id != 0xFFFF {
+                anchor_bank.get_value(anchor_id)
+            } else {
+                0.0
+            };
+
+            let is_stable = if anchor_id != 0xFFFF {
+                anchor_bank
+                    .get_anchor(anchor_id)
+                    .map(|a| a.stable)
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+
+            let abs_td = if prev_anchor_id != 0xFFFF {
+                let gate_passed = confidence.passes_gate_with_params(&base_gate_params);
+                let v_next = if gate_passed && anchor_id != 0xFFFF {
+                    anchor_bank.get_value(anchor_id)
+                } else if topk_margin < ANCHOR_MARGIN_MIN * base_gate_params.margin_mult {
+                    config.v_abstain_margin
+                } else {
+                    0.0
+                };
+                let v_prev = anchor_bank.get_value(prev_anchor_id);
+                let delta_power = total_power - prev_power;
+                let reward =
+                    compute_reward(delta_power, prev_topk_margin, prev_proto_align, config);
+                let td = reward + config.gamma_v * v_next - v_prev;
+                td.abs()
+            } else {
+                0.0
+            };
+
+            total_abs_td_sum += abs_td as f64;
+            total_ticks += 1;
+            if is_stable {
+                total_stable_ticks += 1;
+            }
+
+            let base_gate_passed = confidence.passes_gate_with_params(&base_gate_params);
+            mode_policy.observe(global_tick, anchor_value, abs_td as f32, base_gate_passed);
+
+            let mode = mode_policy.choose_mode(global_tick);
+
+            // Apply ablation to action selection
+            let rng_val = rng.next_f64();
+            let action = if let Some(ref mut br) = budgeted_random {
+                // Use budget-matched random action selection
+                br.choose(rng_val)
+            } else {
+                action_policy.choose_action_with_ablation(mode, variant_config, rng_val)
+            };
+
+            let action_overrides = action_policy.get_overrides(action);
+
+            let mut adjusted_gate_params = base_gate_params.clone();
+            adjusted_gate_params.margin_mult *= action_overrides.margin_scale as f64;
+
+            let gate_passed = confidence.passes_gate_with_params(&adjusted_gate_params);
+
+            action_policy.record_tick(action, gate_passed, abs_td as f32, anchor_value, is_stable);
+
+            if action_overrides.apply_noise && action_overrides.noise_amp > 0.0 {
+                let noise_nodes: Vec<usize> = base_topk
+                    .iter()
+                    .take(config.mode_reset_dampen_top_k)
+                    .map(|(id, _)| *id)
+                    .collect();
+                chamber.apply_noise(&noise_nodes, action_overrides.noise_amp, &mut rng);
+            }
+
+            let partition_mask = current_sig.ctx_hat.unwrap_or(0) as u64;
+            anchor_bank.update_anchor_partition(anchor_id, partition_mask, ctx_hat);
+
+            if gate_passed && anchor_id != 0xFFFF {
+                anchor_bank.update_anchor_proto(anchor_id, &base_topk, config);
+            }
+
+            if prev_anchor_id != 0xFFFF {
+                let v_next = if gate_passed && anchor_id != 0xFFFF {
+                    anchor_bank.get_value(anchor_id)
+                } else if topk_margin < ANCHOR_MARGIN_MIN * adjusted_gate_params.margin_mult {
+                    config.v_abstain_margin
+                } else {
+                    0.0
+                };
+                let v_prev = anchor_bank.get_value(prev_anchor_id);
+                let delta_power = total_power - prev_power;
+                let mut reward =
+                    compute_reward(delta_power, prev_topk_margin, prev_proto_align, config);
+                reward_ema =
+                    (1.0 - config.reward_ema_beta) * reward_ema + config.reward_ema_beta * reward;
+                if config.use_advantage_reward {
+                    reward = reward - reward_ema;
+                }
+                let td = reward + config.gamma_v * v_next - v_prev;
+                anchor_bank.update_anchor_value(prev_anchor_id, td, config);
+            }
+
+            if gate_passed && anchor_id != 0xFFFF {
+                prev_anchor_id = anchor_id;
+                prev_power = total_power;
+                prev_topk_margin = topk_margin;
+                if let Some(anchor) = anchor_bank.get_anchor(anchor_id) {
+                    prev_proto_align = anchor.proto_score(&base_topk, config.proto_m);
+                } else {
+                    prev_proto_align = 0.0;
+                }
+            } else {
+                prev_anchor_id = 0xFFFF;
+            }
+
+            let learned_mask = current_sig.ctx_hat.unwrap_or(0) as u64;
+            let key = MemoryKey::new(anchor_id, learned_mask);
+
+            if bind_ticks.contains(&t) {
+                let label = current_sig.ctx_hat.unwrap_or(0) as u16;
+                keyed_memory.store(key, label);
+            }
+
+            if t >= config.competitive_recall_start && t % config.competitive_recall_stride == 0 {
+                let is_negative = rng.next_f64() < config.competitive_p_neg;
+
+                if is_negative {
+                    let neg_sig_mask = flip_bits_simple(
+                        sig_mask,
+                        config.competitive_neg_flip_bits,
+                        rng.next_u64(),
+                    );
+                    let (neg_anchor_id, _, _) = anchor_bank.resolve(neg_sig_mask, global_tick);
+                    let neg_key = MemoryKey::new(neg_anchor_id, learned_mask);
+                    let decision = keyed_memory.recall(neg_key);
+                    metrics.record_negative(&decision);
+                } else {
+                    let true_label = current_sig.ctx_hat.unwrap_or(255) as u16;
+                    let decision = keyed_memory.recall(key);
+                    if let anchor::KeyedRecallDecision::Label(recalled_label, _) = &decision {
+                        if *recalled_label == true_label {
+                            anchor_bank.record_win(anchor_id);
+                        }
+                    }
+                    metrics.record_positive(&decision, true_label);
+                }
+            }
+
+            global_tick += 1;
+        }
+    }
+
+    // Build report
+    let action_stats = &action_policy.stats;
+    let total_actions = action_stats.total_count();
+
+    let mut report = action_ablate::VariantReport::new(label);
+    report.scan_count = action_stats.scan_count;
+    report.focus_count = action_stats.focus_count;
+    report.perturb_count = action_stats.perturb_count;
+    report.scan_rate = action_stats.scan_rate();
+    report.focus_rate = action_stats.focus_rate();
+    report.perturb_rate = action_stats.perturb_rate();
+
+    report.coverage_pos = metrics.coverage_pos();
+    report.selective_accuracy = metrics.selective_accuracy();
+    report.false_positive_rate = metrics.false_positive_rate();
+    report.stable_drop_ratio = anchor_bank.stable_drop_ratio();
+
+    report.mean_abs_td = if total_ticks > 0 {
+        total_abs_td_sum / total_ticks as f64
+    } else {
+        0.0
+    };
+    report.stable_time_share = if total_ticks > 0 {
+        total_stable_ticks as f64 / total_ticks as f64
+    } else {
+        0.0
+    };
+
+    report.scan_stable_share = action_stats.stable_share(Action::Scan);
+    report.focus_stable_share = action_stats.stable_share(Action::Focus);
+    report.perturb_stable_share = action_stats.stable_share(Action::Perturb);
+
+    report.perturb_effectiveness = action_stats.perturb_effectiveness();
+    report.perturb_effectiveness_samples = action_stats.perturb_effectiveness_samples;
+
+    report
+}
+
+/// Run a single sweep point and collect metrics.
+fn run_sweep_point(
+    config: &Config,
+    param_name: &str,
+    param_value: f64,
+    explore_v_max_override: Option<f32>,
+    reset_td_min_override: Option<f32>,
+) -> action_ablate::SweepPoint {
+    use action::{Action, ActionConfig, ActionPolicy};
+    use mode::{ModePolicy, ModePolicyConfig};
+
+    // Create modified mode policy config
+    let mode_policy_config = ModePolicyConfig {
+        explore_v_max: explore_v_max_override.unwrap_or(config.mode_explore_v_max),
+        exploit_v_min: config.mode_exploit_v_min,
+        reset_td_min: reset_td_min_override.unwrap_or(config.mode_reset_td_min),
+        reset_value_drop: config.mode_reset_value_drop,
+        reset_fail_streak: config.mode_reset_fail_streak,
+        post_reset_cooldown: config.mode_post_reset_cooldown,
+        explore_margin_min_scale: config.mode_explore_margin_scale,
+        exploit_margin_min_scale: config.mode_exploit_margin_scale,
+        reset_dampen: config.mode_reset_dampen,
+        reset_dampen_top_k: config.mode_reset_dampen_top_k,
+        window_size: config.mode_window_size,
+    };
+    let mut mode_policy = ModePolicy::new(mode_policy_config);
+
+    let action_config = ActionConfig {
+        scan_topk_scale: config.scan_topk_scale,
+        focus_topk_scale: config.focus_topk_scale,
+        scan_margin_scale: config.scan_margin_scale,
+        focus_margin_scale: config.focus_margin_scale,
+        perturb_noise_amp: config.perturb_noise_amp,
+    };
+    let mut action_policy = ActionPolicy::new(action_config);
+
+    // Use fixed seed for sweep consistency
+    let mut rng = Rng::new(config.seed.wrapping_add(0x7A7A_7A7A));
+    let mut chamber = EchoChamber::random_graph(config.clone(), &mut rng);
+    let causes = Causes::new(&config, &mut rng);
+
+    // Pre-train phase
+    for _ in 0..10000 {
+        let (active_mask, _) = causes.sample_active(&mut rng);
+        let z_inj = causes.compute_z_inj(active_mask);
+        causes.inject_for_tick(&mut rng, &mut chamber, active_mask);
+        let topk = get_top_k(&chamber, config.top_k);
+        let topk_ids: Vec<usize> = topk.iter().map(|(id, _)| *id).collect();
+        chamber.tick_with_context_plasticity(z_inj, &topk_ids, true);
+    }
+
+    let mut anchor_bank = AnchorBank::new();
+    let keyed_config = KeyedMemoryConfig {
+        label_min_p: 0.50,
+        label_margin: 0.10,
+        alpha: 0.5,
+        num_labels: config.num_ctx,
+    };
+    let mut keyed_memory = KeyedMemoryStore::new(keyed_config);
+    let mut metrics = KeyedMemoryMetrics::new();
+
+    let mut window = RollingWindow::new(config.num_nodes, config.num_ctx);
+    let bind_ticks = config.competitive_bind_ticks();
+    let mut global_tick: u64 = 0;
+
+    let mut prev_anchor_id: u16 = 0xFFFF;
+    let mut prev_power: f64 = 0.0;
+    let mut prev_topk_margin: f64 = 0.0;
+    let mut prev_proto_align: f32 = 0.0;
+    let mut reward_ema: f32 = 0.0;
+
+    let mut total_stable_ticks: usize = 0;
+    let mut total_ticks: usize = 0;
+    let mut total_abs_td_sum: f64 = 0.0;
+
+    // Run fewer episodes for sweep (faster)
+    let sweep_episodes = (config.competitive_episodes / 2).max(50);
+
+    for _ep in 0..sweep_episodes {
+        window.reset();
+
+        for t in 0..config.competitive_episode_ticks {
+            let (active_mask, _) = causes.sample_active(&mut rng);
+            let z_inj = causes.compute_z_inj(active_mask);
+            causes.inject_for_tick(&mut rng, &mut chamber, active_mask);
+
+            let base_topk = get_top_k(&chamber, config.top_k);
+            let tick_metrics = chamber.tick_with_context_plasticity(z_inj, &[], false);
+
+            let ctx_hat = tick_metrics.ctx.map(|c| c as u8);
+            let topk_ids: Vec<usize> = base_topk.iter().map(|(id, _)| *id).collect();
+            window.push(&topk_ids, ctx_hat);
+
+            if !window.is_ready() {
+                global_tick += 1;
+                continue;
+            }
+
+            let current_sig = window.competitive_sig();
+            let sig_mask = current_sig.mask;
+
+            let topk_margin = if base_topk.len() >= 2 {
+                base_topk[0].1 - base_topk[1].1
+            } else if !base_topk.is_empty() {
+                base_topk[0].1
+            } else {
+                0.0
+            };
+            let total_power = tick_metrics.tot_pow_post;
+            let confidence = ConfidenceInfo::new(topk_margin, total_power);
+
+            if anchor_bank.should_merge(global_tick) {
+                let remaps = anchor_bank.merge_similar(Some(config));
+                if !remaps.is_empty() {
+                    keyed_memory.apply_remaps(&remaps);
+                }
+                anchor_bank.mark_merge_done(global_tick);
+            }
+
+            if anchor_bank.should_scan_merges(global_tick, config) {
+                let remaps = anchor_bank.scan_and_merge(config);
+                if !remaps.is_empty() {
+                    keyed_memory.apply_remaps(&remaps);
+                }
+                anchor_bank.mark_scan_done(global_tick);
+            }
+
+            anchor_bank.update_stability(global_tick, config);
+
+            let base_gate_params = if anchor_bank.stable_mode {
+                GateParams::stable(config)
+            } else {
+                GateParams::explore(config)
+            };
+
+            let (anchor_id, _is_new, _match_dist) =
+                anchor_bank.resolve_gated(sig_mask, global_tick, Some(&confidence), Some(config));
+
+            let anchor_value = if anchor_id != 0xFFFF {
+                anchor_bank.get_value(anchor_id)
+            } else {
+                0.0
+            };
+
+            let is_stable = if anchor_id != 0xFFFF {
+                anchor_bank
+                    .get_anchor(anchor_id)
+                    .map(|a| a.stable)
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+
+            let abs_td = if prev_anchor_id != 0xFFFF {
+                let gate_passed = confidence.passes_gate_with_params(&base_gate_params);
+                let v_next = if gate_passed && anchor_id != 0xFFFF {
+                    anchor_bank.get_value(anchor_id)
+                } else if topk_margin < ANCHOR_MARGIN_MIN * base_gate_params.margin_mult {
+                    config.v_abstain_margin
+                } else {
+                    0.0
+                };
+                let v_prev = anchor_bank.get_value(prev_anchor_id);
+                let delta_power = total_power - prev_power;
+                let reward =
+                    compute_reward(delta_power, prev_topk_margin, prev_proto_align, config);
+                let td = reward + config.gamma_v * v_next - v_prev;
+                td.abs()
+            } else {
+                0.0
+            };
+
+            total_abs_td_sum += abs_td as f64;
+            total_ticks += 1;
+            if is_stable {
+                total_stable_ticks += 1;
+            }
+
+            let base_gate_passed = confidence.passes_gate_with_params(&base_gate_params);
+            mode_policy.observe(global_tick, anchor_value, abs_td as f32, base_gate_passed);
+
+            let mode = mode_policy.choose_mode(global_tick);
+            let action = action_policy.choose_action(mode);
+
+            let action_overrides = action_policy.get_overrides(action);
+
+            let mut adjusted_gate_params = base_gate_params.clone();
+            adjusted_gate_params.margin_mult *= action_overrides.margin_scale as f64;
+
+            let gate_passed = confidence.passes_gate_with_params(&adjusted_gate_params);
+
+            action_policy.record_tick(action, gate_passed, abs_td as f32, anchor_value, is_stable);
+
+            if action_overrides.apply_noise && action_overrides.noise_amp > 0.0 {
+                let noise_nodes: Vec<usize> = base_topk
+                    .iter()
+                    .take(config.mode_reset_dampen_top_k)
+                    .map(|(id, _)| *id)
+                    .collect();
+                chamber.apply_noise(&noise_nodes, action_overrides.noise_amp, &mut rng);
+            }
+
+            let partition_mask = current_sig.ctx_hat.unwrap_or(0) as u64;
+            anchor_bank.update_anchor_partition(anchor_id, partition_mask, ctx_hat);
+
+            if gate_passed && anchor_id != 0xFFFF {
+                anchor_bank.update_anchor_proto(anchor_id, &base_topk, config);
+            }
+
+            if prev_anchor_id != 0xFFFF {
+                let v_next = if gate_passed && anchor_id != 0xFFFF {
+                    anchor_bank.get_value(anchor_id)
+                } else if topk_margin < ANCHOR_MARGIN_MIN * adjusted_gate_params.margin_mult {
+                    config.v_abstain_margin
+                } else {
+                    0.0
+                };
+                let v_prev = anchor_bank.get_value(prev_anchor_id);
+                let delta_power = total_power - prev_power;
+                let mut reward =
+                    compute_reward(delta_power, prev_topk_margin, prev_proto_align, config);
+                reward_ema =
+                    (1.0 - config.reward_ema_beta) * reward_ema + config.reward_ema_beta * reward;
+                if config.use_advantage_reward {
+                    reward = reward - reward_ema;
+                }
+                let td = reward + config.gamma_v * v_next - v_prev;
+                anchor_bank.update_anchor_value(prev_anchor_id, td, config);
+            }
+
+            if gate_passed && anchor_id != 0xFFFF {
+                prev_anchor_id = anchor_id;
+                prev_power = total_power;
+                prev_topk_margin = topk_margin;
+                if let Some(anchor) = anchor_bank.get_anchor(anchor_id) {
+                    prev_proto_align = anchor.proto_score(&base_topk, config.proto_m);
+                } else {
+                    prev_proto_align = 0.0;
+                }
+            } else {
+                prev_anchor_id = 0xFFFF;
+            }
+
+            let learned_mask = current_sig.ctx_hat.unwrap_or(0) as u64;
+            let key = MemoryKey::new(anchor_id, learned_mask);
+
+            if bind_ticks.contains(&t) {
+                let label = current_sig.ctx_hat.unwrap_or(0) as u16;
+                keyed_memory.store(key, label);
+            }
+
+            if t >= config.competitive_recall_start && t % config.competitive_recall_stride == 0 {
+                let is_negative = rng.next_f64() < config.competitive_p_neg;
+
+                if is_negative {
+                    let neg_sig_mask = flip_bits_simple(
+                        sig_mask,
+                        config.competitive_neg_flip_bits,
+                        rng.next_u64(),
+                    );
+                    let (neg_anchor_id, _, _) = anchor_bank.resolve(neg_sig_mask, global_tick);
+                    let neg_key = MemoryKey::new(neg_anchor_id, learned_mask);
+                    let decision = keyed_memory.recall(neg_key);
+                    metrics.record_negative(&decision);
+                } else {
+                    let true_label = current_sig.ctx_hat.unwrap_or(255) as u16;
+                    let decision = keyed_memory.recall(key);
+                    if let anchor::KeyedRecallDecision::Label(recalled_label, _) = &decision {
+                        if *recalled_label == true_label {
+                            anchor_bank.record_win(anchor_id);
+                        }
+                    }
+                    metrics.record_positive(&decision, true_label);
+                }
+            }
+
+            global_tick += 1;
+        }
+    }
+
+    let action_stats = &action_policy.stats;
+
+    let mut point = action_ablate::SweepPoint::new(param_name, param_value);
+    point.scan_rate = action_stats.scan_rate();
+    point.focus_rate = action_stats.focus_rate();
+    point.perturb_rate = action_stats.perturb_rate();
+    point.coverage_pos = metrics.coverage_pos();
+    point.selective_accuracy = metrics.selective_accuracy();
+    point.false_positive_rate = metrics.false_positive_rate();
+    point.stable_drop_ratio = anchor_bank.stable_drop_ratio();
+    point.mean_abs_td = if total_ticks > 0 {
+        total_abs_td_sum / total_ticks as f64
+    } else {
+        0.0
+    };
+    point.stable_time_share = if total_ticks > 0 {
+        total_stable_ticks as f64 / total_ticks as f64
+    } else {
+        0.0
+    };
+
+    point
 }

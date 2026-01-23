@@ -507,4 +507,27 @@ impl EchoChamber {
             }
         }
     }
+
+    /// Apply small noise perturbation to node buffers.
+    /// Used by Perturb action for controlled disruption.
+    /// Adds random phase noise scaled by amplitude.
+    pub fn apply_noise(&mut self, node_ids: &[usize], noise_amp: f32, rng: &mut crate::rng::Rng) {
+        use crate::complex::Complex;
+
+        let noise_amp = noise_amp.clamp(0.0, 0.1) as f64; // Cap noise amplitude
+        for &node_id in node_ids {
+            if node_id < self.nodes.len() {
+                let current = self.nodes[node_id].buffer;
+                let current_amp = current.norm();
+                if current_amp > 1e-6 {
+                    // Add small random phase perturbation
+                    let phase_noise = (rng.next_f64() - 0.5) * std::f64::consts::PI * noise_amp;
+                    let amp_noise = 1.0 + (rng.next_f64() - 0.5) * noise_amp;
+                    let new_phase = current.arg() + phase_noise;
+                    let new_amp = current_amp * amp_noise;
+                    self.nodes[node_id].buffer = Complex::from_polar(new_amp, new_phase);
+                }
+            }
+        }
+    }
 }

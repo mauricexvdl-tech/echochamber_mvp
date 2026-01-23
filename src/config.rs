@@ -199,6 +199,10 @@ pub struct Config {
     pub run_demo_7: bool,
     /// Run demo 8 (Phase 2.0b Ablations + Mode Metrics).
     pub run_demo_8: bool,
+    /// Run demo 9 (Phase 2.0c Mode → Action Loop).
+    pub run_demo_9: bool,
+    /// Run demo 10 (Phase 2.0d Action Ablations + Sweep).
+    pub run_demo_10: bool,
 
     // =========================================================================
     // Phase 2.0a: Mode Policy Configuration
@@ -227,6 +231,22 @@ pub struct Config {
     pub mode_reset_dampen_top_k: usize,
     /// Window size for tracking recent values/TD.
     pub mode_window_size: usize,
+
+    // =========================================================================
+    // Phase 2.0c: Action Policy Configuration
+    // =========================================================================
+    /// Enable action policy (Scan/Focus/Perturb) in Demo 9.
+    pub enable_action_policy: bool,
+    /// Scale factor for Top-K during Scan action (> 1.0 = more nodes).
+    pub scan_topk_scale: f32,
+    /// Scale factor for Top-K during Focus action (< 1.0 = fewer nodes).
+    pub focus_topk_scale: f32,
+    /// Scale factor for margin during Scan action (< 1.0 = looser).
+    pub scan_margin_scale: f32,
+    /// Scale factor for margin during Focus action (> 1.0 = tighter).
+    pub focus_margin_scale: f32,
+    /// Noise amplitude for Perturb action.
+    pub perturb_noise_amp: f32,
 
     // =========================================================================
     // Phase 1.9b: CONSOLIDATION (Aggressive merge scanning + flicker elimination)
@@ -430,6 +450,8 @@ impl Default for Config {
             run_keyed_5b: true,
             run_demo_7: true, // Phase 2.0a: Mode Policy demo
             run_demo_8: true, // Phase 2.0b: Ablations + Mode Metrics demo
+            run_demo_9: true, // Phase 2.0c: Mode → Action Loop demo
+            run_demo_10: true, // Phase 2.0d: Action Ablations + Sweep demo
 
             // Phase 2.0a: Mode Policy defaults
             enable_mode_policy: true,
@@ -444,6 +466,14 @@ impl Default for Config {
             mode_reset_dampen: 0.50, // 50% amplitude reduction on top-K nodes
             mode_reset_dampen_top_k: 8,
             mode_window_size: 32,
+
+            // Phase 2.0c: Action Policy defaults
+            enable_action_policy: true,
+            scan_topk_scale: 1.25,
+            focus_topk_scale: 0.80,
+            scan_margin_scale: 0.80,
+            focus_margin_scale: 1.30,
+            perturb_noise_amp: 0.02,
 
             // Phase 1.9e: CONSOLIDATION defaults (balanced merge + stable accumulation)
             merge_scan_period: 50, // Phase 1.9e: 40 -> 50 (less frequent for stable accumulation)
