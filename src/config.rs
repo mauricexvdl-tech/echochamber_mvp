@@ -205,6 +205,8 @@ pub struct Config {
     pub run_demo_10: bool,
     /// Run demo 11 (Phase 2.0e Trigger-Matched Random + Regret Metrics).
     pub run_demo_11: bool,
+    /// Run demo 12 (Phase 2.0f-A Action Distillation).
+    pub run_demo_12: bool,
 
     // =========================================================================
     // Phase 2.0e: Regret/Recovery Metrics Configuration
@@ -225,6 +227,24 @@ pub struct Config {
     pub regret_post_gate_window: usize,
     /// Minimum improvement ratio to count as "good" recovery.
     pub regret_recovery_good_threshold: f64,
+
+    // =========================================================================
+    // Phase 2.0f-A: Action Distillation Configuration
+    // =========================================================================
+    /// Learning rate for distillation SGD.
+    pub distill_lr: f32,
+    /// L2 regularization coefficient.
+    pub distill_l2: f32,
+    /// Softmax temperature.
+    pub distill_temperature: f32,
+    /// Warmup ticks before training starts.
+    pub distill_warmup_ticks: u64,
+    /// Replay buffer capacity.
+    pub distill_replay_capacity: usize,
+    /// Mini-batch size for SGD.
+    pub distill_batch_size: usize,
+    /// Train every N ticks.
+    pub distill_train_every: u64,
 
     // =========================================================================
     // Phase 2.0a: Mode Policy Configuration
@@ -470,11 +490,12 @@ impl Default for Config {
             // Demo Control Flags defaults
             run_baseline_5a: false, // Skip baseline for faster iteration
             run_keyed_5b: true,
-            run_demo_7: true, // Phase 2.0a: Mode Policy demo
-            run_demo_8: true, // Phase 2.0b: Ablations + Mode Metrics demo
-            run_demo_9: true, // Phase 2.0c: Mode → Action Loop demo
+            run_demo_7: true,  // Phase 2.0a: Mode Policy demo
+            run_demo_8: true,  // Phase 2.0b: Ablations + Mode Metrics demo
+            run_demo_9: true,  // Phase 2.0c: Mode → Action Loop demo
             run_demo_10: true, // Phase 2.0d: Action Ablations + Sweep demo
             run_demo_11: true, // Phase 2.0e: Trigger-Matched Random + Regret Metrics demo
+            run_demo_12: true, // Phase 2.0f-A: Action Distillation demo
 
             // Phase 2.0e: Regret/Recovery Metrics defaults
             regret_margin_bad: 0.02,
@@ -485,6 +506,15 @@ impl Default for Config {
             regret_post_window: 10,
             regret_post_gate_window: 50,
             regret_recovery_good_threshold: 0.10,
+
+            // Phase 2.0f-A: Action Distillation defaults
+            distill_lr: 0.03,
+            distill_l2: 1e-4,
+            distill_temperature: 1.0,
+            distill_warmup_ticks: 5_000,
+            distill_replay_capacity: 50_000,
+            distill_batch_size: 128,
+            distill_train_every: 5,
 
             // Phase 2.0a: Mode Policy defaults
             enable_mode_policy: true,
