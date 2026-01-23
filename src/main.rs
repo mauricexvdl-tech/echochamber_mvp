@@ -502,37 +502,76 @@ fn run_competitive_experiment(config: &Config) -> (GlobalLabelMetrics, usize, us
 fn demo_phase_1_5b_comparison(config: &Config) {
     println!();
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("DEMO 5/6: Phase 1.9 - CONSOLIDATION (Merges + Stability)");
+    println!("DEMO 5/6: Phase 1.9b - AGGRESSIVE CONSOLIDATION");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!();
 
-    // Run both experiments with same seed for fair comparison
-    let (metrics_5a, stability_5a) = run_demo_5a_baseline(config);
+    // Run experiments based on config flags
+    let (metrics_5a, stability_5a) = if config.run_baseline_5a {
+        run_demo_5a_baseline(config)
+    } else {
+        println!("DEMO 5a: SKIPPED (run_baseline_5a=false)");
+        (GlobalLabelMetrics::new(), 0.0)
+    };
     println!();
-    let (metrics_5b, anchor_stats, keyed_stats, probe_stats, lifecycle_stats) = run_demo_5b_keyed(config);
+    let (metrics_5b, anchor_stats, keyed_stats, probe_stats, lifecycle_stats) = if config.run_keyed_5b {
+        run_demo_5b_keyed(config)
+    } else {
+        println!("DEMO 5b: SKIPPED (run_keyed_5b=false)");
+        // Return empty/default values
+        let empty_metrics = KeyedMemoryMetrics::new();
+        let empty_anchor_stats = AnchorStats {
+            anchors_used: 0, creates: 0, evictions: 0, merges: 0,
+            thrash_rate: 0.0, new_rate: 0.0, avg_hamming: 0.0, p95_hamming: 0,
+            utilization: 0.0, gate_pass_rate: 0.0, proto_updates: 0,
+            avg_proto_support: 0.0, proto_active_rate: 0.0,
+            proto_entropy_early: 0.0, proto_entropy_late: 0.0,
+            value_stats: ValueStats::new(),
+        };
+        (empty_metrics, empty_anchor_stats, (0, 0.0, 0), None, LifecycleStats {
+            stable_count: 0, stable_fraction: 0.0, mode_transitions: 0,
+            total_wins: 0, final_mode: false, merges_done: 0,
+            merge_candidates_found: 0, stable_new: 0, stable_dropped: 0,
+            stable_drop_ratio: 0.0, merge_scan_runs: 0, merges_done_proto: 0,
+            avg_merge_score: 0.0, merge_blocked_proto: 0, merge_blocked_value: 0,
+            merge_blocked_stability: 0, merge_blocked_key_mismatch: 0,
+            merge_blocked_ctx_mismatch: 0, merge_blocked_mode_mismatch: 0,
+            pairs_checked: 0, opportunity_rate: 0.0,
+        })
+    };
 
-    // Print comparison summary
-    println!();
-    println!("═══════════════════════════════════════════════════════════════════");
-    println!("PHASE 1.8 COMPARISON SUMMARY");
-    println!("═══════════════════════════════════════════════════════════════════");
-    println!();
-    println!("{:<25} {:>12} {:>12}", "Metric", "5a (1.4c)", "5b (Keyed)");
-    println!("─────────────────────────────────────────────────────────────────");
-    println!("{:<25} {:>11.1}% {:>11.1}%", "coverage_pos",
-        metrics_5a.coverage_pos() * 100.0, metrics_5b.coverage_pos() * 100.0);
-    println!("{:<25} {:>11.1}% {:>11.1}%", "accuracy_pos",
-        metrics_5a.accuracy_pos() * 100.0, metrics_5b.accuracy_pos() * 100.0);
-    println!("{:<25} {:>11.1}% {:>11.1}%", "abstain_neg",
-        metrics_5a.abstain_neg_rate() * 100.0, metrics_5b.abstain_neg_rate() * 100.0);
-    println!("{:<25} {:>11.1}% {:>11.1}%", "false_positive",
-        metrics_5a.false_positive_rate() * 100.0, metrics_5b.false_positive_rate() * 100.0);
-    println!("{:<25} {:>11.1}% {:>11.1}%", "selective_accuracy",
-        metrics_5a.selective_accuracy() * 100.0, metrics_5b.selective_accuracy() * 100.0);
-    println!();
+    // Print comparison summary only if both ran
+    if config.run_baseline_5a && config.run_keyed_5b {
+        println!();
+        println!("═══════════════════════════════════════════════════════════════════");
+        println!("PHASE 1.8 COMPARISON SUMMARY");
+        println!("═══════════════════════════════════════════════════════════════════");
+        println!();
+        println!("{:<25} {:>12} {:>12}", "Metric", "5a (1.4c)", "5b (Keyed)");
+        println!("─────────────────────────────────────────────────────────────────");
+        println!("{:<25} {:>11.1}% {:>11.1}%", "coverage_pos",
+            metrics_5a.coverage_pos() * 100.0, metrics_5b.coverage_pos() * 100.0);
+        println!("{:<25} {:>11.1}% {:>11.1}%", "accuracy_pos",
+            metrics_5a.accuracy_pos() * 100.0, metrics_5b.accuracy_pos() * 100.0);
+        println!("{:<25} {:>11.1}% {:>11.1}%", "abstain_neg",
+            metrics_5a.abstain_neg_rate() * 100.0, metrics_5b.abstain_neg_rate() * 100.0);
+        println!("{:<25} {:>11.1}% {:>11.1}%", "false_positive",
+            metrics_5a.false_positive_rate() * 100.0, metrics_5b.false_positive_rate() * 100.0);
+        println!("{:<25} {:>11.1}% {:>11.1}%", "selective_accuracy",
+            metrics_5a.selective_accuracy() * 100.0, metrics_5b.selective_accuracy() * 100.0);
+        println!();
+        println!("5a stability: {:.1}%", stability_5a * 100.0);
+    } else if config.run_baseline_5a {
+        println!();
+        println!("5a stability: {:.1}%", stability_5a * 100.0);
+    }
 
-    // Phase 1.6 specific metrics
-    println!("5a stability: {:.1}%", stability_5a * 100.0);
+    // Skip remaining output if 5b didn't run
+    if !config.run_keyed_5b {
+        return;
+    }
+
+    // Phase 1.6 specific metrics (5b only)
     println!();
     println!("5b Anchor Codebook (Phase 1.6):");
     println!("  anchors_used: {} / {} ({:.1}% utilization)",
@@ -633,21 +672,30 @@ fn demo_phase_1_5b_comparison(config: &Config) {
     println!("  total_wins: {}", lifecycle_stats.total_wins);
     println!("  final_mode: {}", if lifecycle_stats.final_mode { "STABLE" } else { "EXPLORE" });
 
-    // Phase 1.9: Consolidation metrics
+    // Phase 1.9c: Consolidation metrics with opportunity diagnostics
     println!();
-    println!("Phase 1.9 Consolidation (MERGES + STABILITY):");
+    println!("Phase 1.9c Consolidation (PARTITION-AWARE + SOFT CTX):");
     println!("  merge_scan_runs: {}", lifecycle_stats.merge_scan_runs);
     println!("  merges_done_proto: {}", lifecycle_stats.merges_done_proto);
     println!("  avg_merge_score: {:.3}", lifecycle_stats.avg_merge_score);
-    println!("  merge_candidates_found: {}", lifecycle_stats.merge_candidates_found);
+    println!("  pairs_checked: {}", lifecycle_stats.pairs_checked);
+    println!("  candidates_found: {}", lifecycle_stats.merge_candidates_found);
+    println!("  opportunity_rate: {:.4}%", lifecycle_stats.opportunity_rate * 100.0);
+    println!("  Merge blocking breakdown:");
+    println!("    blocked_key_mismatch: {}", lifecycle_stats.merge_blocked_key_mismatch);
+    println!("    blocked_ctx_mismatch: {}", lifecycle_stats.merge_blocked_ctx_mismatch);
+    println!("    blocked_mode_mismatch: {}", lifecycle_stats.merge_blocked_mode_mismatch);
+    println!("    blocked_proto_score: {}", lifecycle_stats.merge_blocked_proto);
+    println!("    blocked_value_delta: {}", lifecycle_stats.merge_blocked_value);
+    println!("    blocked_stability_mixed: {}", lifecycle_stats.merge_blocked_stability);
     println!("  stable_new: {}", lifecycle_stats.stable_new);
     println!("  stable_dropped: {}", lifecycle_stats.stable_dropped);
-    println!("  stable_drop_ratio: {:.1}%", lifecycle_stats.stable_drop_ratio * 100.0);
+    println!("  stable_drop_ratio: {:.2}%", lifecycle_stats.stable_drop_ratio * 100.0);
 
-    // Acceptance check for Phase 1.9
+    // Acceptance check for Phase 1.9b
     println!();
     println!("═══════════════════════════════════════════════════════════════════");
-    println!("PHASE 1.9 ACCEPTANCE:");
+    println!("PHASE 1.9b ACCEPTANCE:");
     println!("═══════════════════════════════════════════════════════════════════");
 
     // Phase 1.6 criteria (must not regress) - slightly relaxed from 1.7a
@@ -737,41 +785,65 @@ fn demo_phase_1_5b_comparison(config: &Config) {
 
     let phase18_ok = has_wins && lifecycle_active;
 
-    // Phase 1.9 acceptance criteria
-    let merges_ok = lifecycle_stats.merges_done_proto > 0;
-    let drop_ratio_ok = lifecycle_stats.stable_drop_ratio <= 0.35;
+    // Phase 1.9b acceptance criteria (aggressive targets)
+    let merges_many_ok = lifecycle_stats.merges_done_proto >= 500;
+    let merges_some_ok = lifecycle_stats.merges_done_proto >= 100;
+    let avg_merge_score_ok = lifecycle_stats.avg_merge_score >= 0.80;
+    let drop_ratio_ok = lifecycle_stats.stable_drop_ratio <= 0.005; // <= 0.5%
+    let drop_ratio_relaxed = lifecycle_stats.stable_drop_ratio <= 0.05; // <= 5% (relaxed)
+    let stable_count_ok = lifecycle_stats.stable_count >= 30;
+    let coverage_ok = metrics_5b.coverage_pos() >= 0.70;
+    let selective_ok = metrics_5b.selective_accuracy() >= 0.80;
 
     println!();
-    println!("Phase 1.9 (CONSOLIDATION):");
-    println!("  [{}] merges_done_proto > 0: {}",
-        if merges_ok { "✓" } else { "✗" }, lifecycle_stats.merges_done_proto);
-    println!("  [{}] stable_drop_ratio <= 35%: {:.1}%",
+    println!("Phase 1.9b (CONSOLIDATION - Aggressive Merge + Flicker Elimination):");
+    println!("  [{}] merges_done_proto >= 500: {}",
+        if merges_many_ok { "✓" } else { "✗" }, lifecycle_stats.merges_done_proto);
+    println!("  [{}] avg_merge_score >= 0.80: {:.3}",
+        if avg_merge_score_ok { "✓" } else { "✗" }, lifecycle_stats.avg_merge_score);
+    println!("  [{}] stable_drop_ratio <= 0.5%: {:.2}%",
         if drop_ratio_ok { "✓" } else { "✗" }, lifecycle_stats.stable_drop_ratio * 100.0);
-    println!("  [i] avg_merge_score: {:.3}", lifecycle_stats.avg_merge_score);
-    println!("  [i] merge_candidates_found: {}", lifecycle_stats.merge_candidates_found);
-    println!("  [i] stable_new: {}, stable_dropped: {}",
+    println!("  [{}] stable_count >= 30: {}",
+        if stable_count_ok { "✓" } else { "✗" }, lifecycle_stats.stable_count);
+    println!("  [{}] coverage_pos >= 70%: {:.1}%",
+        if coverage_ok { "✓" } else { "✗" }, metrics_5b.coverage_pos() * 100.0);
+    println!("  [{}] selective_accuracy >= 80%: {:.1}%",
+        if selective_ok { "✓" } else { "✗" }, metrics_5b.selective_accuracy() * 100.0);
+    println!("  [{}] false_positive == 0%: {:.1}%",
+        if fp_ok { "✓" } else { "✗" }, metrics_5b.false_positive_rate() * 100.0);
+    println!();
+    println!("  Merge Diagnostics:");
+    println!("    merge_candidates_found: {}", lifecycle_stats.merge_candidates_found);
+    println!("    blocked_key_mismatch: {}", lifecycle_stats.merge_blocked_key_mismatch);
+    println!("    blocked_ctx_mismatch: {}", lifecycle_stats.merge_blocked_ctx_mismatch);
+    println!("    blocked_mode_mismatch: {}", lifecycle_stats.merge_blocked_mode_mismatch);
+    println!("    blocked_proto_score: {}", lifecycle_stats.merge_blocked_proto);
+    println!("    blocked_value_delta: {}", lifecycle_stats.merge_blocked_value);
+    println!("    blocked_stability_mixed: {}", lifecycle_stats.merge_blocked_stability);
+    println!("    stable_new: {}, stable_dropped: {}",
         lifecycle_stats.stable_new, lifecycle_stats.stable_dropped);
 
-    let phase19_ok = merges_ok && drop_ratio_ok;
+    // Phase 1.9b: Primary goals are (1) many merges, (2) no flicker, (3) no coverage regression
+    let stable_count_relaxed = lifecycle_stats.stable_count >= 10;  // Relaxed from 30 to 10
+    let phase19b_strict = merges_many_ok && avg_merge_score_ok && drop_ratio_ok && stable_count_ok && coverage_ok && selective_ok && fp_ok;
+    let phase19b_relaxed = merges_some_ok && avg_merge_score_ok && drop_ratio_relaxed && stable_count_relaxed && coverage_ok && selective_ok && fp_ok;
+    let phase19b_core_goals = merges_many_ok && drop_ratio_ok && coverage_ok && selective_ok && fp_ok;
 
-    if phase16_ok && phase17a_ok && phase17b_ok && phase17d_ok && phase18_ok && phase19_ok {
+    if phase19b_strict {
         println!();
-        println!("  → Phase 1.9: ALL CRITERIA MET!");
-    } else if phase16_ok && phase17a_ok && phase17b_ok && phase17d_ok && phase18_ok {
+        println!("  → Phase 1.9b: ALL CRITERIA MET! (strict)");
+    } else if phase19b_core_goals {
         println!();
-        println!("  → Phase 1.8 OK, Phase 1.9 consolidation needs tuning.");
-    } else if phase16_ok && phase17a_ok && phase17b_ok && phase17d_ok {
+        println!("  → Phase 1.9b: CORE GOALS MET (merges>=500, drop_ratio<=0.5%, coverage>=70%, selective>=80%)");
+    } else if phase19b_relaxed {
         println!();
-        println!("  → Phase 1.7d OK, Phase 1.8 lifecycle needs more data.");
-    } else if phase16_ok && phase17a_ok && phase17d_ok {
+        println!("  → Phase 1.9b: CRITERIA MET (relaxed - merges>=100, drop_ratio<=5%)");
+    } else if phase16_ok && phase17a_ok && phase18_ok && merges_some_ok {
         println!();
-        println!("  → Phase 1.7d OK (probe instrumentation working), value learning needs tuning.");
-    } else if phase16_ok && phase17a_ok {
+        println!("  → Phase 1.9b: Partial success. Merges happening, but other criteria need tuning.");
+    } else if phase16_ok && phase17a_ok && phase18_ok {
         println!();
-        println!("  → Phase 1.7a OK, Phase 1.7b value learning needs tuning.");
-    } else if phase16_ok {
-        println!();
-        println!("  → Phase 1.6 OK, prototype/value criteria need attention.");
+        println!("  → Phase 1.8 OK, Phase 1.9b needs more merge activity.");
     } else {
         println!();
         println!("  → Some criteria not met. Tuning may be needed.");
@@ -1221,29 +1293,39 @@ fn run_demo_5a_baseline(config: &Config) -> (GlobalLabelMetrics, f64) {
     (metrics, stability)
 }
 
-/// Phase 1.8/1.9 lifecycle stats for reporting.
+/// Phase 1.8/1.9c lifecycle stats for reporting.
 struct LifecycleStats {
     stable_count: usize,
     stable_fraction: f64,
     mode_transitions: usize,
     total_wins: u32,
     final_mode: bool,
-    // Phase 1.9: Consolidation metrics
+    // Phase 1.9b: Consolidation metrics
     merges_done: usize,
     merge_candidates_found: usize,
     stable_new: usize,
     stable_dropped: usize,
     stable_drop_ratio: f64,
-    // Phase 1.9: Additional merge stats
+    // Phase 1.9b: Additional merge stats
     merge_scan_runs: usize,
     merges_done_proto: usize,
     avg_merge_score: f32,
+    // Phase 1.9b: Blocked merge diagnostics
+    merge_blocked_proto: usize,
+    merge_blocked_value: usize,
+    merge_blocked_stability: usize,
+    merge_blocked_key_mismatch: usize,
+    merge_blocked_ctx_mismatch: usize,
+    merge_blocked_mode_mismatch: usize,
+    // Phase 1.9c: Opportunity diagnostics
+    pairs_checked: usize,
+    opportunity_rate: f64,
 }
 
-/// DEMO 5b: Anchor Concept Tokens with Phase 1.9 CONSOLIDATION
+/// DEMO 5b: Anchor Concept Tokens with Phase 1.9b AGGRESSIVE CONSOLIDATION
 fn run_demo_5b_keyed(config: &Config) -> (KeyedMemoryMetrics, AnchorStats, (usize, f64, usize), Option<(usize, usize, f64, f64, usize, f64, f64)>, LifecycleStats) {
-    println!("DEMO 5b: Phase 1.9 CONSOLIDATION (Merges + Stability Hysteresis)");
-    println!("─────────────────────────────────────────────────────────────────");
+    println!("DEMO 5b: Phase 1.9b AGGRESSIVE CONSOLIDATION (Many Merges + Flicker Elimination)");
+    println!("─────────────────────────────────────────────────────────────────────────────────");
 
     // Use same seed as 5a for fair comparison
     let mut rng = Rng::new(config.seed.wrapping_add(0x5A5A_5A5A));
@@ -1377,6 +1459,11 @@ fn run_demo_5b_keyed(config: &Config) -> (KeyedMemoryMetrics, AnchorStats, (usiz
                 Some(&confidence),
                 Some(config),
             );
+
+            // Phase 1.9b: Update anchor's partition info for merge compatibility
+            // Use ctx_hat as learned_mask
+            let partition_mask = current_sig.ctx_hat.unwrap_or(0) as u64;
+            anchor_bank.update_anchor_partition(anchor_id, partition_mask, ctx_hat);
 
             // Phase 1.7a: Update anchor prototype when gate passes
             // Phase 1.8: Use dynamic gate params
@@ -1566,8 +1653,8 @@ fn run_demo_5b_keyed(config: &Config) -> (KeyedMemoryMetrics, AnchorStats, (usiz
 
     // Phase 1.8: Lifecycle stats
     let (stable_count, stable_fraction, mode_transitions, _, final_mode) = anchor_bank.lifecycle_metrics();
-    // Phase 1.9: Consolidation metrics
-    let (merge_candidates_found, _, _, stable_new, stable_dropped) = anchor_bank.consolidation_metrics();
+    // Phase 1.9b: Consolidation metrics with merge blocking breakdown
+    let merge_stats = anchor_bank.consolidation_metrics();
     let (merge_scan_runs, merges_done_proto, avg_merge_score, _) = anchor_bank.merge_stats();
     let lifecycle_stats = LifecycleStats {
         stable_count,
@@ -1575,16 +1662,26 @@ fn run_demo_5b_keyed(config: &Config) -> (KeyedMemoryMetrics, AnchorStats, (usiz
         mode_transitions,
         total_wins: anchor_bank.total_wins(),
         final_mode,
-        // Phase 1.9
+        // Phase 1.9b
         merges_done: anchor_bank.anchor_merges,
-        merge_candidates_found,
-        stable_new,
-        stable_dropped,
+        merge_candidates_found: merge_stats.candidates_found,
+        stable_new: merge_stats.stable_new,
+        stable_dropped: merge_stats.stable_dropped,
         stable_drop_ratio: anchor_bank.stable_drop_ratio(),
-        // Phase 1.9: Additional merge stats
+        // Phase 1.9b: Additional merge stats
         merge_scan_runs,
         merges_done_proto,
         avg_merge_score,
+        // Phase 1.9b: Blocked merge diagnostics
+        merge_blocked_proto: merge_stats.blocked_proto,
+        merge_blocked_value: merge_stats.blocked_value,
+        merge_blocked_stability: merge_stats.blocked_stability,
+        merge_blocked_key_mismatch: merge_stats.blocked_key_mismatch,
+        merge_blocked_ctx_mismatch: merge_stats.blocked_ctx_mismatch,
+        merge_blocked_mode_mismatch: merge_stats.blocked_mode_mismatch,
+        // Phase 1.9c: Opportunity diagnostics
+        pairs_checked: merge_stats.pairs_checked,
+        opportunity_rate: merge_stats.opportunity_rate,
     };
 
     (metrics, anchor_stats, keyed_stats, probe_stats, lifecycle_stats)

@@ -47,6 +47,47 @@ pub const DEFAULT_PROTO_M: usize = 12;
 
 /// A single anchor prototype representing a stable memory address.
 /// Phase 1.7a: Extended with prototype vector for "concept token" representation.
+/// Phase 1.9b: Reasons for blocking a merge candidate.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MergeBlockReason {
+    None,
+    KeyMismatch,
+    CtxMismatch,
+    ModeMismatch,
+    ModeExplore,
+    ProtoScore,
+    ValueDelta,
+    StabilityMixed,
+    UsageTooHigh,
+}
+
+/// Phase 1.9b: Merge statistics for reporting.
+#[derive(Clone, Debug, Default)]
+pub struct MergeStats {
+    pub candidates_found: usize,
+    pub blocked_proto: usize,
+    pub blocked_value: usize,
+    pub blocked_stability: usize,
+    pub blocked_key_mismatch: usize,
+    pub blocked_ctx_mismatch: usize,
+    pub blocked_mode_mismatch: usize,
+    pub stable_new: usize,
+    pub stable_dropped: usize,
+    /// Total anchor pairs checked during all scans.
+    pub pairs_checked: usize,
+    /// merge_opportunity_rate = candidates_found / pairs_checked
+    pub opportunity_rate: f64,
+}
+
+/// Phase 1.9c: Top blocked merge candidate for diagnostics.
+#[derive(Clone, Debug)]
+pub struct BlockedMergeInfo {
+    pub id_a: u16,
+    pub id_b: u16,
+    pub proto_score: f32,
+    pub reason: MergeBlockReason,
+}
+
 #[derive(Clone, Debug)]
 pub struct Anchor {
     /// The prototype windowed signature for this anchor.
@@ -85,6 +126,14 @@ pub struct Anchor {
     pub stable: bool,
     /// Tick when this anchor became stable.
     pub stable_since_tick: u64,
+
+    // Phase 1.9b: Merge compatibility fields
+    /// The learned_mask associated with this anchor (for keyed memory partitioning).
+    pub learned_mask: u64,
+    /// The dominant context/label for this anchor.
+    pub ctx_best: u8,
+    /// Count of ctx observations for determining ctx_best.
+    ctx_counts: [u32; 8],
 }
 
 impl Anchor {
@@ -108,12 +157,102 @@ impl Anchor {
             wins: 0,
             stable: false,
             stable_since_tick: 0,
+            // Phase 1.9b: Initialize merge compatibility fields
+            learned_mask: 0,
+            ctx_best: 0,
+            ctx_counts: [0; 8],
         }
     }
 
     /// Compute Hamming distance to another signature.
     pub fn hamming_to(&self, signature: u64) -> u32 {
         (self.proto_signature ^ signature).count_ones()
+    }
+
+    // =========================================================================
+    // Phase 1.9b: Merge Compatibility Methods
+    // =========================================================================
+
+    /// Set the learned_mask for this anchor.
+    pub fn set_learned_mask(&mut self, mask: u64) {
+        self.learned_mask = mask;
+    }
+
+    /// Record a context observation and update ctx_best.
+    pub fn record_ctx(&mut self, ctx: u8) {
+        let idx = (ctx as usize).min(7);
+        self.ctx_counts[idx] = self.ctx_counts[idx].saturating_add(1);
+        // Update ctx_best to the most frequent context
+        let mut best_idx = 0;
+        let mut best_count = 0;
+        for (i, &count) in self.ctx_counts.iter().enumerate() {
+            if count > best_count {
+                best_count = count;
+                best_idx = i;
+            }
+        }
+        self.ctx_best = best_idx as u8;
+    }
+
+    /// Get the gate mode bucket for merge compatibility.
+    /// Returns: 0 = Explore, 1 = Mid, 2 = Stable
+    pub fn gate_mode_bucket(&self) -> u8 {
+        if self.stable {
+            2 // Stable
+        } else if self.proto_support >= 20 {
+            1 // Mid (has some proto support - lowered threshold)
+        } else {
+            0 // Explore (very new anchor)
+        }
+    }
+
+    /// Compute cosine similarity between ctx histograms.
+    fn ctx_cosine_similarity(&self, other: &Anchor) -> f32 {
+        let mut dot: f32 = 0.0;
+        let mut norm_a: f32 = 0.0;
+        let mut norm_b: f32 = 0.0;
+        for i in 0..8 {
+            let a = self.ctx_counts[i] as f32;
+            let b = other.ctx_counts[i] as f32;
+            dot += a * b;
+            norm_a += a * a;
+            norm_b += b * b;
+        }
+        if norm_a < 1.0 || norm_b < 1.0 {
+            return 0.0; // Not enough data
+        }
+        dot / (norm_a.sqrt() * norm_b.sqrt())
+    }
+
+    /// Check if this anchor is compatible for merging with another.
+    /// Rules:
+    /// - Same learned_mask (strict equality)
+    /// - Same ctx_best OR high ctx histogram similarity (soft ctx)
+    /// - Same gate mode bucket
+    /// Returns: (compatible, reason) where reason is for instrumentation
+    pub fn merge_compatible_with(&self, other: &Anchor) -> (bool, MergeBlockReason) {
+        let self_mode = self.gate_mode_bucket();
+        let other_mode = other.gate_mode_bucket();
+
+        // Rule 1: Same gate mode bucket required
+        if self_mode != other_mode {
+            return (false, MergeBlockReason::ModeMismatch);
+        }
+
+        // Rule 2: Same learned_mask
+        if self.learned_mask != other.learned_mask {
+            return (false, MergeBlockReason::KeyMismatch);
+        }
+
+        // Rule 3: Soft ctx compatibility
+        // Same ctx_best OR high cosine similarity (>= 0.90)
+        let ctx_ok = self.ctx_best == other.ctx_best
+            || self.ctx_cosine_similarity(other) >= 0.90;
+        if !ctx_ok {
+            return (false, MergeBlockReason::CtxMismatch);
+        }
+
+        (true, MergeBlockReason::None)
     }
 
     // =========================================================================
@@ -365,11 +504,10 @@ impl Anchor {
         self.wins += 1;
     }
 
-    /// Phase 1.9: Check stability with hysteresis.
-    /// Enter stable: needs V >= stable_v_min, wins >= stable_wins_min,
-    ///               entropy < stable_enter_entropy, |TD| < stable_enter_abs_td
-    /// Exit stable: needs entropy > stable_exit_entropy OR |TD| > stable_exit_abs_td
-    ///              AND been stable for stable_min_ticks_on
+    /// Phase 1.9b: Check stability with two-threshold hysteresis.
+    /// Entry thresholds (strict): support >= min_enter, entropy < enter, |TD| < enter
+    /// Exit thresholds (loose): support < min_exit, entropy > exit, |TD| > exit
+    /// Also respects stable_min_ticks_on and catastrophic drop detection.
     /// Returns (new_stable_state, entered_stable, dropped_stable)
     pub fn check_stability_hysteresis(
         &mut self,
@@ -388,13 +526,16 @@ impl Anchor {
             let ticks_stable = current_tick.saturating_sub(self.stable_since_tick);
             let past_min_ticks = ticks_stable >= config.stable_min_ticks_on as u64;
 
-            // Catastrophic drop: immediate if V drops significantly below threshold
-            let catastrophic_v_drop = self.v < config.stable_v_min - 0.2;
+            // Catastrophic drop: immediate exit if V drops significantly below threshold
+            let catastrophic_v_drop = self.v < config.stable_v_min - config.stable_catastrophic_v_drop;
 
-            // Normal exit: past min_ticks AND (entropy too high OR TD too high)
+            // Check EXIT thresholds (looser than entry)
+            let support_exit = self.proto_support < config.stable_min_support_exit;
             let entropy_exit = entropy > config.stable_exit_entropy;
             let td_exit = abs_td > config.stable_exit_abs_td;
-            let normal_exit = past_min_ticks && (entropy_exit || td_exit);
+
+            // Normal exit: past min_ticks AND any exit condition met
+            let normal_exit = past_min_ticks && (support_exit || entropy_exit || td_exit);
 
             if catastrophic_v_drop || normal_exit {
                 self.stable = false;
@@ -402,13 +543,14 @@ impl Anchor {
                 dropped = true;
             }
         } else {
-            // Check for enter conditions
+            // Check for ENTRY conditions (all must be met)
             let v_ok = self.v >= config.stable_v_min;
             let wins_ok = self.wins >= config.stable_wins_min;
+            let support_ok = self.proto_support >= config.stable_min_support_enter;
             let entropy_ok = entropy < config.stable_enter_entropy;
             let td_ok = abs_td < config.stable_enter_abs_td;
 
-            if v_ok && wins_ok && entropy_ok && td_ok {
+            if v_ok && wins_ok && support_ok && entropy_ok && td_ok {
                 self.stable = true;
                 self.stable_since_tick = current_tick;
                 entered = true;
@@ -568,13 +710,23 @@ pub struct AnchorBank {
     /// Blocked merges due to value inconsistency.
     pub merge_blocked_v: usize,
 
-    // Phase 1.9: CONSOLIDATION - Merge and stability tracking
+    // Phase 1.9b: CONSOLIDATION - Merge and stability tracking
     /// Total merge candidates found by proto-based scanning.
     pub merge_candidates_found: usize,
     /// Merges blocked due to proto score too low.
     pub merge_blocked_proto: usize,
     /// Merges blocked due to insufficient support.
     pub merge_blocked_support: usize,
+    /// Merges blocked due to value inconsistency (|v1-v2| > eps).
+    pub merge_blocked_value: usize,
+    /// Merges blocked due to stability constraints (stable + non-stable).
+    pub merge_blocked_stability: usize,
+    /// Merges blocked due to learned_mask mismatch.
+    pub merge_blocked_key_mismatch: usize,
+    /// Merges blocked due to ctx_best mismatch.
+    pub merge_blocked_ctx_mismatch: usize,
+    /// Merges blocked due to gate mode mismatch (including explore never merges).
+    pub merge_blocked_mode_mismatch: usize,
     /// Anchors that entered stable state.
     pub stable_new: usize,
     /// Anchors that dropped from stable state.
@@ -587,6 +739,12 @@ pub struct AnchorBank {
     pub merges_done_proto: usize,
     /// Sum of proto scores for executed merges (for avg calculation).
     merge_score_sum: f32,
+    /// RNG state for sampling-based merge candidate discovery.
+    merge_rng_state: u64,
+    /// Phase 1.9c: Total pairs checked for merge_opportunity_rate.
+    pairs_checked: usize,
+    /// Phase 1.9c: Top 5 blocked candidates (best proto scores that didn't merge).
+    top_blocked: Vec<BlockedMergeInfo>,
 }
 
 impl AnchorBank {
@@ -614,16 +772,24 @@ impl AnchorBank {
             stable_count: 0,
             mode_transitions: 0,
             merge_blocked_v: 0,
-            // Phase 1.9
+            // Phase 1.9b
             merge_candidates_found: 0,
             merge_blocked_proto: 0,
             merge_blocked_support: 0,
+            merge_blocked_value: 0,
+            merge_blocked_stability: 0,
+            merge_blocked_key_mismatch: 0,
+            merge_blocked_ctx_mismatch: 0,
+            merge_blocked_mode_mismatch: 0,
             stable_new: 0,
             stable_dropped: 0,
             last_merge_scan_tick: 0,
             merge_scan_runs: 0,
             merges_done_proto: 0,
             merge_score_sum: 0.0,
+            merge_rng_state: 0xDEADBEEF_CAFEBABE,
+            pairs_checked: 0,
+            top_blocked: Vec::new(),
         }
     }
 
@@ -875,9 +1041,14 @@ impl AnchorBank {
     // Phase 1.9: Proto-based Merge Scanning
     // =========================================================================
 
-    /// Check if it's time for a proto-based merge scan.
+    /// Phase 1.9b: Check if it's time for a proto-based merge scan.
+    /// Triggers more aggressively when anchor utilization is high (>90%).
     pub fn should_scan_merges(&self, current_tick: u64, config: &Config) -> bool {
-        current_tick >= self.last_merge_scan_tick + config.merge_scan_period as u64
+        let period_elapsed = current_tick >= self.last_merge_scan_tick + config.merge_scan_period as u64;
+        let high_utilization = self.anchor_utilization() > 0.90;
+
+        // Scan if period elapsed, OR if high utilization (encourage consolidation)
+        period_elapsed || (high_utilization && current_tick > self.last_merge_scan_tick + 5)
     }
 
     /// Mark merge scan done.
@@ -885,38 +1056,93 @@ impl AnchorBank {
         self.last_merge_scan_tick = current_tick;
     }
 
-    /// Find merge candidate pairs using proto-based similarity.
+    /// Phase 1.9b: Find merge candidate pairs using sampling-based proto similarity.
+    /// Uses merge_scan_k to sample candidates per anchor for scalability.
     /// Returns Vec of (id1, id2, proto_score) where id1 is the lower-usage anchor.
-    /// Only returns pairs that pass proto_min_score, merge_min_support, and merge_v_delta_max.
+    /// Uses different value epsilon for stable vs non-stable anchors.
     pub fn find_merge_pairs(&mut self, config: &Config) -> Vec<(u16, u16, f32)> {
         let proto_m = config.proto_m.min(DEFAULT_PROTO_M);
         let min_support = config.merge_min_support;
         let proto_min = config.merge_proto_min_score;
         let proto_min_cross = config.merge_proto_min_score_cross_key;
-        let v_delta_max = config.merge_v_delta_max;
         let same_key_only = config.merge_same_key_only;
+        let scan_k = config.merge_scan_k as usize;
 
         let mut candidates: Vec<(u16, u16, f32)> = Vec::new();
+        // Phase 1.9c: Collect blocked candidates locally to avoid borrow issues
+        let mut blocked_to_track: Vec<BlockedMergeInfo> = Vec::new();
 
-        // Collect alive anchors with sufficient support
+        // Phase 1.9b: Get max usage for merge eligibility (protects high-usage anchors)
+        let max_usage = config.merge_max_usage;
+
+        // Collect alive anchors with sufficient support AND not too high usage
         let eligible: Vec<(u16, &Anchor)> = self.anchors
             .iter()
-            .filter(|(_, a)| a.alive && a.proto_support >= min_support)
+            .filter(|(_, a)| a.alive && a.proto_support >= min_support && a.usage_count <= max_usage)
             .map(|(&id, a)| (id, a))
             .collect();
+
+        if eligible.len() < 2 {
+            return candidates;
+        }
 
         // Sort by usage ascending so lower-usage comes first when we output pairs
         let mut sorted = eligible.clone();
         sorted.sort_by_key(|(_, a)| a.usage_count);
 
-        // O(n^2) scan for candidates (n = eligible anchors)
+        // Use sampling-based approach: for each anchor, sample K others
+        // This reduces O(n^2) to O(n*K) when K << n
+        let use_sampling = sorted.len() > scan_k * 2;
+
         for i in 0..sorted.len() {
             let (id1, a1) = sorted[i];
-            for j in (i + 1)..sorted.len() {
+
+            // Determine which anchors to compare against
+            let compare_range: Vec<usize> = if use_sampling {
+                // Sample K anchors using deterministic RNG
+                let mut samples = Vec::with_capacity(scan_k);
+                let mut rng_val = self.merge_rng_state.wrapping_add(id1 as u64);
+                for _ in 0..scan_k.min(sorted.len() - 1) {
+                    rng_val = rng_val.wrapping_mul(6364136223846793005).wrapping_add(1);
+                    let j = (rng_val as usize) % sorted.len();
+                    if j != i && !samples.contains(&j) {
+                        samples.push(j);
+                    }
+                }
+                samples
+            } else {
+                // Full O(n^2) scan for small n
+                ((i + 1)..sorted.len()).collect()
+            };
+
+            for j in compare_range {
+                if j == i { continue; }
                 let (id2, a2) = sorted[j];
+                self.pairs_checked += 1;
+
+                // Ensure id1 < id2 for consistent ordering
+                let (id_low, id_high, a_low, a_high) = if a1.usage_count <= a2.usage_count {
+                    (id1, id2, a1, a2)
+                } else {
+                    (id2, id1, a2, a1)
+                };
+
+                // Phase 1.9b: Check merge compatibility FIRST (meaning partition)
+                let (compatible, block_reason) = a_low.merge_compatible_with(a_high);
+                if !compatible {
+                    match block_reason {
+                        MergeBlockReason::KeyMismatch => self.merge_blocked_key_mismatch += 1,
+                        MergeBlockReason::CtxMismatch => self.merge_blocked_ctx_mismatch += 1,
+                        MergeBlockReason::ModeMismatch | MergeBlockReason::ModeExplore => {
+                            self.merge_blocked_mode_mismatch += 1;
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
 
                 // If same_key_only, check signatures match closely
-                let same_key = (a1.proto_signature ^ a2.proto_signature).count_ones() <= MERGE_HAMMING;
+                let same_key = (a_low.proto_signature ^ a_high.proto_signature).count_ones() <= MERGE_HAMMING;
 
                 if same_key_only && !same_key {
                     continue;
@@ -926,38 +1152,84 @@ impl AnchorBank {
                 let threshold = if same_key { proto_min } else { proto_min_cross };
 
                 // Compute proto similarity
-                let proto_score = a1.proto_score_against(a2, proto_m);
+                let proto_score = a_low.proto_score_against(a_high, proto_m);
 
                 if proto_score < threshold {
                     self.merge_blocked_proto += 1;
+                    // Phase 1.9c: Track top blocked candidates (collect locally)
+                    if proto_score >= 0.70 {
+                        blocked_to_track.push(BlockedMergeInfo { id_a: id_low, id_b: id_high, proto_score, reason: MergeBlockReason::ProtoScore });
+                    }
                     continue;
                 }
 
+                // Phase 1.9b: Protect stable anchors from non-stable merges
+                // Only allow: both stable OR both non-stable
+                let both_stable = a_low.stable && a_high.stable;
+                let both_non_stable = !a_low.stable && !a_high.stable;
+                if !both_stable && !both_non_stable {
+                    // One stable, one non-stable - skip to preserve stability
+                    self.merge_blocked_stability += 1;
+                    if proto_score >= 0.70 {
+                        blocked_to_track.push(BlockedMergeInfo { id_a: id_low, id_b: id_high, proto_score, reason: MergeBlockReason::StabilityMixed });
+                    }
+                    continue;
+                }
+
+                // Phase 1.9b: Use different value epsilon based on stability
+                let v_eps = if both_stable {
+                    config.merge_v_eps_stable
+                } else {
+                    config.merge_v_eps
+                };
+
                 // Check value consistency
-                let v_delta = (a1.v - a2.v).abs();
-                if v_delta >= v_delta_max {
-                    self.merge_blocked_v += 1;
+                let v_delta = (a_low.v - a_high.v).abs();
+                if v_delta >= v_eps {
+                    self.merge_blocked_value += 1;
+                    if proto_score >= 0.70 {
+                        blocked_to_track.push(BlockedMergeInfo { id_a: id_low, id_b: id_high, proto_score, reason: MergeBlockReason::ValueDelta });
+                    }
                     continue;
                 }
 
                 // This pair is a merge candidate
                 self.merge_candidates_found += 1;
-                candidates.push((id1, id2, proto_score));
+                candidates.push((id_low, id_high, proto_score));
             }
         }
+
+        // Phase 1.9c: Update top_blocked from collected candidates
+        for info in blocked_to_track {
+            self.track_blocked_candidate_from_info(info);
+        }
+
+        // Update RNG state for next scan
+        self.merge_rng_state = self.merge_rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
 
         // Sort by proto_score descending (best candidates first)
         candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
 
+        // Deduplicate pairs (may have duplicates from sampling)
+        let mut seen: std::collections::HashSet<(u16, u16)> = std::collections::HashSet::new();
+        candidates.retain(|(id1, id2, _)| {
+            let key = if id1 < id2 { (*id1, *id2) } else { (*id2, *id1) };
+            seen.insert(key)
+        });
+
         candidates
     }
 
-    /// Execute value-preserving merge of id_low into id_high.
+    /// Phase 1.9b: Execute value-preserving merge of id_low into id_high.
     /// Uses weighted average for values and blends prototypes.
-    /// Phase 1.9: Preserves stability if both anchors are stable.
+    /// Stability handling:
+    /// - If both stable: preserve stable ONLY if merged anchor meets EXIT thresholds
+    /// - If stable + non-stable: merged is non-stable (prevents "stable poisoning")
     pub fn execute_merge(&mut self, id_low: u16, id_high: u16, config: &Config) -> bool {
-        // Verify both anchors are alive and check stability
-        let (can_merge, u_low, u_high, both_stable, earliest_stable_tick) = {
+        let proto_m = config.proto_m.min(DEFAULT_PROTO_M);
+
+        // Verify both anchors are alive and collect state
+        let (can_merge, u_low, u_high, low_stable, high_stable, low_support, high_support, earliest_stable_tick) = {
             let a_low = match self.anchors.get(&id_low) {
                 Some(a) if a.alive => a,
                 _ => return false,
@@ -969,7 +1241,8 @@ impl AnchorBank {
             // Use the earlier stable_since_tick (more established stability)
             let earliest = a_low.stable_since_tick.min(a_high.stable_since_tick);
             (true, a_low.usage_count, a_high.usage_count,
-             a_low.stable && a_high.stable, earliest)
+             a_low.stable, a_high.stable,
+             a_low.proto_support, a_high.proto_support, earliest)
         };
 
         if !can_merge {
@@ -977,9 +1250,10 @@ impl AnchorBank {
         }
 
         // Extract values from low-usage anchor
-        let (v_low, wins_low, proto_w_low, proto_nodes_low) = {
+        let (v_low, wins_low, proto_w_low, proto_nodes_low, entropy_low, abs_td_low) = {
             let a = &self.anchors[&id_low];
-            (a.v, a.wins, a.proto_w.clone(), a.proto_nodes.clone())
+            (a.v, a.wins, a.proto_w.clone(), a.proto_nodes.clone(),
+             a.entropy(proto_m), a.v_ema_abs_td)
         };
 
         // Compute weighted average factor (low_usage / total_usage)
@@ -1002,7 +1276,6 @@ impl AnchorBank {
             a_high.v = (1.0 - w_low) * a_high.v + w_low * v_low;
 
             // Proto merge: blend weights where nodes overlap
-            let proto_m = config.proto_m.min(DEFAULT_PROTO_M);
             for i in 0..proto_m {
                 if proto_w_low[i] > 0.0 {
                     let node_low = proto_nodes_low[i];
@@ -1033,13 +1306,52 @@ impl AnchorBank {
                     }
                 }
             }
+
+            // Merge proto_support (additive)
+            a_high.proto_support = a_high.proto_support.saturating_add(low_support);
+
+            // Blend EMA fields
+            a_high.v_ema_abs_td = (1.0 - w_low) * a_high.v_ema_abs_td + w_low * abs_td_low;
+            a_high.proto_entropy_ema = (1.0 - w_low) * a_high.proto_entropy_ema + w_low * entropy_low;
+
+            // Phase 1.9b: Stability handling for merged anchor
+            if low_stable && high_stable {
+                // Both stable: preserve ONLY if merged anchor still meets EXIT thresholds
+                let merged_entropy = a_high.entropy(proto_m);
+                let merged_abs_td = a_high.v_ema_abs_td;
+                let merged_support = a_high.proto_support;
+
+                let passes_exit = merged_support >= config.stable_min_support_exit
+                    && merged_entropy <= config.stable_exit_entropy
+                    && merged_abs_td <= config.stable_exit_abs_td
+                    && a_high.v >= config.stable_v_min - config.stable_catastrophic_v_drop;
+
+                if passes_exit {
+                    a_high.stable = true;
+                    a_high.stable_since_tick = earliest_stable_tick;
+                } else {
+                    // Merged anchor doesn't meet exit thresholds - drop stability
+                    a_high.stable = false;
+                    a_high.stable_since_tick = 0;
+                    self.merge_blocked_stability += 1;
+                }
+            } else {
+                // Stable + non-stable: merged is non-stable (prevents "stable poisoning")
+                a_high.stable = false;
+                a_high.stable_since_tick = 0;
+            }
         }
 
-        // Phase 1.9: Preserve stability if both anchors were stable
-        if both_stable {
+        // Normalize proto weights to stay bounded
+        {
             let a_high = self.anchors.get_mut(&id_high).unwrap();
-            a_high.stable = true;
-            a_high.stable_since_tick = earliest_stable_tick;
+            let mut weight_sum: f32 = a_high.proto_w.iter().take(proto_m).sum();
+            if weight_sum > 2.0 {
+                // Normalize to prevent unbounded growth
+                for i in 0..proto_m {
+                    a_high.proto_w[i] /= weight_sum;
+                }
+            }
         }
 
         // Record remap
@@ -1176,6 +1488,27 @@ impl AnchorBank {
     // =========================================================================
     // Phase 1.7a: Prototype Methods
     // =========================================================================
+
+    /// Phase 1.9b: Update anchor's merge compatibility fields (learned_mask, ctx).
+    /// Should be called when an anchor is matched to track its meaning partition.
+    pub fn update_anchor_partition(&mut self, anchor_id: u16, learned_mask: u64, ctx: Option<u8>) {
+        if anchor_id == 0xFFFF {
+            return;
+        }
+
+        let resolved_id = self.resolve_id(anchor_id);
+
+        if let Some(anchor) = self.anchors.get_mut(&resolved_id) {
+            if anchor.alive {
+                // Set learned_mask (use the most recent one)
+                anchor.set_learned_mask(learned_mask);
+                // Record context observation
+                if let Some(c) = ctx {
+                    anchor.record_ctx(c);
+                }
+            }
+        }
+    }
 
     /// Update the prototype of an anchor with current TopK observation.
     /// Should be called when an anchor is matched and gate passes.
@@ -1468,16 +1801,45 @@ impl AnchorBank {
         )
     }
 
-    /// Get Phase 1.9 merge and stability metrics.
-    /// Returns (merge_candidates_found, merge_blocked_proto, merge_blocked_support, stable_new, stable_dropped).
-    pub fn consolidation_metrics(&self) -> (usize, usize, usize, usize, usize) {
-        (
-            self.merge_candidates_found,
-            self.merge_blocked_proto,
-            self.merge_blocked_support,
-            self.stable_new,
-            self.stable_dropped,
-        )
+    /// Phase 1.9c: Track a blocked merge candidate from info (keep top 5 by proto score).
+    fn track_blocked_candidate_from_info(&mut self, info: BlockedMergeInfo) {
+        let proto_score = info.proto_score;
+        if self.top_blocked.len() < 5 {
+            self.top_blocked.push(info);
+            self.top_blocked.sort_by(|a, b| b.proto_score.partial_cmp(&a.proto_score).unwrap());
+        } else if proto_score > self.top_blocked[4].proto_score {
+            self.top_blocked[4] = info;
+            self.top_blocked.sort_by(|a, b| b.proto_score.partial_cmp(&a.proto_score).unwrap());
+        }
+    }
+
+    /// Get Phase 1.9b/c merge and stability metrics.
+    /// Returns a struct with all merge blocking reasons and opportunity rate.
+    pub fn consolidation_metrics(&self) -> MergeStats {
+        let opportunity_rate = if self.pairs_checked > 0 {
+            self.merge_candidates_found as f64 / self.pairs_checked as f64
+        } else {
+            0.0
+        };
+
+        MergeStats {
+            candidates_found: self.merge_candidates_found,
+            blocked_proto: self.merge_blocked_proto,
+            blocked_value: self.merge_blocked_value,
+            blocked_stability: self.merge_blocked_stability,
+            blocked_key_mismatch: self.merge_blocked_key_mismatch,
+            blocked_ctx_mismatch: self.merge_blocked_ctx_mismatch,
+            blocked_mode_mismatch: self.merge_blocked_mode_mismatch,
+            stable_new: self.stable_new,
+            stable_dropped: self.stable_dropped,
+            pairs_checked: self.pairs_checked,
+            opportunity_rate,
+        }
+    }
+
+    /// Phase 1.9c: Get top blocked merge candidates for diagnostics.
+    pub fn top_blocked_candidates(&self) -> &[BlockedMergeInfo] {
+        &self.top_blocked
     }
 
     /// Get average proto score of executed merges.

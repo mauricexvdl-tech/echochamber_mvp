@@ -189,10 +189,20 @@ pub struct Config {
     pub stable_mode_threshold: f64,
 
     // =========================================================================
-    // Phase 1.9: CONSOLIDATION (Merge scanning + stability hysteresis)
+    // Demo Control Flags
     // =========================================================================
-    /// How often (in ticks) to scan for merge candidates.
+    /// Run baseline 5a (Phase 1.4c Competitive Binding).
+    pub run_baseline_5a: bool,
+    /// Run keyed 5b (Phase 1.9 Consolidation with Anchor+Mask).
+    pub run_keyed_5b: bool,
+
+    // =========================================================================
+    // Phase 1.9b: CONSOLIDATION (Aggressive merge scanning + flicker elimination)
+    // =========================================================================
+    /// How often (in ticks) to scan for merge candidates (aggressive: 10).
     pub merge_scan_period: u32,
+    /// Number of anchors to sample per anchor per scan for merge candidates.
+    pub merge_scan_k: u32,
     /// Minimum proto_score(a, b) required for merge candidates.
     pub merge_proto_min_score: f32,
     /// Minimum proto_support for both anchors to be merge candidates.
@@ -205,16 +215,33 @@ pub struct Config {
     pub merge_proto_min_score_cross_key: f32,
     /// Learning rate for prototype merge (weighted average).
     pub merge_proto_eta: f32,
+    /// Value epsilon for merging non-stable anchors (looser).
+    pub merge_v_eps: f32,
+    /// Value epsilon for merging stable anchors (stricter).
+    pub merge_v_eps_stable: f32,
+    /// Maximum usage_count for an anchor to be eligible for merging.
+    /// Protects high-usage anchors with lots of keyed memory history.
+    pub merge_max_usage: u32,
+
+    // =========================================================================
+    // Phase 1.9b: Stability Hysteresis (flicker elimination)
+    // =========================================================================
+    /// Minimum proto_support to ENTER stable state.
+    pub stable_min_support_enter: u32,
+    /// Minimum proto_support to stay in stable state (lower = stickier).
+    pub stable_min_support_exit: u32,
     /// Entropy threshold to ENTER stable state (must be below).
     pub stable_enter_entropy: f32,
-    /// Entropy threshold to EXIT stable state (must exceed).
+    /// Entropy threshold to EXIT stable state (must exceed, higher = stickier).
     pub stable_exit_entropy: f32,
     /// |TD| threshold to ENTER stable state (must be below).
     pub stable_enter_abs_td: f32,
-    /// |TD| threshold to EXIT stable state (must exceed).
+    /// |TD| threshold to EXIT stable state (must exceed, higher = stickier).
     pub stable_exit_abs_td: f32,
     /// Minimum ticks an anchor must stay stable before it can drop.
     pub stable_min_ticks_on: u32,
+    /// Catastrophic V drop threshold (V < stable_v_min - this triggers immediate exit).
+    pub stable_catastrophic_v_drop: f32,
 }
 
 impl Default for Config {
@@ -340,23 +367,36 @@ impl Default for Config {
             merge_v_delta_max: 0.3,    // Allow merge if |v1-v2| < 0.3
             gate_explore_mult: 0.5,    // Permissive: halve margin threshold
             gate_stable_mult: 1.5,     // Strict: 50% higher margin threshold
-            stable_v_min: 0.4,         // Need V >= 0.4 to become stable
-            stable_wins_min: 5,        // Need >= 5 wins to become stable
+            stable_v_min: 0.10,        // Need V >= 0.10 to become stable (lowered for aggressive merging)
+            stable_wins_min: 2,        // Need >= 2 wins to become stable (easier)
             stable_mode_threshold: 0.3, // 30% stable anchors → switch to stable mode
 
-            // Phase 1.9: CONSOLIDATION defaults
-            merge_scan_period: 3000,             // Scan every 3000 ticks (less frequent)
-            merge_proto_min_score: 0.87,         // Require 87% proto similarity
-            merge_min_support: 450,              // Require mature protos
-            merge_max_per_scan: 1,               // At most 1 merge per scan (conservative)
+            // Demo Control Flags defaults
+            run_baseline_5a: false,  // Skip baseline for faster iteration
+            run_keyed_5b: true,
+
+            // Phase 1.9c: CONSOLIDATION defaults (partition-aware + reduced scan noise)
+            merge_scan_period: 50,               // Scan every 50 ticks (less frequent = less noise)
+            merge_scan_k: 64,                    // Sample 64 anchors per anchor per scan
+            merge_proto_min_score: 0.82,         // Require 82% proto similarity
+            merge_min_support: 30,               // Anchors need some maturity to merge
+            merge_max_per_scan: 16,              // Up to 16 merges per scan
             merge_same_key_only: false,          // Allow cross-key merges if proto similar enough
-            merge_proto_min_score_cross_key: 0.90, // Cross-key threshold (stricter)
-            merge_proto_eta: 0.25,               // Proto merge learning rate
-            stable_enter_entropy: 2.50,          // Enter stable when H < 2.50
-            stable_exit_entropy: 2.65,           // Exit stable when H > 2.65
-            stable_enter_abs_td: 0.28,           // Enter stable when |TD| < 0.28
-            stable_exit_abs_td: 0.45,            // Exit stable when |TD| > 0.45
-            stable_min_ticks_on: 3000,           // Stay stable for 3000 ticks minimum
+            merge_proto_min_score_cross_key: 0.88, // Cross-key threshold
+            merge_proto_eta: 0.10,               // Proto merge learning rate
+            merge_v_eps: 0.38,                   // Value epsilon for non-stable anchors
+            merge_v_eps_stable: 0.22,            // Stricter value epsilon for stable anchors
+            merge_max_usage: 2500,               // Allow most anchors to merge
+
+            // Phase 1.9b: Stability hysteresis (very easy to enter stable)
+            stable_min_support_enter: 40,        // Need 40 updates to enter stable (easy)
+            stable_min_support_exit: 10,         // Can drop if support falls below 10
+            stable_enter_entropy: 2.60,          // Enter stable when H < 2.60 (relaxed)
+            stable_exit_entropy: 2.75,           // Exit stable when H > 2.75 (stickier)
+            stable_enter_abs_td: 0.45,           // Enter stable when |TD| < 0.45 (relaxed)
+            stable_exit_abs_td: 0.65,            // Exit stable when |TD| > 0.65 (stickier)
+            stable_min_ticks_on: 200,            // Stay stable for 200 ticks minimum
+            stable_catastrophic_v_drop: 0.15,    // Catastrophic if V drops 0.15 below stable_v_min
         }
     }
 }
