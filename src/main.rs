@@ -534,9 +534,18 @@ fn demo_phase_1_5b_comparison(config: &Config) {
             merge_candidates_found: 0, stable_new: 0, stable_dropped: 0,
             stable_drop_ratio: 0.0, merge_scan_runs: 0, merges_done_proto: 0,
             avg_merge_score: 0.0, merge_blocked_proto: 0, merge_blocked_value: 0,
-            merge_blocked_stability: 0, merge_blocked_key_mismatch: 0,
+            merge_blocked_stability: 0, merge_blocked_support: 0, merge_blocked_key_mismatch: 0,
             merge_blocked_ctx_mismatch: 0, merge_blocked_mode_mismatch: 0,
             pairs_checked: 0, opportunity_rate: 0.0,
+            // Phase 1.9d
+            cross_mode_merges_done: 0, cross_mask_merges_done: 0, cross_partition_merges_done: 0,
+            blocked_explore_isolated: 0, blocked_mask_hamming: 0, blocked_cross_mode_v: 0,
+            blocked_cross_mode_proto: 0, blocked_cross_mask_proto: 0, blocked_cross_mask_v: 0,
+            blocked_cross_mode_not_stable: 0, blocked_cross_mask_not_stable: 0,
+            blocked_cross_rate_limited: 0,
+            mean_dv_cross: 0.0, mean_mask_hamming_cross: 0.0,
+            // Phase 1.9e
+            stable_avg_support: 0.0, stable_avg_entropy: 0.0, stable_avg_abs_td: 0.0,
         })
     };
 
@@ -672,22 +681,54 @@ fn demo_phase_1_5b_comparison(config: &Config) {
     println!("  total_wins: {}", lifecycle_stats.total_wins);
     println!("  final_mode: {}", if lifecycle_stats.final_mode { "STABLE" } else { "EXPLORE" });
 
-    // Phase 1.9c: Consolidation metrics with opportunity diagnostics
+    // Phase 1.9e: Consolidation metrics with stability formation tracking
     println!();
-    println!("Phase 1.9c Consolidation (PARTITION-AWARE + SOFT CTX):");
+    println!("Phase 1.9e Consolidation (STABILITY FORMATION TUNING - Option A):");
     println!("  merge_scan_runs: {}", lifecycle_stats.merge_scan_runs);
     println!("  merges_done_proto: {}", lifecycle_stats.merges_done_proto);
     println!("  avg_merge_score: {:.3}", lifecycle_stats.avg_merge_score);
     println!("  pairs_checked: {}", lifecycle_stats.pairs_checked);
     println!("  candidates_found: {}", lifecycle_stats.merge_candidates_found);
     println!("  opportunity_rate: {:.4}%", lifecycle_stats.opportunity_rate * 100.0);
+    // Phase 1.9e: Stable formation metrics
+    println!("  Stable formation metrics:");
+    println!("    stable_entry_count: {}", lifecycle_stats.stable_new);
+    println!("    stable_exit_count: {}", lifecycle_stats.stable_dropped);
+    println!("    stable_count_final: {}", lifecycle_stats.stable_count);
+    println!("    stable_avg_support: {:.1}", lifecycle_stats.stable_avg_support);
+    println!("    stable_avg_entropy: {:.3}", lifecycle_stats.stable_avg_entropy);
+    println!("    stable_avg_abs_td: {:.4}", lifecycle_stats.stable_avg_abs_td);
+    println!("  Cross-partition merges:");
+    println!("    cross_partition_merges_done: {}", lifecycle_stats.cross_partition_merges_done);
+    println!("    cross_mode_merges_done: {}", lifecycle_stats.cross_mode_merges_done);
+    println!("    cross_mask_merges_done: {}", lifecycle_stats.cross_mask_merges_done);
+    println!("    mean_dv_cross: {:.4}", lifecycle_stats.mean_dv_cross);
+    println!("    mean_mask_hamming_cross: {:.2}", lifecycle_stats.mean_mask_hamming_cross);
     println!("  Merge blocking breakdown:");
     println!("    blocked_key_mismatch: {}", lifecycle_stats.merge_blocked_key_mismatch);
     println!("    blocked_ctx_mismatch: {}", lifecycle_stats.merge_blocked_ctx_mismatch);
     println!("    blocked_mode_mismatch: {}", lifecycle_stats.merge_blocked_mode_mismatch);
+    println!("    blocked_explore_isolated: {}", lifecycle_stats.blocked_explore_isolated);
     println!("    blocked_proto_score: {}", lifecycle_stats.merge_blocked_proto);
     println!("    blocked_value_delta: {}", lifecycle_stats.merge_blocked_value);
     println!("    blocked_stability_mixed: {}", lifecycle_stats.merge_blocked_stability);
+    println!("    blocked_support_low: {}", lifecycle_stats.merge_blocked_support);
+    // Phase 1.9e: Consolidated cross-partition blocking stats
+    let blocked_cross_not_stable = lifecycle_stats.blocked_cross_mode_not_stable + lifecycle_stats.blocked_cross_mask_not_stable;
+    let blocked_cross_proto_low = lifecycle_stats.blocked_cross_mode_proto + lifecycle_stats.blocked_cross_mask_proto;
+    let blocked_cross_value_delta = lifecycle_stats.blocked_cross_mode_v + lifecycle_stats.blocked_cross_mask_v;
+    let blocked_cross_mask_far = lifecycle_stats.blocked_mask_hamming;
+    let total_cross_blocks = blocked_cross_not_stable + blocked_cross_proto_low + blocked_cross_value_delta
+        + blocked_cross_mask_far + lifecycle_stats.blocked_cross_rate_limited;
+    let not_stable_pct = if total_cross_blocks > 0 {
+        100.0 * blocked_cross_not_stable as f64 / total_cross_blocks as f64
+    } else { 0.0 };
+    println!("  Cross-partition blocking (consolidated):");
+    println!("    blocked_cross_not_stable: {} ({:.1}% of cross blocks)", blocked_cross_not_stable, not_stable_pct);
+    println!("    blocked_cross_proto_low: {}", blocked_cross_proto_low);
+    println!("    blocked_cross_value_delta: {}", blocked_cross_value_delta);
+    println!("    blocked_cross_mask_far: {}", blocked_cross_mask_far);
+    println!("    blocked_cross_rate_limited: {}", lifecycle_stats.blocked_cross_rate_limited);
     println!("  stable_new: {}", lifecycle_stats.stable_new);
     println!("  stable_dropped: {}", lifecycle_stats.stable_dropped);
     println!("  stable_drop_ratio: {:.2}%", lifecycle_stats.stable_drop_ratio * 100.0);
@@ -814,12 +855,18 @@ fn demo_phase_1_5b_comparison(config: &Config) {
     println!();
     println!("  Merge Diagnostics:");
     println!("    merge_candidates_found: {}", lifecycle_stats.merge_candidates_found);
+    println!("    cross_partition_merges: {}", lifecycle_stats.cross_partition_merges_done);
+    println!("    cross_mode_merges: {}", lifecycle_stats.cross_mode_merges_done);
+    println!("    cross_mask_merges: {}", lifecycle_stats.cross_mask_merges_done);
+    println!("    mean_dv_cross: {:.4}, mean_mask_hamming_cross: {:.2}",
+        lifecycle_stats.mean_dv_cross, lifecycle_stats.mean_mask_hamming_cross);
     println!("    blocked_key_mismatch: {}", lifecycle_stats.merge_blocked_key_mismatch);
     println!("    blocked_ctx_mismatch: {}", lifecycle_stats.merge_blocked_ctx_mismatch);
     println!("    blocked_mode_mismatch: {}", lifecycle_stats.merge_blocked_mode_mismatch);
     println!("    blocked_proto_score: {}", lifecycle_stats.merge_blocked_proto);
     println!("    blocked_value_delta: {}", lifecycle_stats.merge_blocked_value);
     println!("    blocked_stability_mixed: {}", lifecycle_stats.merge_blocked_stability);
+    println!("    blocked_support_low: {}", lifecycle_stats.merge_blocked_support);
     println!("    stable_new: {}, stable_dropped: {}",
         lifecycle_stats.stable_new, lifecycle_stats.stable_dropped);
 
@@ -829,23 +876,53 @@ fn demo_phase_1_5b_comparison(config: &Config) {
     let phase19b_relaxed = merges_some_ok && avg_merge_score_ok && drop_ratio_relaxed && stable_count_relaxed && coverage_ok && selective_ok && fp_ok;
     let phase19b_core_goals = merges_many_ok && drop_ratio_ok && coverage_ok && selective_ok && fp_ok;
 
-    if phase19b_strict {
-        println!();
-        println!("  → Phase 1.9b: ALL CRITERIA MET! (strict)");
+    // Phase 1.9e: Stability formation tuning acceptance criteria
+    // Baseline values from Phase 1.9d: blocked_cross_not_stable ~1,006,753, stable_count ~18
+    let baseline_blocked_cross_not_stable: usize = 1_006_753;
+    let baseline_stable_count: usize = 18;
+    let blocked_cross_not_stable_val = lifecycle_stats.blocked_cross_mode_not_stable + lifecycle_stats.blocked_cross_mask_not_stable;
+    let blocked_reduction_pct = if baseline_blocked_cross_not_stable > 0 {
+        100.0 * (1.0 - blocked_cross_not_stable_val as f64 / baseline_blocked_cross_not_stable as f64)
+    } else { 0.0 };
+    let stable_increase_pct = if baseline_stable_count > 0 {
+        100.0 * (lifecycle_stats.stable_count as f64 / baseline_stable_count as f64 - 1.0)
+    } else { 0.0 };
+    let blocked_reduced_30pct = blocked_cross_not_stable_val <= (baseline_blocked_cross_not_stable * 70 / 100); // <=70% of baseline = 30% reduction
+    let stable_increased_15pct = lifecycle_stats.stable_count >= (baseline_stable_count * 115 / 100); // >=115% of baseline
+    let cross_merges_improved = lifecycle_stats.cross_partition_merges_done > 0;
+
+    println!();
+    println!("Phase 1.9e (STABILITY FORMATION TUNING - Option A):");
+    println!("  Baseline (1.9d): blocked_cross_not_stable={}, stable_count={}", baseline_blocked_cross_not_stable, baseline_stable_count);
+    println!("  [{}] blocked_cross_not_stable reduced ≥30%: {} ({:+.1}% change)",
+        if blocked_reduced_30pct { "✓" } else { "✗" }, blocked_cross_not_stable_val, -blocked_reduction_pct);
+    println!("  [{}] stable_count increased ≥15%: {} ({:+.1}% change)",
+        if stable_increased_15pct { "✓" } else { "✗" }, lifecycle_stats.stable_count, stable_increase_pct);
+    println!("  [{}] cross_partition_merges_done > 0: {}",
+        if cross_merges_improved { "✓" } else { "~" }, lifecycle_stats.cross_partition_merges_done);
+    println!("  Stable anchor averages: support={:.1}, entropy={:.3}, |TD|={:.4}",
+        lifecycle_stats.stable_avg_support, lifecycle_stats.stable_avg_entropy, lifecycle_stats.stable_avg_abs_td);
+
+    let phase19e_ok = blocked_reduced_30pct && stable_increased_15pct && phase19b_core_goals;
+
+    println!();
+    if phase19e_ok {
+        println!("  → Phase 1.9e: ALL CRITERIA MET! (stability formation + core goals)");
+    } else if phase19b_strict {
+        println!("  → Phase 1.9b: ALL CRITERIA MET! (strict) - Phase 1.9e stability goals pending");
     } else if phase19b_core_goals {
-        println!();
-        println!("  → Phase 1.9b: CORE GOALS MET (merges>=500, drop_ratio<=0.5%, coverage>=70%, selective>=80%)");
+        if blocked_reduced_30pct || stable_increased_15pct {
+            println!("  → Phase 1.9e: PARTIAL (core goals met, some stability goals met)");
+        } else {
+            println!("  → Phase 1.9b: CORE GOALS MET - Phase 1.9e stability tuning needed");
+        }
     } else if phase19b_relaxed {
-        println!();
-        println!("  → Phase 1.9b: CRITERIA MET (relaxed - merges>=100, drop_ratio<=5%)");
+        println!("  → Phase 1.9b: CRITERIA MET (relaxed) - Phase 1.9e stability tuning needed");
     } else if phase16_ok && phase17a_ok && phase18_ok && merges_some_ok {
-        println!();
         println!("  → Phase 1.9b: Partial success. Merges happening, but other criteria need tuning.");
     } else if phase16_ok && phase17a_ok && phase18_ok {
-        println!();
         println!("  → Phase 1.8 OK, Phase 1.9b needs more merge activity.");
     } else {
-        println!();
         println!("  → Some criteria not met. Tuning may be needed.");
     }
 }
@@ -1293,7 +1370,7 @@ fn run_demo_5a_baseline(config: &Config) -> (GlobalLabelMetrics, f64) {
     (metrics, stability)
 }
 
-/// Phase 1.8/1.9c lifecycle stats for reporting.
+/// Phase 1.8/1.9d lifecycle stats for reporting.
 struct LifecycleStats {
     stable_count: usize,
     stable_fraction: f64,
@@ -1314,12 +1391,32 @@ struct LifecycleStats {
     merge_blocked_proto: usize,
     merge_blocked_value: usize,
     merge_blocked_stability: usize,
+    merge_blocked_support: usize,
     merge_blocked_key_mismatch: usize,
     merge_blocked_ctx_mismatch: usize,
     merge_blocked_mode_mismatch: usize,
     // Phase 1.9c: Opportunity diagnostics
     pairs_checked: usize,
     opportunity_rate: f64,
+    // Phase 1.9d: Cross-partition merge stats
+    cross_mode_merges_done: usize,
+    cross_mask_merges_done: usize,
+    cross_partition_merges_done: usize,
+    blocked_explore_isolated: usize,
+    blocked_mask_hamming: usize,
+    blocked_cross_mode_v: usize,
+    blocked_cross_mode_proto: usize,
+    blocked_cross_mask_proto: usize,
+    blocked_cross_mask_v: usize,
+    blocked_cross_mode_not_stable: usize,
+    blocked_cross_mask_not_stable: usize,
+    blocked_cross_rate_limited: usize,
+    mean_dv_cross: f64,
+    mean_mask_hamming_cross: f64,
+    // Phase 1.9e: Stable formation metrics
+    stable_avg_support: f64,
+    stable_avg_entropy: f64,
+    stable_avg_abs_td: f64,
 }
 
 /// DEMO 5b: Anchor Concept Tokens with Phase 1.9b AGGRESSIVE CONSOLIDATION
@@ -1676,12 +1773,45 @@ fn run_demo_5b_keyed(config: &Config) -> (KeyedMemoryMetrics, AnchorStats, (usiz
         merge_blocked_proto: merge_stats.blocked_proto,
         merge_blocked_value: merge_stats.blocked_value,
         merge_blocked_stability: merge_stats.blocked_stability,
+        merge_blocked_support: merge_stats.blocked_support,
         merge_blocked_key_mismatch: merge_stats.blocked_key_mismatch,
         merge_blocked_ctx_mismatch: merge_stats.blocked_ctx_mismatch,
         merge_blocked_mode_mismatch: merge_stats.blocked_mode_mismatch,
         // Phase 1.9c: Opportunity diagnostics
         pairs_checked: merge_stats.pairs_checked,
         opportunity_rate: merge_stats.opportunity_rate,
+        // Phase 1.9d: Cross-partition merge stats
+        cross_mode_merges_done: merge_stats.cross_mode_merges_done,
+        cross_mask_merges_done: merge_stats.cross_mask_merges_done,
+        cross_partition_merges_done: merge_stats.cross_partition_merges_done,
+        blocked_explore_isolated: merge_stats.blocked_explore_isolated,
+        blocked_mask_hamming: merge_stats.blocked_mask_hamming,
+        blocked_cross_mode_v: merge_stats.blocked_cross_mode_v,
+        blocked_cross_mode_proto: merge_stats.blocked_cross_mode_proto,
+        blocked_cross_mask_proto: merge_stats.blocked_cross_mask_proto,
+        blocked_cross_mask_v: merge_stats.blocked_cross_mask_v,
+        blocked_cross_mode_not_stable: merge_stats.blocked_cross_mode_not_stable,
+        blocked_cross_mask_not_stable: merge_stats.blocked_cross_mask_not_stable,
+        blocked_cross_rate_limited: merge_stats.blocked_cross_rate_limited,
+        mean_dv_cross: if merge_stats.cross_dv_count > 0 {
+            merge_stats.cross_dv_sum / merge_stats.cross_dv_count as f64
+        } else { 0.0 },
+        mean_mask_hamming_cross: if merge_stats.cross_mask_hamming_count > 0 {
+            merge_stats.cross_mask_hamming_sum as f64 / merge_stats.cross_mask_hamming_count as f64
+        } else { 0.0 },
+        // Phase 1.9e: Stable formation metrics
+        stable_avg_support: {
+            let (avg_support, _, _, _) = anchor_bank.stable_anchor_averages();
+            avg_support
+        },
+        stable_avg_entropy: {
+            let (_, avg_entropy, _, _) = anchor_bank.stable_anchor_averages();
+            avg_entropy
+        },
+        stable_avg_abs_td: {
+            let (_, _, avg_abs_td, _) = anchor_bank.stable_anchor_averages();
+            avg_abs_td
+        },
     };
 
     (metrics, anchor_stats, keyed_stats, probe_stats, lifecycle_stats)

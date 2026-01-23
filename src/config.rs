@@ -222,6 +222,27 @@ pub struct Config {
     /// Maximum usage_count for an anchor to be eligible for merging.
     /// Protects high-usage anchors with lots of keyed memory history.
     pub merge_max_usage: u32,
+    /// Minimum proto_support for non-stable anchors to be merge candidates.
+    /// Ensures we don't merge "explore garbage" - only mature anchors.
+    pub merge_min_support_nonstable: u32,
+
+    // =========================================================================
+    // Phase 1.9d: Matured cross-partition merges
+    // =========================================================================
+    /// Value epsilon for cross-mode merges (stable anchors only).
+    pub mode_merge_v_eps: f32,
+    /// Minimum proto similarity for stable cross-mode merges.
+    pub proto_min_stable_cross_mode: f32,
+    /// Maximum Hamming distance for cross-mask merges.
+    pub mask_eps: u32,
+    /// Minimum proto similarity for cross-mask merges.
+    pub proto_min_cross_mask: f32,
+    /// Value epsilon for cross-mask merges.
+    pub value_eps_cross_mask: f32,
+    /// Allow Mid<->Stable cross-mode merges (both must be stable).
+    pub allow_mid_stable_cross_mode: bool,
+    /// Maximum cross-partition merges per scan (rate limiting).
+    pub max_cross_partition_merges_per_scan: u32,
 
     // =========================================================================
     // Phase 1.9b: Stability Hysteresis (flicker elimination)
@@ -316,9 +337,10 @@ impl Default for Config {
             label_memory_max_hamming: 8,
 
             // Phase 1.7a: Prototype Vector defaults
+            // Phase 1.9e Option A: Faster prototype sharpening (moderate tuning)
             proto_m: 12,
-            proto_eta: 0.10,
-            proto_decay: 0.01,
+            proto_eta: 0.11,       // Phase 1.9e: 0.10 -> 0.11 (moderate sharpening, not too aggressive)
+            proto_decay: 0.009,    // Phase 1.9e: 0.01 -> 0.009 (slight reduction for sharper prototypes)
             proto_beta: 0.25,
             proto_insert_margin: 0.02,
 
@@ -375,27 +397,37 @@ impl Default for Config {
             run_baseline_5a: false,  // Skip baseline for faster iteration
             run_keyed_5b: true,
 
-            // Phase 1.9c: CONSOLIDATION defaults (partition-aware + reduced scan noise)
-            merge_scan_period: 50,               // Scan every 50 ticks (less frequent = less noise)
-            merge_scan_k: 64,                    // Sample 64 anchors per anchor per scan
-            merge_proto_min_score: 0.82,         // Require 82% proto similarity
+            // Phase 1.9e: CONSOLIDATION defaults (balanced merge + stable accumulation)
+            merge_scan_period: 50,               // Phase 1.9e: 40 -> 50 (less frequent for stable accumulation)
+            merge_scan_k: 80,                    // Sample 80 anchors per anchor per scan (was 64)
+            merge_proto_min_score: 0.78,         // Require 78% proto similarity (lowered from 0.80)
             merge_min_support: 30,               // Anchors need some maturity to merge
-            merge_max_per_scan: 16,              // Up to 16 merges per scan
+            merge_max_per_scan: 20,              // Up to 20 merges per scan (was 16)
             merge_same_key_only: false,          // Allow cross-key merges if proto similar enough
-            merge_proto_min_score_cross_key: 0.88, // Cross-key threshold
+            merge_proto_min_score_cross_key: 0.83, // Cross-key threshold (lowered from 0.855)
             merge_proto_eta: 0.10,               // Proto merge learning rate
             merge_v_eps: 0.38,                   // Value epsilon for non-stable anchors
             merge_v_eps_stable: 0.22,            // Stricter value epsilon for stable anchors
             merge_max_usage: 2500,               // Allow most anchors to merge
+            merge_min_support_nonstable: 28,     // Phase 1.9e: 40 -> 28 (align with easier stable entry)
 
-            // Phase 1.9b: Stability hysteresis (very easy to enter stable)
-            stable_min_support_enter: 40,        // Need 40 updates to enter stable (easy)
-            stable_min_support_exit: 10,         // Can drop if support falls below 10
-            stable_enter_entropy: 2.60,          // Enter stable when H < 2.60 (relaxed)
-            stable_exit_entropy: 2.75,           // Exit stable when H > 2.75 (stickier)
-            stable_enter_abs_td: 0.45,           // Enter stable when |TD| < 0.45 (relaxed)
-            stable_exit_abs_td: 0.65,            // Exit stable when |TD| > 0.65 (stickier)
-            stable_min_ticks_on: 200,            // Stay stable for 200 ticks minimum
+            // Phase 1.9d: Matured cross-partition merges (relaxed for stable anchors)
+            mode_merge_v_eps: 0.18,              // Max |dv| for cross-mode merges (was 0.15)
+            proto_min_stable_cross_mode: 0.88,   // High proto similarity for cross-mode (was 0.90)
+            mask_eps: 2,                         // Max Hamming distance for cross-mask (was 1)
+            proto_min_cross_mask: 0.88,          // High proto similarity for cross-mask (was 0.90)
+            value_eps_cross_mask: 0.18,          // Max |dv| for cross-mask merges (was 0.15)
+            allow_mid_stable_cross_mode: true,   // Allow Mid<->Stable (both must be stable)
+            max_cross_partition_merges_per_scan: 24, // Phase 1.9e: 48 -> 24 (more conservative to allow stable accumulation)
+
+            // Phase 1.9e Option A: Stability hysteresis (very easy entry, stickier state)
+            stable_min_support_enter: 18,        // Phase 1.9e: 30 -> 18 (very easy entry)
+            stable_min_support_exit: 6,          // Phase 1.9e: 8 -> 6 (harder to exit = more stable anchors)
+            stable_enter_entropy: 2.75,          // Phase 1.9e: 2.65 -> 2.75 (+0.10 relaxation)
+            stable_exit_entropy: 2.80,           // Phase 1.9e: 2.75 -> 2.80 (stickier)
+            stable_enter_abs_td: 0.55,           // Phase 1.9e: 0.45 -> 0.55 (+0.10 relaxation)
+            stable_exit_abs_td: 0.70,            // Phase 1.9e: 0.65 -> 0.70 (stickier)
+            stable_min_ticks_on: 120,            // Phase 1.9e: 200 -> 120 (faster cycling)
             stable_catastrophic_v_drop: 0.15,    // Catastrophic if V drops 0.15 below stable_v_min
         }
     }

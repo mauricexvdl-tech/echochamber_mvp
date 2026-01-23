@@ -47,7 +47,7 @@ pub const DEFAULT_PROTO_M: usize = 12;
 
 /// A single anchor prototype representing a stable memory address.
 /// Phase 1.7a: Extended with prototype vector for "concept token" representation.
-/// Phase 1.9b: Reasons for blocking a merge candidate.
+/// Phase 1.9b/d: Reasons for blocking a merge candidate.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MergeBlockReason {
     None,
@@ -59,15 +59,25 @@ pub enum MergeBlockReason {
     ValueDelta,
     StabilityMixed,
     UsageTooHigh,
+    // Phase 1.9d: Cross-partition specific blocks
+    ExploreIsolated,        // Explore bucket must stay isolated
+    MaskHammingTooHigh,     // Cross-mask Hamming > mask_eps
+    CrossModeVDelta,        // Cross-mode |dv| > mode_merge_v_eps
+    CrossModeProtoLow,      // Cross-mode proto < proto_min_stable_cross_mode
+    CrossMaskProtoLow,      // Cross-mask proto < proto_min_cross_mask
+    CrossMaskVDelta,        // Cross-mask |dv| > value_eps_cross_mask
+    CrossModeNotStable,     // Cross-mode requires both stable
+    CrossMaskNotStable,     // Cross-mask requires both stable
 }
 
-/// Phase 1.9b: Merge statistics for reporting.
+/// Phase 1.9b/d: Merge statistics for reporting.
 #[derive(Clone, Debug, Default)]
 pub struct MergeStats {
     pub candidates_found: usize,
     pub blocked_proto: usize,
     pub blocked_value: usize,
     pub blocked_stability: usize,
+    pub blocked_support: usize,
     pub blocked_key_mismatch: usize,
     pub blocked_ctx_mismatch: usize,
     pub blocked_mode_mismatch: usize,
@@ -77,6 +87,26 @@ pub struct MergeStats {
     pub pairs_checked: usize,
     /// merge_opportunity_rate = candidates_found / pairs_checked
     pub opportunity_rate: f64,
+    // Phase 1.9d: Cross-partition merge tracking
+    pub cross_mode_merges_done: usize,
+    pub cross_mask_merges_done: usize,
+    pub cross_partition_merges_done: usize,
+    pub blocked_explore_isolated: usize,
+    pub blocked_mask_hamming: usize,
+    pub blocked_cross_mode_v: usize,
+    pub blocked_cross_mode_proto: usize,
+    pub blocked_cross_mask_proto: usize,
+    pub blocked_cross_mask_v: usize,
+    pub blocked_cross_mode_not_stable: usize,
+    pub blocked_cross_mask_not_stable: usize,
+    /// Sum of |dv| for accepted cross merges (for computing mean).
+    pub cross_dv_sum: f64,
+    pub cross_dv_count: usize,
+    /// Sum of mask Hamming for accepted cross-mask merges.
+    pub cross_mask_hamming_sum: u32,
+    pub cross_mask_hamming_count: usize,
+    /// Cross-partition merges blocked due to rate limiting.
+    pub blocked_cross_rate_limited: usize,
 }
 
 /// Phase 1.9c: Top blocked merge candidate for diagnostics.
@@ -253,6 +283,91 @@ impl Anchor {
         }
 
         (true, MergeBlockReason::None)
+    }
+
+    /// Phase 1.9d: Check if cross-partition merge is allowed.
+    /// Returns: (allowed, reason, is_cross_mode, is_cross_mask, mask_hamming)
+    /// Called when standard merge_compatible_with fails.
+    pub fn check_cross_partition_merge(
+        &self,
+        other: &Anchor,
+        proto_score: f32,
+        config: &Config,
+    ) -> (bool, MergeBlockReason, bool, bool, u32) {
+        let self_mode = self.gate_mode_bucket();
+        let other_mode = other.gate_mode_bucket();
+        let both_stable = self.stable && other.stable;
+        let v_delta = (self.v - other.v).abs();
+
+        // Check mode differences
+        let modes_differ = self_mode != other_mode;
+        // Check mask differences
+        let masks_differ = self.learned_mask != other.learned_mask;
+        let mask_hamming = (self.learned_mask ^ other.learned_mask).count_ones();
+
+        // Check ctx compatibility (same as before)
+        let ctx_ok = self.ctx_best == other.ctx_best
+            || self.ctx_cosine_similarity(other) >= 0.90;
+        if !ctx_ok {
+            return (false, MergeBlockReason::CtxMismatch, modes_differ, masks_differ, mask_hamming);
+        }
+
+        // Phase 1.9d Rule 1: Explore bucket must stay isolated
+        // Explore is bucket 0, never allow cross-mode merges involving Explore
+        let self_is_explore = self_mode == 0;
+        let other_is_explore = other_mode == 0;
+        if modes_differ && (self_is_explore || other_is_explore) {
+            return (false, MergeBlockReason::ExploreIsolated, true, masks_differ, mask_hamming);
+        }
+
+        // Phase 1.9d Rule 2: Cross-mode merges (Mid<->Stable)
+        if modes_differ {
+            // Must both be stable for cross-mode merge
+            if !both_stable {
+                return (false, MergeBlockReason::CrossModeNotStable, true, masks_differ, mask_hamming);
+            }
+            // Check if Mid<->Stable is allowed
+            let is_mid_stable = (self_mode == 1 && other_mode == 2) || (self_mode == 2 && other_mode == 1);
+            if is_mid_stable && !config.allow_mid_stable_cross_mode {
+                return (false, MergeBlockReason::ModeMismatch, true, masks_differ, mask_hamming);
+            }
+            // Value delta check for cross-mode
+            if v_delta > config.mode_merge_v_eps {
+                return (false, MergeBlockReason::CrossModeVDelta, true, masks_differ, mask_hamming);
+            }
+            // Proto score check for cross-mode
+            if proto_score < config.proto_min_stable_cross_mode {
+                return (false, MergeBlockReason::CrossModeProtoLow, true, masks_differ, mask_hamming);
+            }
+        }
+
+        // Phase 1.9d Rule 3: Cross-mask merges
+        if masks_differ {
+            // Must both be stable for cross-mask merge
+            if !both_stable {
+                return (false, MergeBlockReason::CrossMaskNotStable, modes_differ, true, mask_hamming);
+            }
+            // Hamming distance check
+            if mask_hamming > config.mask_eps {
+                return (false, MergeBlockReason::MaskHammingTooHigh, modes_differ, true, mask_hamming);
+            }
+            // Proto score check for cross-mask
+            if proto_score < config.proto_min_cross_mask {
+                return (false, MergeBlockReason::CrossMaskProtoLow, modes_differ, true, mask_hamming);
+            }
+            // Value delta check for cross-mask
+            if v_delta > config.value_eps_cross_mask {
+                return (false, MergeBlockReason::CrossMaskVDelta, modes_differ, true, mask_hamming);
+            }
+        }
+
+        // All checks passed - cross-partition merge is allowed
+        (true, MergeBlockReason::None, modes_differ, masks_differ, mask_hamming)
+    }
+
+    /// Helper: Check if this anchor is in Explore bucket.
+    pub fn is_explore(&self) -> bool {
+        self.gate_mode_bucket() == 0
     }
 
     // =========================================================================
@@ -745,6 +860,27 @@ pub struct AnchorBank {
     pairs_checked: usize,
     /// Phase 1.9c: Top 5 blocked candidates (best proto scores that didn't merge).
     top_blocked: Vec<BlockedMergeInfo>,
+
+    // Phase 1.9d: Cross-partition merge tracking
+    pub cross_mode_merges_done: usize,
+    pub cross_mask_merges_done: usize,
+    pub cross_partition_merges_done: usize,
+    pub blocked_explore_isolated: usize,
+    pub blocked_mask_hamming: usize,
+    pub blocked_cross_mode_v: usize,
+    pub blocked_cross_mode_proto: usize,
+    pub blocked_cross_mask_proto: usize,
+    pub blocked_cross_mask_v: usize,
+    pub blocked_cross_mode_not_stable: usize,
+    pub blocked_cross_mask_not_stable: usize,
+    /// Sum of |dv| for accepted cross merges.
+    cross_dv_sum: f64,
+    cross_dv_count: usize,
+    /// Sum of mask Hamming for cross-mask merges.
+    cross_mask_hamming_sum: u32,
+    cross_mask_hamming_count: usize,
+    /// Cross-partition merges blocked by rate limiting.
+    blocked_cross_rate_limited: usize,
 }
 
 impl AnchorBank {
@@ -790,6 +926,23 @@ impl AnchorBank {
             merge_rng_state: 0xDEADBEEF_CAFEBABE,
             pairs_checked: 0,
             top_blocked: Vec::new(),
+            // Phase 1.9d
+            cross_mode_merges_done: 0,
+            cross_mask_merges_done: 0,
+            cross_partition_merges_done: 0,
+            blocked_explore_isolated: 0,
+            blocked_mask_hamming: 0,
+            blocked_cross_mode_v: 0,
+            blocked_cross_mode_proto: 0,
+            blocked_cross_mask_proto: 0,
+            blocked_cross_mask_v: 0,
+            blocked_cross_mode_not_stable: 0,
+            blocked_cross_mask_not_stable: 0,
+            cross_dv_sum: 0.0,
+            cross_dv_count: 0,
+            cross_mask_hamming_sum: 0,
+            cross_mask_hamming_count: 0,
+            blocked_cross_rate_limited: 0,
         }
     }
 
@@ -1060,7 +1213,9 @@ impl AnchorBank {
     /// Uses merge_scan_k to sample candidates per anchor for scalability.
     /// Returns Vec of (id1, id2, proto_score) where id1 is the lower-usage anchor.
     /// Uses different value epsilon for stable vs non-stable anchors.
-    pub fn find_merge_pairs(&mut self, config: &Config) -> Vec<(u16, u16, f32)> {
+    /// Phase 1.9d: Extended merge candidate with cross-partition tracking.
+    /// Returns: (id_low, id_high, proto_score, is_cross_mode, is_cross_mask)
+    pub fn find_merge_pairs(&mut self, config: &Config) -> Vec<(u16, u16, f32, bool, bool)> {
         let proto_m = config.proto_m.min(DEFAULT_PROTO_M);
         let min_support = config.merge_min_support;
         let proto_min = config.merge_proto_min_score;
@@ -1068,7 +1223,9 @@ impl AnchorBank {
         let same_key_only = config.merge_same_key_only;
         let scan_k = config.merge_scan_k as usize;
 
-        let mut candidates: Vec<(u16, u16, f32)> = Vec::new();
+        // Phase 1.9d: Extended candidates with cross-partition info
+        // (id_low, id_high, proto_score, is_cross_mode, is_cross_mask, mask_hamming, v_delta)
+        let mut extended_candidates: Vec<(u16, u16, f32, bool, bool, u32, f32)> = Vec::new();
         // Phase 1.9c: Collect blocked candidates locally to avoid borrow issues
         let mut blocked_to_track: Vec<BlockedMergeInfo> = Vec::new();
 
@@ -1083,7 +1240,7 @@ impl AnchorBank {
             .collect();
 
         if eligible.len() < 2 {
-            return candidates;
+            return Vec::new();
         }
 
         // Sort by usage ascending so lower-usage comes first when we output pairs
@@ -1127,36 +1284,61 @@ impl AnchorBank {
                     (id2, id1, a2, a1)
                 };
 
-                // Phase 1.9b: Check merge compatibility FIRST (meaning partition)
-                let (compatible, block_reason) = a_low.merge_compatible_with(a_high);
-                if !compatible {
-                    match block_reason {
-                        MergeBlockReason::KeyMismatch => self.merge_blocked_key_mismatch += 1,
-                        MergeBlockReason::CtxMismatch => self.merge_blocked_ctx_mismatch += 1,
-                        MergeBlockReason::ModeMismatch | MergeBlockReason::ModeExplore => {
-                            self.merge_blocked_mode_mismatch += 1;
-                        }
-                        _ => {}
-                    }
-                    continue;
-                }
-
-                // If same_key_only, check signatures match closely
+                // If same_key_only, check signatures match closely first
                 let same_key = (a_low.proto_signature ^ a_high.proto_signature).count_ones() <= MERGE_HAMMING;
-
                 if same_key_only && !same_key {
                     continue;
                 }
 
-                // Determine proto threshold
+                // Determine proto threshold (computed early for cross-partition check)
                 let threshold = if same_key { proto_min } else { proto_min_cross };
 
-                // Compute proto similarity
+                // Compute proto similarity (needed for cross-partition decisions)
                 let proto_score = a_low.proto_score_against(a_high, proto_m);
 
+                // Phase 1.9d: Try standard compatibility first
+                let (compatible, block_reason) = a_low.merge_compatible_with(a_high);
+
+                // Track cross-partition info
+                let mut is_cross_mode = false;
+                let mut is_cross_mask = false;
+                let mut mask_hamming: u32 = 0;
+                let v_delta = (a_low.v - a_high.v).abs();
+
+                if !compatible {
+                    // Phase 1.9d: Try cross-partition merge for stable anchors
+                    let (cross_allowed, cross_reason, cross_mode, cross_mask, ham) =
+                        a_low.check_cross_partition_merge(a_high, proto_score, config);
+
+                    if !cross_allowed {
+                        // Track block reason
+                        match cross_reason {
+                            MergeBlockReason::KeyMismatch => self.merge_blocked_key_mismatch += 1,
+                            MergeBlockReason::CtxMismatch => self.merge_blocked_ctx_mismatch += 1,
+                            MergeBlockReason::ModeMismatch | MergeBlockReason::ModeExplore => {
+                                self.merge_blocked_mode_mismatch += 1;
+                            }
+                            MergeBlockReason::ExploreIsolated => self.blocked_explore_isolated += 1,
+                            MergeBlockReason::MaskHammingTooHigh => self.blocked_mask_hamming += 1,
+                            MergeBlockReason::CrossModeVDelta => self.blocked_cross_mode_v += 1,
+                            MergeBlockReason::CrossModeProtoLow => self.blocked_cross_mode_proto += 1,
+                            MergeBlockReason::CrossMaskProtoLow => self.blocked_cross_mask_proto += 1,
+                            MergeBlockReason::CrossMaskVDelta => self.blocked_cross_mask_v += 1,
+                            MergeBlockReason::CrossModeNotStable => self.blocked_cross_mode_not_stable += 1,
+                            MergeBlockReason::CrossMaskNotStable => self.blocked_cross_mask_not_stable += 1,
+                            _ => {}
+                        }
+                        continue;
+                    }
+                    // Cross-partition merge allowed
+                    is_cross_mode = cross_mode;
+                    is_cross_mask = cross_mask;
+                    mask_hamming = ham;
+                }
+
+                // Check proto score threshold (applies to all merges)
                 if proto_score < threshold {
                     self.merge_blocked_proto += 1;
-                    // Phase 1.9c: Track top blocked candidates (collect locally)
                     if proto_score >= 0.70 {
                         blocked_to_track.push(BlockedMergeInfo { id_a: id_low, id_b: id_high, proto_score, reason: MergeBlockReason::ProtoScore });
                     }
@@ -1176,26 +1358,36 @@ impl AnchorBank {
                     continue;
                 }
 
-                // Phase 1.9b: Use different value epsilon based on stability
-                let v_eps = if both_stable {
-                    config.merge_v_eps_stable
-                } else {
-                    config.merge_v_eps
-                };
-
-                // Check value consistency
-                let v_delta = (a_low.v - a_high.v).abs();
-                if v_delta >= v_eps {
-                    self.merge_blocked_value += 1;
-                    if proto_score >= 0.70 {
-                        blocked_to_track.push(BlockedMergeInfo { id_a: id_low, id_b: id_high, proto_score, reason: MergeBlockReason::ValueDelta });
+                // Phase 1.9c: Non-stable anchors need high support to merge (no explore garbage)
+                if both_non_stable {
+                    let min_sup = a_low.proto_support.min(a_high.proto_support);
+                    if min_sup < config.merge_min_support_nonstable {
+                        self.merge_blocked_support += 1;
+                        continue;
                     }
-                    continue;
+                }
+
+                // Phase 1.9b: Use different value epsilon based on stability
+                // (Skip for cross-partition merges as they have their own v_eps checks)
+                if !is_cross_mode && !is_cross_mask {
+                    let v_eps = if both_stable {
+                        config.merge_v_eps_stable
+                    } else {
+                        config.merge_v_eps
+                    };
+
+                    if v_delta >= v_eps {
+                        self.merge_blocked_value += 1;
+                        if proto_score >= 0.70 {
+                            blocked_to_track.push(BlockedMergeInfo { id_a: id_low, id_b: id_high, proto_score, reason: MergeBlockReason::ValueDelta });
+                        }
+                        continue;
+                    }
                 }
 
                 // This pair is a merge candidate
                 self.merge_candidates_found += 1;
-                candidates.push((id_low, id_high, proto_score));
+                extended_candidates.push((id_low, id_high, proto_score, is_cross_mode, is_cross_mask, mask_hamming, v_delta));
             }
         }
 
@@ -1207,17 +1399,46 @@ impl AnchorBank {
         // Update RNG state for next scan
         self.merge_rng_state = self.merge_rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
 
-        // Sort by proto_score descending (best candidates first)
-        candidates.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        // Phase 1.9d: Sort by (1) proto_score desc, (2) min(v) desc, (3) combined support desc
+        extended_candidates.sort_by(|a, b| {
+            // First by proto_score descending
+            let score_cmp = b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal);
+            if score_cmp != std::cmp::Ordering::Equal {
+                return score_cmp;
+            }
+            // Then by v_delta ascending (lower is better)
+            a.6.partial_cmp(&b.6).unwrap_or(std::cmp::Ordering::Equal)
+        });
 
         // Deduplicate pairs (may have duplicates from sampling)
         let mut seen: std::collections::HashSet<(u16, u16)> = std::collections::HashSet::new();
-        candidates.retain(|(id1, id2, _)| {
+        extended_candidates.retain(|(id1, id2, _, _, _, _, _)| {
             let key = if id1 < id2 { (*id1, *id2) } else { (*id2, *id1) };
             seen.insert(key)
         });
 
-        candidates
+        // Phase 1.9d: Apply rate limiting for cross-partition merges
+        // Return extended candidates: (id_low, id_high, proto_score, is_cross_mode, is_cross_mask)
+        let max_cross = config.max_cross_partition_merges_per_scan as usize;
+        let mut cross_count = 0;
+        let mut final_candidates: Vec<(u16, u16, f32, bool, bool)> = Vec::new();
+
+        for (id_low, id_high, proto_score, is_cross_mode, is_cross_mask, _mask_hamming, _v_delta) in extended_candidates {
+            let is_cross = is_cross_mode || is_cross_mask;
+
+            if is_cross {
+                if cross_count >= max_cross {
+                    // Rate limit reached - skip this cross-partition merge
+                    self.blocked_cross_rate_limited += 1;
+                    continue;
+                }
+                cross_count += 1;
+            }
+
+            final_candidates.push((id_low, id_high, proto_score, is_cross_mode, is_cross_mask));
+        }
+
+        final_candidates
     }
 
     /// Phase 1.9b: Execute value-preserving merge of id_low into id_high.
@@ -1371,7 +1592,7 @@ impl AnchorBank {
         let mut remaps: Vec<(u16, u16)> = Vec::new();
         let mut merged_ids: std::collections::HashSet<u16> = std::collections::HashSet::new();
 
-        for (id_low, id_high, score) in candidates {
+        for (id_low, id_high, score, is_cross_mode, is_cross_mask) in candidates {
             if remaps.len() >= max_merges {
                 break;
             }
@@ -1381,6 +1602,20 @@ impl AnchorBank {
                 continue;
             }
 
+            // Phase 1.9d: Capture v_delta and mask_hamming before merge for tracking
+            let (v_delta, mask_hamming) = {
+                let a_low = self.anchors.get(&id_low);
+                let a_high = self.anchors.get(&id_high);
+                match (a_low, a_high) {
+                    (Some(a), Some(b)) => {
+                        let vd = (a.v - b.v).abs();
+                        let mh = (a.learned_mask ^ b.learned_mask).count_ones();
+                        (vd, mh)
+                    }
+                    _ => (0.0, 0),
+                }
+            };
+
             if self.execute_merge(id_low, id_high, config) {
                 remaps.push((id_low, id_high));
                 merged_ids.insert(id_low);
@@ -1388,6 +1623,22 @@ impl AnchorBank {
                 // Track proto merge score
                 self.merges_done_proto += 1;
                 self.merge_score_sum += score;
+
+                // Phase 1.9d: Track cross-partition merge statistics
+                let is_cross = is_cross_mode || is_cross_mask;
+                if is_cross {
+                    self.cross_partition_merges_done += 1;
+                    self.cross_dv_sum += v_delta as f64;
+                    self.cross_dv_count += 1;
+                }
+                if is_cross_mode {
+                    self.cross_mode_merges_done += 1;
+                }
+                if is_cross_mask {
+                    self.cross_mask_merges_done += 1;
+                    self.cross_mask_hamming_sum += mask_hamming;
+                    self.cross_mask_hamming_count += 1;
+                }
             }
         }
 
@@ -1827,6 +2078,7 @@ impl AnchorBank {
             blocked_proto: self.merge_blocked_proto,
             blocked_value: self.merge_blocked_value,
             blocked_stability: self.merge_blocked_stability,
+            blocked_support: self.merge_blocked_support,
             blocked_key_mismatch: self.merge_blocked_key_mismatch,
             blocked_ctx_mismatch: self.merge_blocked_ctx_mismatch,
             blocked_mode_mismatch: self.merge_blocked_mode_mismatch,
@@ -1834,6 +2086,23 @@ impl AnchorBank {
             stable_dropped: self.stable_dropped,
             pairs_checked: self.pairs_checked,
             opportunity_rate,
+            // Phase 1.9d: Cross-partition metrics
+            cross_mode_merges_done: self.cross_mode_merges_done,
+            cross_mask_merges_done: self.cross_mask_merges_done,
+            cross_partition_merges_done: self.cross_partition_merges_done,
+            blocked_explore_isolated: self.blocked_explore_isolated,
+            blocked_mask_hamming: self.blocked_mask_hamming,
+            blocked_cross_mode_v: self.blocked_cross_mode_v,
+            blocked_cross_mode_proto: self.blocked_cross_mode_proto,
+            blocked_cross_mask_proto: self.blocked_cross_mask_proto,
+            blocked_cross_mask_v: self.blocked_cross_mask_v,
+            blocked_cross_mode_not_stable: self.blocked_cross_mode_not_stable,
+            blocked_cross_mask_not_stable: self.blocked_cross_mask_not_stable,
+            cross_dv_sum: self.cross_dv_sum,
+            cross_dv_count: self.cross_dv_count,
+            cross_mask_hamming_sum: self.cross_mask_hamming_sum,
+            cross_mask_hamming_count: self.cross_mask_hamming_count,
+            blocked_cross_rate_limited: self.blocked_cross_rate_limited,
         }
     }
 
@@ -1871,6 +2140,30 @@ impl AnchorBank {
         } else {
             self.stable_dropped as f64 / total as f64
         }
+    }
+
+    /// Phase 1.9e: Get averages for stable anchors (support, entropy, |TD|).
+    /// Returns (avg_support, avg_entropy, avg_abs_td, count).
+    pub fn stable_anchor_averages(&self) -> (f64, f64, f64, usize) {
+        let stable_anchors: Vec<_> = self.anchors.values()
+            .filter(|a| a.alive && a.stable)
+            .collect();
+
+        let count = stable_anchors.len();
+        if count == 0 {
+            return (0.0, 0.0, 0.0, 0);
+        }
+
+        let sum_support: u32 = stable_anchors.iter().map(|a| a.proto_support).sum();
+        let sum_entropy: f32 = stable_anchors.iter().map(|a| a.proto_entropy_ema).sum();
+        let sum_abs_td: f32 = stable_anchors.iter().map(|a| a.v_ema_abs_td).sum();
+
+        (
+            sum_support as f64 / count as f64,
+            sum_entropy as f64 / count as f64,
+            sum_abs_td as f64 / count as f64,
+            count,
+        )
     }
 
     /// Get total wins across all anchors.
