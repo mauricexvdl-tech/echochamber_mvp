@@ -197,6 +197,8 @@ pub struct Config {
     pub run_keyed_5b: bool,
     /// Run demo 7 (Phase 2.0a Mode Policy).
     pub run_demo_7: bool,
+    /// Run demo 8 (Phase 2.0b Ablations + Mode Metrics).
+    pub run_demo_8: bool,
 
     // =========================================================================
     // Phase 2.0a: Mode Policy Configuration
@@ -427,6 +429,7 @@ impl Default for Config {
             run_baseline_5a: false, // Skip baseline for faster iteration
             run_keyed_5b: true,
             run_demo_7: true, // Phase 2.0a: Mode Policy demo
+            run_demo_8: true, // Phase 2.0b: Ablations + Mode Metrics demo
 
             // Phase 2.0a: Mode Policy defaults
             enable_mode_policy: true,

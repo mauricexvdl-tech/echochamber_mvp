@@ -446,3 +446,81 @@ pub struct ModeStats {
     pub gate_pass_rate_explore: f64,
     pub gate_pass_rate_exploit: f64,
 }
+
+// ============================================================================
+// Phase 2.0b: Ablation-aware mode selection
+// ============================================================================
+
+impl ModePolicy {
+    /// Choose mode with ablation config (Phase 2.0b).
+    /// If enable_reset=false, Reset never fires.
+    /// If enable_explore=false, Explore is forced to Exploit.
+    pub fn choose_mode_with_ablation(
+        &mut self,
+        current_tick: u64,
+        enable_reset: bool,
+        enable_explore: bool,
+    ) -> Mode {
+        // Check for Reset conditions (highest priority, but respects cooldown)
+        let should_reset =
+            enable_reset && self.state.cooldown == 0 && self.check_reset_conditions();
+
+        let cfg = &self.config;
+        let state = &mut self.state;
+
+        let mode = if should_reset {
+            // Record pre-reset TD mean for effectiveness measurement
+            let pre_td_values = state.recent_abs_td.last_n(10);
+            if !pre_td_values.is_empty() {
+                state.pre_reset_td_mean =
+                    pre_td_values.iter().sum::<f32>() / pre_td_values.len() as f32;
+            }
+            state.last_reset_tick = Some(current_tick);
+            state.cooldown = cfg.post_reset_cooldown;
+            state.gate_fail_streak = 0;
+            Mode::Reset
+        } else {
+            // Check Explore vs Exploit based on recent value
+            let recent_v = state.recent_values.mean();
+            let base_mode = if recent_v < cfg.explore_v_max {
+                Mode::Explore
+            } else if recent_v >= cfg.exploit_v_min {
+                Mode::Exploit
+            } else {
+                state.last_mode
+            };
+
+            // Apply ablation: force Explore -> Exploit if disabled
+            if !enable_explore && base_mode == Mode::Explore {
+                Mode::Exploit
+            } else {
+                base_mode
+            }
+        };
+
+        // Update counters
+        match mode {
+            Mode::Explore => state.explore_count += 1,
+            Mode::Exploit => state.exploit_count += 1,
+            Mode::Reset => state.reset_count += 1,
+        }
+
+        state.last_mode = mode;
+        mode
+    }
+
+    /// Get the current mean |TD| from recent observations.
+    pub fn current_abs_td(&self) -> f32 {
+        self.state.recent_abs_td.mean()
+    }
+
+    /// Get the last observed anchor value.
+    pub fn last_value(&self) -> f32 {
+        self.state.recent_values.last().unwrap_or(0.0)
+    }
+
+    /// Reset the policy state (for ablation runs with same initial state).
+    pub fn reset_state(&mut self) {
+        self.state = ModePolicyState::new(self.config.window_size);
+    }
+}

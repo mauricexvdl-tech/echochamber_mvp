@@ -602,6 +602,18 @@ impl Anchor {
         self.compute_entropy(proto_m)
     }
 
+    /// Check if a node_id is in this anchor's prototype (with positive weight).
+    /// Used for targeted reset (BadActors mode) to identify off-prototype nodes.
+    pub fn proto_contains(&self, node_id: u8, proto_m: usize) -> bool {
+        let pm = proto_m.min(DEFAULT_PROTO_M);
+        for i in 0..pm {
+            if self.proto_nodes[i] == node_id && self.proto_w[i] > 0.0 {
+                return true;
+            }
+        }
+        false
+    }
+
     // =========================================================================
     // Phase 1.9: Proto-based Similarity
     // =========================================================================
