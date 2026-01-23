@@ -369,7 +369,7 @@ impl ActionPolicy {
                 noise_amp: 0.0,
             },
             Action::Perturb => ActionOverrides {
-                topk_scale: 1.0, // No Top-K change for perturb
+                topk_scale: 1.0,   // No Top-K change for perturb
                 margin_scale: 1.0, // No margin change for perturb
                 apply_noise: true,
                 noise_amp: self.config.perturb_noise_amp,

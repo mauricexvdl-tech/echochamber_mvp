@@ -49,11 +49,7 @@ impl ActionAblationVariant {
 
     /// Variants for Demo 11 (trigger-matched comparison).
     pub fn demo11_variants() -> Vec<Self> {
-        vec![
-            Self::Full,
-            Self::RandomBudgeted,
-            Self::RandomTriggerMatched,
-        ]
+        vec![Self::Full, Self::RandomBudgeted, Self::RandomTriggerMatched]
     }
 }
 

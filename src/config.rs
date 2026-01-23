@@ -247,6 +247,34 @@ pub struct Config {
     pub distill_train_every: u64,
 
     // =========================================================================
+    // Phase 2.0f-C: Mode-Conditioned Distillation + Two-Sided Budget Matching
+    // =========================================================================
+    /// Enable mode-conditioned features (3-dim one-hot for Explore/Exploit/Reset).
+    pub distill_mode_cond: bool,
+    /// Minimum samples per mode for stratified training.
+    pub distill_min_mode_samples: usize,
+    /// Sliding window size for target budget limiter.
+    pub budget_window: usize,
+    /// Tolerance for action rate deviation from target (±tol).
+    pub budget_tol: f32,
+    /// Weight for student preference (logit) in budget scoring.
+    pub budget_lambda_pref: f32,
+    /// Weight for deficit (target - current rate) in budget scoring.
+    pub budget_lambda_def: f32,
+
+    // =========================================================================
+    // Phase 2.0f-E: Natural Exploit Emergence Configuration
+    // =========================================================================
+    /// Minimum proto_align for Exploit mode (stable + high alignment = exploit).
+    pub exploit_proto_min: f32,
+    /// Minimum topk_margin for Exploit mode.
+    pub exploit_margin_min: f64,
+    /// Require anchor to be stable for Exploit mode.
+    pub exploit_requires_stable: bool,
+    /// Focus bias added in Exploit mode when conditions are met.
+    pub focus_bias_exploit: f32,
+
+    // =========================================================================
     // Phase 2.0a: Mode Policy Configuration
     // =========================================================================
     /// Enable mode policy (Explore/Exploit/Reset) in Demo 7.
@@ -495,7 +523,7 @@ impl Default for Config {
             run_demo_9: true,  // Phase 2.0c: Mode → Action Loop demo
             run_demo_10: true, // Phase 2.0d: Action Ablations + Sweep demo
             run_demo_11: true, // Phase 2.0e: Trigger-Matched Random + Regret Metrics demo
-            run_demo_12: true, // Phase 2.0f-A: Action Distillation demo
+            run_demo_12: true, // Phase 2.0f-D: Action Distillation demo
 
             // Phase 2.0e: Regret/Recovery Metrics defaults
             regret_margin_bad: 0.02,
@@ -515,6 +543,24 @@ impl Default for Config {
             distill_replay_capacity: 50_000,
             distill_batch_size: 128,
             distill_train_every: 5,
+
+            // Phase 2.0f-C: Mode-Conditioned Distillation defaults
+            distill_mode_cond: true,
+            distill_min_mode_samples: 20_000,
+            budget_window: 2000,
+            budget_tol: 0.01,
+            budget_lambda_pref: 1.0,
+            budget_lambda_def: 8.0,
+
+            // Phase 2.0f-E: Natural Exploit Emergence defaults
+            // Tuned based on observed signal distributions:
+            // - proto_align mean ~0.126, so threshold 0.12 lets ~50% qualify
+            // - margin mean ~0.11, so threshold 0.04 lets most qualify
+            // - stable anchors ~0%, so disable stability requirement
+            exploit_proto_min: 0.12,       // Relaxed: ~50% of ticks have proto >= 0.12
+            exploit_margin_min: 0.04,      // Keep: most ticks have margin >= 0.04
+            exploit_requires_stable: false, // Disabled: no anchors become stable
+            focus_bias_exploit: 0.0,       // No artificial bias; rely on mode->action mapping
 
             // Phase 2.0a: Mode Policy defaults
             enable_mode_policy: true,

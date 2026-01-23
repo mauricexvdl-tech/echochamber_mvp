@@ -110,8 +110,8 @@ pub struct RegretStats {
     pub td_spikes: usize,
 
     // Action tracking
-    pub action_ticks: usize,  // Ticks where non-Focus action taken
-    pub regret_ticks: usize,  // Actions that led to worse outcome
+    pub action_ticks: usize, // Ticks where non-Focus action taken
+    pub regret_ticks: usize, // Actions that led to worse outcome
 
     // Recovery tracking
     pub recovery_count: usize,
@@ -181,11 +181,7 @@ impl RegretStats {
     }
 
     /// Record an action event (Scan or Perturb) for regret/recovery tracking.
-    pub fn observe_action(
-        &mut self,
-        tick: u64,
-        action: Action,
-    ) {
+    pub fn observe_action(&mut self, tick: u64, action: Action) {
         if action == Action::Focus {
             return; // Only track non-Focus actions
         }
@@ -206,11 +202,7 @@ impl RegretStats {
 
     /// Check pending actions and finalize recovery/regret measurements.
     /// Call this periodically or after post_window ticks.
-    pub fn check_pending_actions(
-        &mut self,
-        config: &RegretConfig,
-        current_tick: u64,
-    ) {
+    pub fn check_pending_actions(&mut self, config: &RegretConfig, current_tick: u64) {
         let post_mean_td = self.td_buffer.as_ref().map(|b| b.mean()).unwrap_or(0.0);
         let post_gate_pass_rate = self.gate_buffer.as_ref().map(|b| b.mean()).unwrap_or(0.0);
 

@@ -44,6 +44,14 @@ pub struct ModePolicyConfig {
     pub reset_dampen_top_k: usize,
     /// Window size for tracking recent values/TD
     pub window_size: usize,
+
+    // Phase 2.0f-E: Natural Exploit Emergence
+    /// Minimum proto_align for Exploit mode
+    pub exploit_proto_min: f32,
+    /// Minimum topk_margin for Exploit mode
+    pub exploit_margin_min: f64,
+    /// Require anchor to be stable for Exploit mode
+    pub exploit_requires_stable: bool,
 }
 
 impl Default for ModePolicyConfig {
@@ -60,6 +68,10 @@ impl Default for ModePolicyConfig {
             reset_dampen: 0.65,
             reset_dampen_top_k: 8,
             window_size: 32,
+            // Phase 2.0f-E: Natural Exploit Emergence
+            exploit_proto_min: 0.55,
+            exploit_margin_min: 0.04,
+            exploit_requires_stable: true,
         }
     }
 }
@@ -176,6 +188,16 @@ pub struct ModePolicyState {
     pub gate_pass_exploit: usize,
     pub gate_total_explore: usize,
     pub gate_total_exploit: usize,
+
+    // Phase 2.0f-E: Extended observation state
+    /// Last observed proto_align
+    pub last_proto_align: f32,
+    /// Last observed topk_margin
+    pub last_topk_margin: f64,
+    /// Last observed is_stable flag
+    pub last_is_stable: bool,
+    /// Last observed gate_passed
+    pub last_gate_passed: bool,
 }
 
 impl ModePolicyState {
@@ -197,6 +219,11 @@ impl ModePolicyState {
             gate_pass_exploit: 0,
             gate_total_explore: 0,
             gate_total_exploit: 0,
+            // Phase 2.0f-E: Extended observation state
+            last_proto_align: 0.0,
+            last_topk_margin: 0.0,
+            last_is_stable: false,
+            last_gate_passed: false,
         }
     }
 }
@@ -241,6 +268,22 @@ impl ModePolicy {
         abs_td: f32,
         gate_passed: bool,
     ) {
+        // Delegate to extended observe with default extended values
+        self.observe_extended(current_tick, anchor_value, abs_td, gate_passed, 0.0, 0.0, false);
+    }
+
+    /// Extended observe with proto_align, margin, and stable flag for natural Exploit emergence.
+    /// Phase 2.0f-E: Use this method for natural mode selection based on signal quality.
+    pub fn observe_extended(
+        &mut self,
+        current_tick: u64,
+        anchor_value: f32,
+        abs_td: f32,
+        gate_passed: bool,
+        proto_align: f32,
+        topk_margin: f64,
+        is_stable: bool,
+    ) {
         // Update ring buffers
         self.state.recent_values.push(anchor_value);
         self.state.recent_abs_td.push(abs_td);
@@ -256,6 +299,12 @@ impl ModePolicy {
         if self.state.cooldown > 0 {
             self.state.cooldown -= 1;
         }
+
+        // Phase 2.0f-E: Store extended observation state
+        self.state.last_proto_align = proto_align;
+        self.state.last_topk_margin = topk_margin;
+        self.state.last_is_stable = is_stable;
+        self.state.last_gate_passed = gate_passed;
 
         // Check reset effectiveness after 10 ticks
         if let Some(reset_tick) = self.state.last_reset_tick {
@@ -279,6 +328,7 @@ impl ModePolicy {
     }
 
     /// Choose the mode for this tick based on observed state.
+    /// Phase 2.0f-E: Uses extended signals for natural Exploit emergence.
     pub fn choose_mode(&mut self, current_tick: u64) -> Mode {
         // Check for Reset conditions (highest priority, but respects cooldown)
         let should_reset = self.state.cooldown == 0 && self.check_reset_conditions();
@@ -298,15 +348,31 @@ impl ModePolicy {
             state.gate_fail_streak = 0; // Reset the streak
             Mode::Reset
         } else {
-            // Check Explore vs Exploit based on recent value
+            // Phase 2.0f-E: Natural Exploit emergence based on signal quality
+            // Exploit triggers when: gate_passed AND (stable OR !requires_stable)
+            //                        AND proto_align >= min AND margin >= min
+            let stable_ok = !cfg.exploit_requires_stable || state.last_is_stable;
+            let proto_ok = state.last_proto_align >= cfg.exploit_proto_min;
+            let margin_ok = state.last_topk_margin >= cfg.exploit_margin_min;
+            let gate_ok = state.last_gate_passed;
+
+            let can_exploit = gate_ok && stable_ok && proto_ok && margin_ok;
+
+            // Check Explore vs Exploit
             let recent_v = state.recent_values.mean();
-            if recent_v < cfg.explore_v_max {
+
+            if can_exploit {
+                // Strong signal quality -> Exploit mode
+                Mode::Exploit
+            } else if recent_v < cfg.explore_v_max {
+                // Low value -> Explore mode
                 Mode::Explore
             } else if recent_v >= cfg.exploit_v_min {
+                // High value alone can also trigger Exploit (original condition)
                 Mode::Exploit
             } else {
-                // Middle ground: default to last mode or Exploit
-                state.last_mode
+                // Middle ground: default to Explore for more diversity
+                Mode::Explore
             }
         };
 
