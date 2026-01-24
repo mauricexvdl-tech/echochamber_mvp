@@ -105,13 +105,13 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
     println!();
     println!("Per-Seed Diagnostics (Phase 2.1g):");
     println!(
-        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     println!(
-        "  Seed       | explore% | exploit% | stable% | bad%  | perturb% | chronic% | active_ticks | enters | exits | watchdog"
+        "  Seed       | explore% | exploit% | stable% | bad%  | perturb% | chronic% | active_tks | enters | mean_len"
     );
     println!(
-        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     for d in diagnostics {
         let collapse_marker = if d.explore_rate > 0.25
@@ -124,8 +124,13 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
         } else {
             ""
         };
+        let mean_lock_len = if d.chronic_enter_count > 0 {
+            d.chronic_lock_total_ticks as f64 / d.chronic_enter_count as f64
+        } else {
+            0.0
+        };
         println!(
-            "  0x{:08X} | {:6.1}%  | {:6.1}%  | {:5.1}%  | {:4.1}% | {:7.1}%  | {:7.1}%  | {:12} | {:6} | {:5} | {:8}{}",
+            "  0x{:08X} | {:6.1}%  | {:6.1}%  | {:5.1}%  | {:4.1}% | {:7.1}%  | {:7.1}%  | {:10} | {:6} | {:8.1}{}",
             d.seed,
             d.explore_rate * 100.0,
             d.exploit_rate * 100.0,
@@ -135,13 +140,12 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
             d.chronic_lock_share * 100.0,
             d.chronic_lock_total_ticks,
             d.chronic_enter_count,
-            d.chronic_exit_count,
-            d.chronic_exit_by_watchdog,
+            mean_lock_len,
             collapse_marker,
         );
     }
     println!(
-        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 }
 
