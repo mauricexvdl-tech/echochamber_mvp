@@ -2559,22 +2559,7 @@ pub fn demo_7_mode_policy(config: &Config) {
     }
 
     // Initialize mode policy from config
-    let mode_policy_config = ModePolicyConfig {
-        explore_v_max: config.mode_explore_v_max,
-        exploit_v_min: config.mode_exploit_v_min,
-        reset_td_min: config.mode_reset_td_min,
-        reset_value_drop: config.mode_reset_value_drop,
-        reset_fail_streak: config.mode_reset_fail_streak,
-        post_reset_cooldown: config.mode_post_reset_cooldown,
-        explore_margin_min_scale: config.mode_explore_margin_scale,
-        exploit_margin_min_scale: config.mode_exploit_margin_scale,
-        reset_dampen: config.mode_reset_dampen,
-        reset_dampen_top_k: config.mode_reset_dampen_top_k,
-        window_size: config.mode_window_size,
-        exploit_proto_min: config.exploit_proto_min,
-        exploit_margin_min: config.exploit_margin_min,
-        exploit_requires_stable: config.exploit_requires_stable,
-    };
+    let mode_policy_config = ModePolicyConfig::from_config(&config);
     let mut mode_policy = ModePolicy::new(mode_policy_config);
 
     // Use same seed for reproducibility
@@ -3241,22 +3226,7 @@ fn run_ablation_variant(
     use ablate::{select_reset_targets, PerModeStats, ResetTargetStats, VariantReport};
     use mode::{ModeAction, ModePolicy, ModePolicyConfig};
 
-    let mode_policy_config = ModePolicyConfig {
-        explore_v_max: config.mode_explore_v_max,
-        exploit_v_min: config.mode_exploit_v_min,
-        reset_td_min: config.mode_reset_td_min,
-        reset_value_drop: config.mode_reset_value_drop,
-        reset_fail_streak: config.mode_reset_fail_streak,
-        post_reset_cooldown: config.mode_post_reset_cooldown,
-        explore_margin_min_scale: config.mode_explore_margin_scale,
-        exploit_margin_min_scale: config.mode_exploit_margin_scale,
-        reset_dampen: config.mode_reset_dampen,
-        reset_dampen_top_k: config.mode_reset_dampen_top_k,
-        window_size: config.mode_window_size,
-        exploit_proto_min: config.exploit_proto_min,
-        exploit_margin_min: config.exploit_margin_min,
-        exploit_requires_stable: config.exploit_requires_stable,
-    };
+    let mode_policy_config = ModePolicyConfig::from_config(&config);
     let mut mode_policy = ModePolicy::new(mode_policy_config);
 
     // Use same seed for reproducibility (but different from Demo 7)
@@ -3592,22 +3562,7 @@ pub fn demo_9_action_loop(config: &Config) {
     }
 
     // Initialize mode policy from config
-    let mode_policy_config = ModePolicyConfig {
-        explore_v_max: config.mode_explore_v_max,
-        exploit_v_min: config.mode_exploit_v_min,
-        reset_td_min: config.mode_reset_td_min,
-        reset_value_drop: config.mode_reset_value_drop,
-        reset_fail_streak: config.mode_reset_fail_streak,
-        post_reset_cooldown: config.mode_post_reset_cooldown,
-        explore_margin_min_scale: config.mode_explore_margin_scale,
-        exploit_margin_min_scale: config.mode_exploit_margin_scale,
-        reset_dampen: config.mode_reset_dampen,
-        reset_dampen_top_k: config.mode_reset_dampen_top_k,
-        window_size: config.mode_window_size,
-        exploit_proto_min: config.exploit_proto_min,
-        exploit_margin_min: config.exploit_margin_min,
-        exploit_requires_stable: config.exploit_requires_stable,
-    };
+    let mode_policy_config = ModePolicyConfig::from_config(&config);
     let mut mode_policy = ModePolicy::new(mode_policy_config);
 
     // Initialize action policy from config with perturb floor enabled
@@ -4569,22 +4524,7 @@ fn run_action_variant(
     use action_ablate::BudgetedRandomAction;
     use mode::{ModePolicy, ModePolicyConfig};
 
-    let mode_policy_config = ModePolicyConfig {
-        explore_v_max: config.mode_explore_v_max,
-        exploit_v_min: config.mode_exploit_v_min,
-        reset_td_min: config.mode_reset_td_min,
-        reset_value_drop: config.mode_reset_value_drop,
-        reset_fail_streak: config.mode_reset_fail_streak,
-        post_reset_cooldown: config.mode_post_reset_cooldown,
-        explore_margin_min_scale: config.mode_explore_margin_scale,
-        exploit_margin_min_scale: config.mode_exploit_margin_scale,
-        reset_dampen: config.mode_reset_dampen,
-        reset_dampen_top_k: config.mode_reset_dampen_top_k,
-        window_size: config.mode_window_size,
-        exploit_proto_min: config.exploit_proto_min,
-        exploit_margin_min: config.exploit_margin_min,
-        exploit_requires_stable: config.exploit_requires_stable,
-    };
+    let mode_policy_config = ModePolicyConfig::from_config(&config);
     let mut mode_policy = ModePolicy::new(mode_policy_config);
 
     let action_config = ActionConfig {
@@ -4907,22 +4847,13 @@ fn run_sweep_point(
     use mode::{ModePolicy, ModePolicyConfig};
 
     // Create modified mode policy config
-    let mode_policy_config = ModePolicyConfig {
-        explore_v_max: explore_v_max_override.unwrap_or(config.mode_explore_v_max),
-        exploit_v_min: config.mode_exploit_v_min,
-        reset_td_min: reset_td_min_override.unwrap_or(config.mode_reset_td_min),
-        reset_value_drop: config.mode_reset_value_drop,
-        reset_fail_streak: config.mode_reset_fail_streak,
-        post_reset_cooldown: config.mode_post_reset_cooldown,
-        explore_margin_min_scale: config.mode_explore_margin_scale,
-        exploit_margin_min_scale: config.mode_exploit_margin_scale,
-        reset_dampen: config.mode_reset_dampen,
-        reset_dampen_top_k: config.mode_reset_dampen_top_k,
-        window_size: config.mode_window_size,
-        exploit_proto_min: config.exploit_proto_min,
-        exploit_margin_min: config.exploit_margin_min,
-        exploit_requires_stable: config.exploit_requires_stable,
-    };
+    let mut mode_policy_config = ModePolicyConfig::from_config(&config);
+    if let Some(v) = explore_v_max_override {
+        mode_policy_config.explore_v_max = v;
+    }
+    if let Some(v) = reset_td_min_override {
+        mode_policy_config.reset_td_min = v;
+    }
     let mut mode_policy = ModePolicy::new(mode_policy_config);
 
     let action_config = ActionConfig {
@@ -5464,22 +5395,7 @@ fn run_demo11_variant_full(
     use mode::{ModePolicy, ModePolicyConfig};
     use regret::RegretStats;
 
-    let mode_policy_config = ModePolicyConfig {
-        explore_v_max: config.mode_explore_v_max,
-        exploit_v_min: config.mode_exploit_v_min,
-        reset_td_min: config.mode_reset_td_min,
-        reset_value_drop: config.mode_reset_value_drop,
-        reset_fail_streak: config.mode_reset_fail_streak,
-        post_reset_cooldown: config.mode_post_reset_cooldown,
-        explore_margin_min_scale: config.mode_explore_margin_scale,
-        exploit_margin_min_scale: config.mode_exploit_margin_scale,
-        reset_dampen: config.mode_reset_dampen,
-        reset_dampen_top_k: config.mode_reset_dampen_top_k,
-        window_size: config.mode_window_size,
-        exploit_proto_min: config.exploit_proto_min,
-        exploit_margin_min: config.exploit_margin_min,
-        exploit_requires_stable: config.exploit_requires_stable,
-    };
+    let mode_policy_config = ModePolicyConfig::from_config(&config);
     let mut mode_policy = ModePolicy::new(mode_policy_config);
 
     let action_config = ActionConfig {
@@ -5797,22 +5713,7 @@ fn run_demo11_variant_budgeted(
     use mode::{ModePolicy, ModePolicyConfig};
     use regret::RegretStats;
 
-    let mode_policy_config = ModePolicyConfig {
-        explore_v_max: config.mode_explore_v_max,
-        exploit_v_min: config.mode_exploit_v_min,
-        reset_td_min: config.mode_reset_td_min,
-        reset_value_drop: config.mode_reset_value_drop,
-        reset_fail_streak: config.mode_reset_fail_streak,
-        post_reset_cooldown: config.mode_post_reset_cooldown,
-        explore_margin_min_scale: config.mode_explore_margin_scale,
-        exploit_margin_min_scale: config.mode_exploit_margin_scale,
-        reset_dampen: config.mode_reset_dampen,
-        reset_dampen_top_k: config.mode_reset_dampen_top_k,
-        window_size: config.mode_window_size,
-        exploit_proto_min: config.exploit_proto_min,
-        exploit_margin_min: config.exploit_margin_min,
-        exploit_requires_stable: config.exploit_requires_stable,
-    };
+    let mode_policy_config = ModePolicyConfig::from_config(&config);
     let mut mode_policy = ModePolicy::new(mode_policy_config);
 
     let action_config = ActionConfig {
@@ -6124,22 +6025,7 @@ fn run_demo11_variant_trigger_matched(
     use mode::{ModePolicy, ModePolicyConfig};
     use regret::RegretStats;
 
-    let mode_policy_config = ModePolicyConfig {
-        explore_v_max: config.mode_explore_v_max,
-        exploit_v_min: config.mode_exploit_v_min,
-        reset_td_min: config.mode_reset_td_min,
-        reset_value_drop: config.mode_reset_value_drop,
-        reset_fail_streak: config.mode_reset_fail_streak,
-        post_reset_cooldown: config.mode_post_reset_cooldown,
-        explore_margin_min_scale: config.mode_explore_margin_scale,
-        exploit_margin_min_scale: config.mode_exploit_margin_scale,
-        reset_dampen: config.mode_reset_dampen,
-        reset_dampen_top_k: config.mode_reset_dampen_top_k,
-        window_size: config.mode_window_size,
-        exploit_proto_min: config.exploit_proto_min,
-        exploit_margin_min: config.exploit_margin_min,
-        exploit_requires_stable: config.exploit_requires_stable,
-    };
+    let mode_policy_config = ModePolicyConfig::from_config(&config);
     let mut mode_policy = ModePolicy::new(mode_policy_config);
 
     let action_config = ActionConfig {
@@ -6826,23 +6712,7 @@ fn run_demo12_teacher_baseline(
     let mut diagnostics = Demo12Diagnostics::new();
 
     // Phase 2.0f-E: Natural mode selection with extended signals
-    let mode_policy_config = ModePolicyConfig {
-        explore_v_max: config.mode_explore_v_max,
-        exploit_v_min: config.mode_exploit_v_min,
-        reset_td_min: config.mode_reset_td_min,
-        reset_value_drop: config.mode_reset_value_drop,
-        reset_fail_streak: config.mode_reset_fail_streak,
-        post_reset_cooldown: config.mode_post_reset_cooldown,
-        explore_margin_min_scale: config.mode_explore_margin_scale,
-        exploit_margin_min_scale: config.mode_exploit_margin_scale,
-        reset_dampen: config.mode_reset_dampen,
-        reset_dampen_top_k: config.mode_reset_dampen_top_k,
-        window_size: config.mode_window_size,
-        // Phase 2.0f-E: Natural Exploit emergence
-        exploit_proto_min: config.exploit_proto_min,
-        exploit_margin_min: config.exploit_margin_min,
-        exploit_requires_stable: config.exploit_requires_stable,
-    };
+    let mode_policy_config = ModePolicyConfig::from_config(&config);
     let mut mode_policy = ModePolicy::new(mode_policy_config);
 
     let action_config = ActionConfig {
@@ -7191,23 +7061,7 @@ fn run_demo12_train_student(
     let mut diagnostics = Demo12Diagnostics::new();
 
     // Phase 2.0f-E: Natural mode selection with extended signals
-    let mode_policy_config = ModePolicyConfig {
-        explore_v_max: config.mode_explore_v_max,
-        exploit_v_min: config.mode_exploit_v_min,
-        reset_td_min: config.mode_reset_td_min,
-        reset_value_drop: config.mode_reset_value_drop,
-        reset_fail_streak: config.mode_reset_fail_streak,
-        post_reset_cooldown: config.mode_post_reset_cooldown,
-        explore_margin_min_scale: config.mode_explore_margin_scale,
-        exploit_margin_min_scale: config.mode_exploit_margin_scale,
-        reset_dampen: config.mode_reset_dampen,
-        reset_dampen_top_k: config.mode_reset_dampen_top_k,
-        window_size: config.mode_window_size,
-        // Phase 2.0f-E: Natural Exploit emergence
-        exploit_proto_min: config.exploit_proto_min,
-        exploit_margin_min: config.exploit_margin_min,
-        exploit_requires_stable: config.exploit_requires_stable,
-    };
+    let mode_policy_config = ModePolicyConfig::from_config(&config);
     let mut mode_policy = ModePolicy::new(mode_policy_config);
 
     let action_config = ActionConfig {
@@ -7564,23 +7418,7 @@ fn run_demo12_eval_student(
     use mode::{Mode, ModePolicy, ModePolicyConfig};
 
     // Phase 2.0f-E: Natural mode selection with extended signals
-    let mode_policy_config = ModePolicyConfig {
-        explore_v_max: config.mode_explore_v_max,
-        exploit_v_min: config.mode_exploit_v_min,
-        reset_td_min: config.mode_reset_td_min,
-        reset_value_drop: config.mode_reset_value_drop,
-        reset_fail_streak: config.mode_reset_fail_streak,
-        post_reset_cooldown: config.mode_post_reset_cooldown,
-        explore_margin_min_scale: config.mode_explore_margin_scale,
-        exploit_margin_min_scale: config.mode_exploit_margin_scale,
-        reset_dampen: config.mode_reset_dampen,
-        reset_dampen_top_k: config.mode_reset_dampen_top_k,
-        window_size: config.mode_window_size,
-        // Phase 2.0f-E: Natural Exploit emergence
-        exploit_proto_min: config.exploit_proto_min,
-        exploit_margin_min: config.exploit_margin_min,
-        exploit_requires_stable: config.exploit_requires_stable,
-    };
+    let mode_policy_config = ModePolicyConfig::from_config(&config);
     let mut mode_policy = ModePolicy::new(mode_policy_config);
 
     let action_config = ActionConfig {

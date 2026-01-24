@@ -1,4 +1,5 @@
 //! Demo 13: Phase 2.1 - Multi-seed evaluation + lift metrics
+//! Phase 2.1b: Adds seed-robust policy stabilization with guardrails.
 //!
 //! Runs experiments across multiple seeds with aggregated reporting.
 //! Compares FULL policy against RANDOM_BUDGETED baseline.
@@ -16,10 +17,109 @@ use crate::memory::RollingWindow;
 use crate::mode::{Mode, ModePolicy, ModePolicyConfig};
 use crate::multiseed::{self, SeedRun};
 use crate::results::{
-    AcceptanceResult, Demo13Result, LiftResult, ResultMeta, SeedRunResult, VariantResult,
-    AggregateResult, write_json,
+    write_json, AcceptanceResult, AggregateResult, Demo13Result, LiftResult, ResultMeta,
+    SeedRunResult, VariantResult,
 };
 use crate::rng::Rng;
+
+/// Phase 2.1b: Per-seed diagnostics for collapse detection.
+#[derive(Clone, Debug, Default)]
+pub struct SeedDiagnostics {
+    pub seed: u64,
+    // Distribution stats
+    pub proto_align_mean: f32,
+    pub proto_align_p50: f32,
+    pub proto_align_p90: f32,
+    pub margin_mean: f64,
+    pub margin_p50: f64,
+    pub margin_p90: f64,
+    // Rates
+    pub stable_share: f64,
+    pub bad_state_share: f64,
+    pub explore_rate: f64,
+    pub exploit_rate: f64,
+    pub reset_rate: f64,
+    // Collapse indicators
+    pub explore_streak_max: u32,
+    pub exploit_streak_max: u32,
+    pub gate_fail_streak_max: u32,
+    pub rescue_count: usize,
+    // Adaptive thresholds used
+    pub adaptive_proto_min: f32,
+    pub adaptive_margin_min: f64,
+}
+
+/// Phase 2.1b: Warmup stats collector for adaptive thresholds.
+#[derive(Clone, Debug)]
+struct WarmupStats {
+    proto_samples: Vec<f32>,
+    margin_samples: Vec<f64>,
+}
+
+impl WarmupStats {
+    fn new() -> Self {
+        Self {
+            proto_samples: Vec::with_capacity(5000),
+            margin_samples: Vec::with_capacity(5000),
+        }
+    }
+
+    fn push(&mut self, proto: f32, margin: f64) {
+        if self.proto_samples.len() < 5000 {
+            self.proto_samples.push(proto);
+            self.margin_samples.push(margin);
+        }
+    }
+
+    fn compute_p50(&self) -> (f32, f64) {
+        if self.proto_samples.is_empty() {
+            return (0.0, 0.0);
+        }
+
+        let mut proto_sorted = self.proto_samples.clone();
+        let mut margin_sorted = self.margin_samples.clone();
+        proto_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        margin_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        let mid = proto_sorted.len() / 2;
+        (proto_sorted[mid], margin_sorted[mid])
+    }
+}
+
+/// Print per-seed diagnostics table.
+fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
+    println!();
+    println!("Per-Seed Diagnostics (Phase 2.1b):");
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────"
+    );
+    println!("  Seed       | explore% | exploit% | stable% | bad%  | exp_max | fail_max | rescues");
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────"
+    );
+    for d in diagnostics {
+        let collapse_marker = if d.explore_rate > 0.80 || d.exploit_rate < 0.15 {
+            " ⚠"
+        } else {
+            ""
+        };
+        println!(
+            "  0x{:08X} | {:6.1}%  | {:6.1}%  | {:5.1}%  | {:4.1}% | {:7} | {:8} | {:7}{}",
+            d.seed,
+            d.explore_rate * 100.0,
+            d.exploit_rate * 100.0,
+            d.stable_share * 100.0,
+            d.bad_state_share * 100.0,
+            d.explore_streak_max,
+            d.gate_fail_streak_max,
+            d.rescue_count,
+            collapse_marker,
+        );
+    }
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────"
+    );
+}
 
 /// Options for running Demo 13.
 #[derive(Clone, Debug, Default)]
@@ -45,7 +145,7 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
         // Reduce tick budgets for faster CI runs while keeping metrics meaningful
         config.competitive_episodes = 200; // Was 400 (50% reduction)
         config.competitive_episode_ticks = 300; // Was 500 (40% reduction)
-        // Total ticks: 200*300 = 60,000 (vs 200,000 normally) - 70% faster
+                                                // Total ticks: 200*300 = 60,000 (vs 200,000 normally) - 70% faster
     }
     println!();
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -97,17 +197,21 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
     let mut full_runs: Vec<SeedRun> = Vec::new();
     let mut full_lifts: Vec<LiftStats> = Vec::new();
 
+    let mut full_diagnostics: Vec<SeedDiagnostics> = Vec::new();
+
     for (i, &seed) in seeds.iter().enumerate() {
         print!("  Seed {}/{} (0x{:08X})... ", i + 1, num_seeds, seed);
-        let (run, lift_stats) = run_single_seed_full(&config, &lift_config, seed);
+        let (run, lift_stats, diag) = run_single_seed_full(&config, &lift_config, seed);
         println!(
-            "cov={:.1}% sel={:.1}% FP={:.1}%",
+            "cov={:.1}% sel={:.1}% FP={:.1}% rescues={}",
             run.coverage_pos * 100.0,
             run.selective_accuracy * 100.0,
-            run.false_positive * 100.0
+            run.false_positive * 100.0,
+            diag.rescue_count,
         );
         full_runs.push(run);
         full_lifts.push(lift_stats);
+        full_diagnostics.push(diag);
     }
 
     let full_agg = multiseed::aggregate(&full_runs);
@@ -117,7 +221,10 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
     // Run RANDOM_BUDGETED variant across all seeds
     // ==========================================================================
     println!();
-    println!("Running RANDOM_BUDGETED variant across {} seeds...", num_seeds);
+    println!(
+        "Running RANDOM_BUDGETED variant across {} seeds...",
+        num_seeds
+    );
 
     // Use average action rates from FULL as budget targets
     let target_scan_rate = full_agg.scan_rate_mean;
@@ -164,6 +271,9 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
     println!();
     println!("RANDOM_BUDGETED per-seed:");
     multiseed::print_per_seed_table(&budgeted_runs);
+
+    // Phase 2.1b: Diagnostics table
+    print_diagnostics_table(&full_diagnostics);
 
     // Aggregate tables
     println!();
@@ -260,7 +370,8 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
     println!();
     println!("C3) Variability (std devs reported):");
 
-    let low_variability = full_agg.coverage_pos_std < 0.15 && full_agg.selective_accuracy_std < 0.15;
+    let low_variability =
+        full_agg.coverage_pos_std < 0.15 && full_agg.selective_accuracy_std < 0.15;
     println!(
         "  [{}] coverage_pos_std < 15%: {:.1}%",
         if full_agg.coverage_pos_std < 0.15 {
@@ -355,29 +466,18 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
     }
 }
 
-/// Run a single seed with FULL policy.
+/// Run a single seed with FULL policy (Phase 2.1b with guardrails).
 fn run_single_seed_full(
     config: &Config,
     lift_config: &LiftConfig,
     seed: u64,
-) -> (SeedRun, LiftStats) {
-    let mode_policy_config = ModePolicyConfig {
-        explore_v_max: config.mode_explore_v_max,
-        exploit_v_min: config.mode_exploit_v_min,
-        reset_td_min: config.mode_reset_td_min,
-        reset_value_drop: config.mode_reset_value_drop,
-        reset_fail_streak: config.mode_reset_fail_streak,
-        post_reset_cooldown: config.mode_post_reset_cooldown,
-        explore_margin_min_scale: config.mode_explore_margin_scale,
-        exploit_margin_min_scale: config.mode_exploit_margin_scale,
-        reset_dampen: config.mode_reset_dampen,
-        reset_dampen_top_k: config.mode_reset_dampen_top_k,
-        window_size: config.mode_window_size,
-        exploit_proto_min: config.exploit_proto_min,
-        exploit_margin_min: config.exploit_margin_min,
-        exploit_requires_stable: config.exploit_requires_stable,
-    };
+) -> (SeedRun, LiftStats, SeedDiagnostics) {
+    // Phase 2.1b: Create mode policy config with guardrails
+    let mode_policy_config = ModePolicyConfig::from_config(config);
     let mut mode_policy = ModePolicy::new(mode_policy_config);
+
+    // Phase 2.1b: Warmup stats for adaptive thresholds
+    let mut warmup_stats = WarmupStats::new();
 
     let action_config = ActionConfig {
         scan_topk_scale: config.scan_topk_scale,
@@ -530,7 +630,8 @@ fn run_single_seed_full(
                 };
                 let v_prev = anchor_bank.get_value(prev_anchor_id);
                 let delta_power = total_power - prev_power;
-                let reward = compute_reward(delta_power, prev_topk_margin, prev_proto_align, config);
+                let reward =
+                    compute_reward(delta_power, prev_topk_margin, prev_proto_align, config);
                 let td = reward + config.gamma_v * v_next - v_prev;
                 td.abs()
             } else {
@@ -549,9 +650,40 @@ fn run_single_seed_full(
                 0.0
             };
 
-            // Mode policy
-            mode_policy.observe(global_tick, anchor_value, abs_td as f32, base_gate_passed);
-            let mode = mode_policy.choose_mode(global_tick);
+            // Phase 2.1b: Collect warmup stats for adaptive thresholds
+            if config.demo13_enable_adaptive_thresholds && total_ticks <= 5000 {
+                warmup_stats.push(proto_align, topk_margin);
+
+                // After warmup, update mode policy with adaptive thresholds
+                if total_ticks == 5000 {
+                    let (proto_p50, margin_p50) = warmup_stats.compute_p50();
+                    let adaptive_proto = (proto_p50 * config.exploit_proto_p50_scale)
+                        .max(config.exploit_proto_min_floor);
+                    let adaptive_margin = (margin_p50 * config.exploit_margin_p50_scale)
+                        .max(config.exploit_margin_min_floor);
+                    mode_policy.config.exploit_proto_min = adaptive_proto;
+                    mode_policy.config.exploit_margin_min = adaptive_margin;
+                }
+            }
+
+            // Mode policy with extended observation
+            mode_policy.observe_extended(
+                global_tick,
+                anchor_value,
+                abs_td as f32,
+                base_gate_passed,
+                proto_align,
+                topk_margin,
+                is_stable,
+            );
+
+            // Phase 2.1b: Use guardrails if enabled
+            let mode = if config.demo13_enable_rescue {
+                let (m, _rescue_fired) = mode_policy.choose_mode_with_guardrails(global_tick);
+                m
+            } else {
+                mode_policy.choose_mode(global_tick)
+            };
 
             match mode {
                 Mode::Explore => explore_count += 1,
@@ -560,7 +692,7 @@ fn run_single_seed_full(
             }
 
             // Action policy with triggers
-            let (action, trigger_reason) = action_policy.choose_action_with_triggers(
+            let (mut action, trigger_reason) = action_policy.choose_action_with_triggers(
                 mode,
                 abs_td as f32,
                 base_gate_passed,
@@ -569,6 +701,24 @@ fn run_single_seed_full(
                 anchor_value,
                 config,
             );
+
+            // Phase 2.1b: Min perturb guard
+            if config.demo13_enable_min_perturb_guard && action != Action::Perturb {
+                if action_policy.should_force_perturb_guard(
+                    config.demo13_min_perturb_rate,
+                    base_gate_passed,
+                    topk_margin as f32,
+                    proto_align,
+                    config.perturb_trig_margin_min * 1.5,
+                    config.perturb_trig_proto_min * 1.2,
+                ) {
+                    action = Action::Perturb;
+                    action_policy
+                        .triggers
+                        .on_perturb(config.perturb_cooldown_ticks);
+                    action_policy.trigger_stats.by_floor += 1;
+                }
+            }
 
             action_policy.record_trigger(trigger_reason);
             action_policy.record_action_for_floor(action);
@@ -626,7 +776,8 @@ fn run_single_seed_full(
                 };
                 let v_prev = anchor_bank.get_value(prev_anchor_id);
                 let delta_power = total_power - prev_power;
-                let mut reward = compute_reward(delta_power, prev_topk_margin, prev_proto_align, config);
+                let mut reward =
+                    compute_reward(delta_power, prev_topk_margin, prev_proto_align, config);
                 reward_ema =
                     (1.0 - config.reward_ema_beta) * reward_ema + config.reward_ema_beta * reward;
                 if config.use_advantage_reward {
@@ -726,7 +877,57 @@ fn run_single_seed_full(
     run.bad_state_share = Some(lift_stats.bad_state_share());
     run.recovery_improve = Some(lift_stats.recovery_after_perturb());
 
-    (run, lift_stats)
+    // Phase 2.1b: Collect diagnostics
+    let mode_stats = mode_policy.mode_stats();
+    let (proto_p50, margin_p50) = warmup_stats.compute_p50();
+
+    let diag = SeedDiagnostics {
+        seed,
+        proto_align_mean: if !warmup_stats.proto_samples.is_empty() {
+            warmup_stats.proto_samples.iter().sum::<f32>() / warmup_stats.proto_samples.len() as f32
+        } else {
+            0.0
+        },
+        proto_align_p50: proto_p50,
+        proto_align_p90: {
+            if warmup_stats.proto_samples.len() > 10 {
+                let mut sorted = warmup_stats.proto_samples.clone();
+                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                sorted[(sorted.len() * 9) / 10]
+            } else {
+                proto_p50
+            }
+        },
+        margin_mean: if !warmup_stats.margin_samples.is_empty() {
+            warmup_stats.margin_samples.iter().sum::<f64>()
+                / warmup_stats.margin_samples.len() as f64
+        } else {
+            0.0
+        },
+        margin_p50,
+        margin_p90: {
+            if warmup_stats.margin_samples.len() > 10 {
+                let mut sorted = warmup_stats.margin_samples.clone();
+                sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                sorted[(sorted.len() * 9) / 10]
+            } else {
+                margin_p50
+            }
+        },
+        stable_share: run.stable_share,
+        bad_state_share: lift_stats.bad_state_share(),
+        explore_rate: run.explore_rate,
+        exploit_rate: run.exploit_rate,
+        reset_rate: run.reset_rate,
+        explore_streak_max: mode_stats.explore_streak_max,
+        exploit_streak_max: mode_stats.exploit_streak_max,
+        gate_fail_streak_max: mode_stats.gate_fail_streak_max,
+        rescue_count: mode_stats.rescue_count,
+        adaptive_proto_min: mode_policy.config.exploit_proto_min,
+        adaptive_margin_min: mode_policy.config.exploit_margin_min,
+    };
+
+    (run, lift_stats, diag)
 }
 
 /// Run a single seed with RANDOM_BUDGETED policy.
@@ -737,22 +938,7 @@ fn run_single_seed_budgeted(
     target_scan_rate: f64,
     target_perturb_rate: f64,
 ) -> (SeedRun, LiftStats) {
-    let mode_policy_config = ModePolicyConfig {
-        explore_v_max: config.mode_explore_v_max,
-        exploit_v_min: config.mode_exploit_v_min,
-        reset_td_min: config.mode_reset_td_min,
-        reset_value_drop: config.mode_reset_value_drop,
-        reset_fail_streak: config.mode_reset_fail_streak,
-        post_reset_cooldown: config.mode_post_reset_cooldown,
-        explore_margin_min_scale: config.mode_explore_margin_scale,
-        exploit_margin_min_scale: config.mode_exploit_margin_scale,
-        reset_dampen: config.mode_reset_dampen,
-        reset_dampen_top_k: config.mode_reset_dampen_top_k,
-        window_size: config.mode_window_size,
-        exploit_proto_min: config.exploit_proto_min,
-        exploit_margin_min: config.exploit_margin_min,
-        exploit_requires_stable: config.exploit_requires_stable,
-    };
+    let mode_policy_config = ModePolicyConfig::from_config(config);
     let mut mode_policy = ModePolicy::new(mode_policy_config);
 
     let action_config = ActionConfig {
@@ -902,7 +1088,8 @@ fn run_single_seed_budgeted(
                 };
                 let v_prev = anchor_bank.get_value(prev_anchor_id);
                 let delta_power = total_power - prev_power;
-                let reward = compute_reward(delta_power, prev_topk_margin, prev_proto_align, config);
+                let reward =
+                    compute_reward(delta_power, prev_topk_margin, prev_proto_align, config);
                 let td = reward + config.gamma_v * v_next - v_prev;
                 td.abs()
             } else {
@@ -994,7 +1181,8 @@ fn run_single_seed_budgeted(
                 };
                 let v_prev = anchor_bank.get_value(prev_anchor_id);
                 let delta_power = total_power - prev_power;
-                let mut reward = compute_reward(delta_power, prev_topk_margin, prev_proto_align, config);
+                let mut reward =
+                    compute_reward(delta_power, prev_topk_margin, prev_proto_align, config);
                 reward_ema =
                     (1.0 - config.reward_ema_beta) * reward_ema + config.reward_ema_beta * reward;
                 if config.use_advantage_reward {
@@ -1098,14 +1286,17 @@ fn run_single_seed_budgeted(
 }
 
 /// Compute reward for value learning.
-fn compute_reward(delta_power: f64, prev_topk_margin: f64, prev_proto_align: f32, config: &Config) -> f32 {
+fn compute_reward(
+    delta_power: f64,
+    prev_topk_margin: f64,
+    prev_proto_align: f32,
+    config: &Config,
+) -> f32 {
     let r_power = (delta_power / config.r_p_clip as f64).clamp(-1.0, 1.0) as f32;
     let r_margin = (prev_topk_margin as f32 / config.margin_norm).clamp(0.0, 1.0);
     let r_proto = prev_proto_align.clamp(0.0, 1.0);
 
-    config.r_w_power * r_power
-        + config.r_w_margin * r_margin
-        + config.r_w_proto * r_proto
+    config.r_w_power * r_power + config.r_w_margin * r_margin + config.r_w_proto * r_proto
 }
 
 /// Simple bit flip for negative queries.

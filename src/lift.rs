@@ -242,9 +242,8 @@ fn std_dev(values: &[f64], mean_val: f64) -> f64 {
     if values.len() < 2 {
         return 0.0;
     }
-    let variance: f64 = values.iter()
-        .map(|&x| (x - mean_val).powi(2))
-        .sum::<f64>() / (values.len() - 1) as f64;
+    let variance: f64 =
+        values.iter().map(|&x| (x - mean_val).powi(2)).sum::<f64>() / (values.len() - 1) as f64;
     variance.sqrt()
 }
 
@@ -255,7 +254,8 @@ pub fn aggregate_lift(runs: &[LiftStats]) -> LiftAggregate {
     }
 
     let exploit_focus_lift: Vec<f64> = runs.iter().map(|r| r.exploit_focus_lift()).collect();
-    let recovery_after_perturb: Vec<f64> = runs.iter().map(|r| r.recovery_after_perturb()).collect();
+    let recovery_after_perturb: Vec<f64> =
+        runs.iter().map(|r| r.recovery_after_perturb()).collect();
     let bad_state_share: Vec<f64> = runs.iter().map(|r| r.bad_state_share()).collect();
     let scan_diversity: Vec<f64> = runs.iter().map(|r| r.scan_diversity()).collect();
 
@@ -283,14 +283,28 @@ pub fn print_lift_table(label: &str, agg: &LiftAggregate) {
     println!("  {:>24} | {:>15}", "Metric", "Mean ± Std");
     println!("  {}", "-".repeat(44));
 
-    println!("  {:>24} | {:>+6.1}% ± {:>5.1}%",
-        "exploit_focus_lift", agg.exploit_focus_lift_mean * 100.0, agg.exploit_focus_lift_std * 100.0);
-    println!("  {:>24} | {:>+6.1}% ± {:>5.1}%",
-        "recovery_after_perturb", agg.recovery_after_perturb_mean * 100.0, agg.recovery_after_perturb_std * 100.0);
-    println!("  {:>24} | {:>6.1}% ± {:>5.1}%",
-        "bad_state_share", agg.bad_state_share_mean * 100.0, agg.bad_state_share_std * 100.0);
-    println!("  {:>24} | {:>6.1} ± {:>5.1}",
-        "scan_diversity", agg.scan_diversity_mean, agg.scan_diversity_std);
+    println!(
+        "  {:>24} | {:>+6.1}% ± {:>5.1}%",
+        "exploit_focus_lift",
+        agg.exploit_focus_lift_mean * 100.0,
+        agg.exploit_focus_lift_std * 100.0
+    );
+    println!(
+        "  {:>24} | {:>+6.1}% ± {:>5.1}%",
+        "recovery_after_perturb",
+        agg.recovery_after_perturb_mean * 100.0,
+        agg.recovery_after_perturb_std * 100.0
+    );
+    println!(
+        "  {:>24} | {:>6.1}% ± {:>5.1}%",
+        "bad_state_share",
+        agg.bad_state_share_mean * 100.0,
+        agg.bad_state_share_std * 100.0
+    );
+    println!(
+        "  {:>24} | {:>6.1} ± {:>5.1}",
+        "scan_diversity", agg.scan_diversity_mean, agg.scan_diversity_std
+    );
 }
 
 /// Compare two lift aggregates and return number of wins for first.
@@ -301,17 +315,23 @@ pub fn compare_lift(a: &LiftAggregate, b: &LiftAggregate) -> (usize, Vec<(&'stat
 
     // exploit_focus_lift: higher is better
     let efl_win = a.exploit_focus_lift_mean > b.exploit_focus_lift_mean;
-    if efl_win { wins += 1; }
+    if efl_win {
+        wins += 1;
+    }
     comparisons.push(("exploit_focus_lift", efl_win));
 
     // recovery_after_perturb: higher is better
     let rap_win = a.recovery_after_perturb_mean > b.recovery_after_perturb_mean;
-    if rap_win { wins += 1; }
+    if rap_win {
+        wins += 1;
+    }
     comparisons.push(("recovery_after_perturb", rap_win));
 
     // bad_state_share: lower is better
     let bss_win = a.bad_state_share_mean < b.bad_state_share_mean;
-    if bss_win { wins += 1; }
+    if bss_win {
+        wins += 1;
+    }
     comparisons.push(("bad_state_share", bss_win));
 
     (wins, comparisons)

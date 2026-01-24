@@ -223,6 +223,44 @@ pub struct Config {
     pub lift_bad_value: f32,
 
     // =========================================================================
+    // Phase 2.1b: Seed-Robust Policy Stabilization
+    // =========================================================================
+    /// Minimum ticks to stay in Exploit mode once entered (anti-collapse).
+    pub min_exploit_ticks_on: u32,
+    /// Explore streak threshold to trigger rescue (force Reset/Perturb).
+    pub explore_streak_rescue: u32,
+    /// Gate fail streak threshold to trigger rescue.
+    pub fail_streak_rescue: u32,
+    /// Cooldown ticks after rescue before another rescue can fire.
+    pub rescue_cooldown: u32,
+    /// Ticks after Reset/Perturb to apply tighter exploit margin.
+    pub post_reset_exploit_boost_ticks: u32,
+    /// Scale factor for exploit margin during post-reset boost period.
+    pub post_reset_exploit_margin_scale: f32,
+    /// |TD| threshold to escape exploit lock (catastrophic).
+    pub catastrophic_abs_td: f32,
+    /// Value drop threshold to escape exploit lock (catastrophic).
+    pub catastrophic_value_drop: f32,
+    /// Floor for exploit proto threshold (adaptive).
+    pub exploit_proto_min_floor: f32,
+    /// Floor for exploit margin threshold (adaptive).
+    pub exploit_margin_min_floor: f64,
+    /// Scale factor for adaptive proto threshold (proto_p50 * scale).
+    pub exploit_proto_p50_scale: f32,
+    /// Scale factor for adaptive margin threshold (margin_p50 * scale).
+    pub exploit_margin_p50_scale: f64,
+    /// Enable adaptive thresholds in Demo 13.
+    pub demo13_enable_adaptive_thresholds: bool,
+    /// Enable rescue mechanism in Demo 13.
+    pub demo13_enable_rescue: bool,
+    /// Enable minimum perturb rate guard in Demo 13.
+    pub demo13_enable_min_perturb_guard: bool,
+    /// Minimum perturb rate target for Demo 13 guard.
+    pub demo13_min_perturb_rate: f32,
+    /// Window size for Demo 13 perturb rate guard.
+    pub demo13_perturb_window: usize,
+
+    // =========================================================================
     // Phase 2.0e: Regret/Recovery Metrics Configuration
     // =========================================================================
     /// Margin threshold for "bad state" (topk_margin < margin_bad).
@@ -574,6 +612,25 @@ impl Default for Config {
             lift_bad_proto: 0.10,
             lift_bad_value: 0.15,
 
+            // Phase 2.1b: Seed-Robust Policy Stabilization defaults
+            min_exploit_ticks_on: 10,
+            explore_streak_rescue: 100, // Very aggressive rescue threshold
+            fail_streak_rescue: 6,      // Very aggressive rescue threshold
+            rescue_cooldown: 40,
+            post_reset_exploit_boost_ticks: 60,
+            post_reset_exploit_margin_scale: 1.35, // Strong margin boost post-reset
+            catastrophic_abs_td: 0.50, // Lower threshold to escape bad exploits faster
+            catastrophic_value_drop: 0.08,
+            exploit_proto_min_floor: 0.20, // Much higher floor - require good proto alignment
+            exploit_margin_min_floor: 0.045, // Higher margin floor
+            exploit_proto_p50_scale: 0.65, // Very conservative - require strong proto
+            exploit_margin_p50_scale: 0.60, // Very conservative - require strong margin
+            demo13_enable_adaptive_thresholds: true,
+            demo13_enable_rescue: true,
+            demo13_enable_min_perturb_guard: true,
+            demo13_min_perturb_rate: 0.010, // Higher perturb floor
+            demo13_perturb_window: 1500,
+
             // Phase 2.0e: Regret/Recovery Metrics defaults
             regret_margin_bad: 0.02,
             regret_proto_bad: 0.20,
@@ -603,12 +660,13 @@ impl Default for Config {
 
             // Phase 2.0f-E: Natural Exploit Emergence defaults
             // Tuned based on observed signal distributions:
-            // - proto_align mean ~0.126, so threshold 0.12 lets ~50% qualify
-            // - margin mean ~0.11, so threshold 0.04 lets most qualify
-            // - stable anchors ~0%, so disable stability requirement
-            exploit_proto_min: 0.12, // Relaxed: ~50% of ticks have proto >= 0.12
-            exploit_margin_min: 0.04, // Keep: most ticks have margin >= 0.04
-            exploit_requires_stable: false, // Disabled: no anchors become stable
+            // Phase 2.1b: Stricter exploit requirements for seed robustness
+            // - proto_align mean ~0.126, threshold 0.18 requires above-average quality
+            // - margin mean ~0.11, threshold 0.06 requires good separation
+            // - require stable anchors for reliable exploit
+            exploit_proto_min: 0.18, // Stricter: require above-average proto alignment
+            exploit_margin_min: 0.06, // Stricter: require good winner separation
+            exploit_requires_stable: true, // Re-enabled: require anchor stability
             focus_bias_exploit: 0.0, // No artificial bias; rely on mode->action mapping
 
             // Phase 2.0a: Mode Policy defaults

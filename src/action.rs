@@ -742,4 +742,36 @@ impl ActionPolicy {
         let scaled = (base_topk as f32 * overrides.topk_scale).round() as usize;
         scaled.max(1) // At least 1 node
     }
+
+    /// Phase 2.1b: Check if min perturb guard should force a perturb action.
+    /// Returns true if perturb should be forced due to low perturb rate + bad state.
+    pub fn should_force_perturb_guard(
+        &self,
+        min_rate: f32,
+        gate_passed: bool,
+        topk_margin: f32,
+        proto_align: f32,
+        margin_threshold: f32,
+        proto_threshold: f32,
+    ) -> bool {
+        // Only check if floor exists and cooldown is clear
+        if self.triggers.cooldown > 0 {
+            return false;
+        }
+
+        if let Some(ref floor) = self.floor {
+            // Check if rate is below minimum
+            if floor.perturb_rate() < min_rate {
+                // Check for bad state indicators
+                let is_bad_state =
+                    !gate_passed || topk_margin < margin_threshold || proto_align < proto_threshold;
+
+                if is_bad_state {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
 }

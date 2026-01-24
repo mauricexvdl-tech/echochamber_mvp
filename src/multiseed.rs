@@ -95,9 +95,8 @@ fn std_dev(values: &[f64], mean_val: f64) -> f64 {
     if values.len() < 2 {
         return 0.0;
     }
-    let variance: f64 = values.iter()
-        .map(|&x| (x - mean_val).powi(2))
-        .sum::<f64>() / (values.len() - 1) as f64;
+    let variance: f64 =
+        values.iter().map(|&x| (x - mean_val).powi(2)).sum::<f64>() / (values.len() - 1) as f64;
     variance.sqrt()
 }
 
@@ -172,7 +171,8 @@ pub fn aggregate(runs: &[SeedRun]) -> Aggregate {
     let (bad_state_share_mean, bad_state_share_std) = mean_std_opt(&bad_state_share);
 
     // Find seeds that fail regression guard
-    let failed_seeds: Vec<u64> = runs.iter()
+    let failed_seeds: Vec<u64> = runs
+        .iter()
         .filter(|r| r.coverage_pos < 0.70 || r.selective_accuracy < 0.80 || r.false_positive > 0.0)
         .map(|r| r.seed)
         .collect();
@@ -212,19 +212,23 @@ pub fn aggregate(runs: &[SeedRun]) -> Aggregate {
 /// Print per-seed table.
 pub fn print_per_seed_table(runs: &[SeedRun]) {
     println!("  Per-seed results:");
-    println!("  {:>10} | {:>8} | {:>8} | {:>6} | {:>7} | {:>7} | {:>7}",
-        "seed", "cov%", "sel_acc%", "FP%", "scan%", "focus%", "pert%");
+    println!(
+        "  {:>10} | {:>8} | {:>8} | {:>6} | {:>7} | {:>7} | {:>7}",
+        "seed", "cov%", "sel_acc%", "FP%", "scan%", "focus%", "pert%"
+    );
     println!("  {}", "-".repeat(72));
 
     for run in runs {
-        println!("  {:>10} | {:>7.1}% | {:>7.1}% | {:>5.1}% | {:>6.1}% | {:>6.1}% | {:>5.2}%",
+        println!(
+            "  {:>10} | {:>7.1}% | {:>7.1}% | {:>5.1}% | {:>6.1}% | {:>6.1}% | {:>5.2}%",
             format!("{:08X}", run.seed),
             run.coverage_pos * 100.0,
             run.selective_accuracy * 100.0,
             run.false_positive * 100.0,
             run.scan_rate * 100.0,
             run.focus_rate * 100.0,
-            run.perturb_rate * 100.0);
+            run.perturb_rate * 100.0
+        );
     }
 }
 
@@ -234,48 +238,104 @@ pub fn print_aggregate_table(label: &str, agg: &Aggregate) {
     println!("  {:>18} | {:>15}", "Metric", "Mean ± Std");
     println!("  {}", "-".repeat(38));
 
-    println!("  {:>18} | {:>6.1}% ± {:>5.1}%",
-        "coverage_pos", agg.coverage_pos_mean * 100.0, agg.coverage_pos_std * 100.0);
-    println!("  {:>18} | {:>6.1}% ± {:>5.1}%",
-        "selective_accuracy", agg.selective_accuracy_mean * 100.0, agg.selective_accuracy_std * 100.0);
-    println!("  {:>18} | {:>6.1}% ± {:>5.1}%",
-        "false_positive", agg.false_positive_mean * 100.0, agg.false_positive_std * 100.0);
-    println!("  {:>18} | {:>6.1}% ± {:>5.1}%",
-        "stable_share", agg.stable_share_mean * 100.0, agg.stable_share_std * 100.0);
-    println!("  {:>18} | {:>6.1}% ± {:>5.1}%",
-        "explore_rate", agg.explore_rate_mean * 100.0, agg.explore_rate_std * 100.0);
-    println!("  {:>18} | {:>6.1}% ± {:>5.1}%",
-        "exploit_rate", agg.exploit_rate_mean * 100.0, agg.exploit_rate_std * 100.0);
-    println!("  {:>18} | {:>6.2}% ± {:>5.2}%",
-        "reset_rate", agg.reset_rate_mean * 100.0, agg.reset_rate_std * 100.0);
-    println!("  {:>18} | {:>6.1}% ± {:>5.1}%",
-        "scan_rate", agg.scan_rate_mean * 100.0, agg.scan_rate_std * 100.0);
-    println!("  {:>18} | {:>6.1}% ± {:>5.1}%",
-        "focus_rate", agg.focus_rate_mean * 100.0, agg.focus_rate_std * 100.0);
-    println!("  {:>18} | {:>6.2}% ± {:>5.2}%",
-        "perturb_rate", agg.perturb_rate_mean * 100.0, agg.perturb_rate_std * 100.0);
+    println!(
+        "  {:>18} | {:>6.1}% ± {:>5.1}%",
+        "coverage_pos",
+        agg.coverage_pos_mean * 100.0,
+        agg.coverage_pos_std * 100.0
+    );
+    println!(
+        "  {:>18} | {:>6.1}% ± {:>5.1}%",
+        "selective_accuracy",
+        agg.selective_accuracy_mean * 100.0,
+        agg.selective_accuracy_std * 100.0
+    );
+    println!(
+        "  {:>18} | {:>6.1}% ± {:>5.1}%",
+        "false_positive",
+        agg.false_positive_mean * 100.0,
+        agg.false_positive_std * 100.0
+    );
+    println!(
+        "  {:>18} | {:>6.1}% ± {:>5.1}%",
+        "stable_share",
+        agg.stable_share_mean * 100.0,
+        agg.stable_share_std * 100.0
+    );
+    println!(
+        "  {:>18} | {:>6.1}% ± {:>5.1}%",
+        "explore_rate",
+        agg.explore_rate_mean * 100.0,
+        agg.explore_rate_std * 100.0
+    );
+    println!(
+        "  {:>18} | {:>6.1}% ± {:>5.1}%",
+        "exploit_rate",
+        agg.exploit_rate_mean * 100.0,
+        agg.exploit_rate_std * 100.0
+    );
+    println!(
+        "  {:>18} | {:>6.2}% ± {:>5.2}%",
+        "reset_rate",
+        agg.reset_rate_mean * 100.0,
+        agg.reset_rate_std * 100.0
+    );
+    println!(
+        "  {:>18} | {:>6.1}% ± {:>5.1}%",
+        "scan_rate",
+        agg.scan_rate_mean * 100.0,
+        agg.scan_rate_std * 100.0
+    );
+    println!(
+        "  {:>18} | {:>6.1}% ± {:>5.1}%",
+        "focus_rate",
+        agg.focus_rate_mean * 100.0,
+        agg.focus_rate_std * 100.0
+    );
+    println!(
+        "  {:>18} | {:>6.2}% ± {:>5.2}%",
+        "perturb_rate",
+        agg.perturb_rate_mean * 100.0,
+        agg.perturb_rate_std * 100.0
+    );
 
     if let Some(rr) = agg.regret_rate_mean {
         let std = agg.regret_rate_std.unwrap_or(0.0);
-        println!("  {:>18} | {:>6.1}% ± {:>5.1}%",
-            "regret_rate", rr * 100.0, std * 100.0);
+        println!(
+            "  {:>18} | {:>6.1}% ± {:>5.1}%",
+            "regret_rate",
+            rr * 100.0,
+            std * 100.0
+        );
     }
     if let Some(ri) = agg.recovery_improve_mean {
         let std = agg.recovery_improve_std.unwrap_or(0.0);
-        println!("  {:>18} | {:>6.1}% ± {:>5.1}%",
-            "recovery_improve", ri * 100.0, std * 100.0);
+        println!(
+            "  {:>18} | {:>6.1}% ± {:>5.1}%",
+            "recovery_improve",
+            ri * 100.0,
+            std * 100.0
+        );
     }
     if let Some(bs) = agg.bad_state_share_mean {
         let std = agg.bad_state_share_std.unwrap_or(0.0);
-        println!("  {:>18} | {:>6.1}% ± {:>5.1}%",
-            "bad_state_share", bs * 100.0, std * 100.0);
+        println!(
+            "  {:>18} | {:>6.1}% ± {:>5.1}%",
+            "bad_state_share",
+            bs * 100.0,
+            std * 100.0
+        );
     }
 
     if !agg.failed_seeds.is_empty() {
         println!();
-        println!("  ⚠ Failed seeds: {:?}", agg.failed_seeds.iter()
-            .map(|s| format!("{:08X}", s))
-            .collect::<Vec<_>>());
+        println!(
+            "  ⚠ Failed seeds: {:?}",
+            agg.failed_seeds
+                .iter()
+                .map(|s| format!("{:08X}", s))
+                .collect::<Vec<_>>()
+        );
     }
 }
 

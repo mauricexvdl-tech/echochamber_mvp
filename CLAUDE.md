@@ -167,8 +167,11 @@ Control via config flags in `src/config.rs`:
 | 2.0f-C | Mode-conditioned distillation + two-sided budget matching |
 | 2.0f-D | Forced mode schedule ensuring Exploit mode occurs with Focus action |
 | 2.0f-E | Natural Exploit emergence via signal quality (stable + proto_align + margin) |
+| 2.1 | Multi-seed evaluation + lift metrics (Demo 13) |
+| 2.1b | **Seed-robust policy stabilization** — Exploit lock, explore rescue, adaptive thresholds |
+| 2.2 | CLI + JSON export + config hashing |
 
-**Current**: Phase 2.0c-FIX (Perturb Trigger Reliability + Budget Floor)
+**Current**: Phase 2.1b (Seed-Robust Policy Stabilization)
 
 ---
 

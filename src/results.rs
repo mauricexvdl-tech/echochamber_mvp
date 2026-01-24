@@ -27,7 +27,12 @@ pub struct ResultMeta {
 
 impl ResultMeta {
     /// Create new metadata.
-    pub fn new(demo_id: usize, config_hash: &str, seeds: Option<Vec<u64>>, quick_mode: bool) -> Self {
+    pub fn new(
+        demo_id: usize,
+        config_hash: &str,
+        seeds: Option<Vec<u64>>,
+        quick_mode: bool,
+    ) -> Self {
         Self {
             git_commit: get_git_commit(),
             timestamp: get_timestamp(),

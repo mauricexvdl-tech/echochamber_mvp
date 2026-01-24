@@ -52,6 +52,24 @@ pub struct ModePolicyConfig {
     pub exploit_margin_min: f64,
     /// Require anchor to be stable for Exploit mode
     pub exploit_requires_stable: bool,
+
+    // Phase 2.1b: Seed-Robust Policy Stabilization
+    /// Minimum ticks to stay in Exploit once entered (anti-collapse).
+    pub min_exploit_ticks_on: u32,
+    /// Explore streak threshold to trigger rescue.
+    pub explore_streak_rescue: u32,
+    /// Gate fail streak threshold to trigger rescue.
+    pub fail_streak_rescue: u32,
+    /// Cooldown after rescue.
+    pub rescue_cooldown: u32,
+    /// |TD| threshold to escape exploit lock (catastrophic).
+    pub catastrophic_abs_td: f32,
+    /// Value drop threshold to escape exploit lock.
+    pub catastrophic_value_drop: f32,
+    /// Ticks after Reset/Perturb to apply tighter margin.
+    pub post_reset_boost_ticks: u32,
+    /// Scale factor for margin during post-reset boost.
+    pub post_reset_margin_scale: f32,
 }
 
 impl Default for ModePolicyConfig {
@@ -72,6 +90,47 @@ impl Default for ModePolicyConfig {
             exploit_proto_min: 0.55,
             exploit_margin_min: 0.04,
             exploit_requires_stable: true,
+
+            // Phase 2.1b: Seed-Robust Policy Stabilization
+            min_exploit_ticks_on: 20,
+            explore_streak_rescue: 250,
+            fail_streak_rescue: 12,
+            rescue_cooldown: 80,
+            catastrophic_abs_td: 0.75,
+            catastrophic_value_drop: 0.20,
+            post_reset_boost_ticks: 40,
+            post_reset_margin_scale: 1.15,
+        }
+    }
+}
+
+impl ModePolicyConfig {
+    /// Create a ModePolicyConfig from a Config.
+    pub fn from_config(config: &crate::config::Config) -> Self {
+        Self {
+            explore_v_max: config.mode_explore_v_max,
+            exploit_v_min: config.mode_exploit_v_min,
+            reset_td_min: config.mode_reset_td_min,
+            reset_value_drop: config.mode_reset_value_drop,
+            reset_fail_streak: config.mode_reset_fail_streak,
+            post_reset_cooldown: config.mode_post_reset_cooldown,
+            explore_margin_min_scale: config.mode_explore_margin_scale,
+            exploit_margin_min_scale: config.mode_exploit_margin_scale,
+            reset_dampen: config.mode_reset_dampen,
+            reset_dampen_top_k: config.mode_reset_dampen_top_k,
+            window_size: config.mode_window_size,
+            exploit_proto_min: config.exploit_proto_min,
+            exploit_margin_min: config.exploit_margin_min,
+            exploit_requires_stable: config.exploit_requires_stable,
+            // Phase 2.1b: Seed-Robust Policy Stabilization
+            min_exploit_ticks_on: config.min_exploit_ticks_on,
+            explore_streak_rescue: config.explore_streak_rescue,
+            fail_streak_rescue: config.fail_streak_rescue,
+            rescue_cooldown: config.rescue_cooldown,
+            catastrophic_abs_td: config.catastrophic_abs_td,
+            catastrophic_value_drop: config.catastrophic_value_drop,
+            post_reset_boost_ticks: config.post_reset_exploit_boost_ticks,
+            post_reset_margin_scale: config.post_reset_exploit_margin_scale,
         }
     }
 }
@@ -198,6 +257,28 @@ pub struct ModePolicyState {
     pub last_is_stable: bool,
     /// Last observed gate_passed
     pub last_gate_passed: bool,
+
+    // Phase 2.1b: Seed-Robust Policy Stabilization state
+    /// Remaining ticks in exploit lock (countdown).
+    pub exploit_lock_remaining: u32,
+    /// Consecutive explore mode ticks.
+    pub explore_streak: u32,
+    /// Maximum explore streak observed.
+    pub explore_streak_max: u32,
+    /// Maximum exploit streak observed.
+    pub exploit_streak_max: u32,
+    /// Current exploit streak.
+    pub exploit_streak: u32,
+    /// Rescue cooldown counter.
+    pub rescue_cooldown: u32,
+    /// Number of rescues triggered.
+    pub rescue_count: usize,
+    /// Ticks remaining in post-reset boost period.
+    pub post_reset_boost_remaining: u32,
+    /// Last anchor value (for drop detection).
+    pub prev_anchor_value: f32,
+    /// Maximum consecutive gate fails observed.
+    pub gate_fail_streak_max: u32,
 }
 
 impl ModePolicyState {
@@ -224,6 +305,18 @@ impl ModePolicyState {
             last_topk_margin: 0.0,
             last_is_stable: false,
             last_gate_passed: false,
+
+            // Phase 2.1b: Seed-Robust Policy Stabilization state
+            exploit_lock_remaining: 0,
+            explore_streak: 0,
+            explore_streak_max: 0,
+            exploit_streak_max: 0,
+            exploit_streak: 0,
+            rescue_cooldown: 0,
+            rescue_count: 0,
+            post_reset_boost_remaining: 0,
+            prev_anchor_value: 0.0,
+            gate_fail_streak_max: 0,
         }
     }
 }
@@ -314,6 +407,26 @@ impl ModePolicy {
         self.state.last_is_stable = is_stable;
         self.state.last_gate_passed = gate_passed;
 
+        // Phase 2.1b: Update max gate fail streak
+        if self.state.gate_fail_streak > self.state.gate_fail_streak_max {
+            self.state.gate_fail_streak_max = self.state.gate_fail_streak;
+        }
+
+        // Phase 2.1b: Decrement rescue cooldown
+        if self.state.rescue_cooldown > 0 {
+            self.state.rescue_cooldown -= 1;
+        }
+
+        // Phase 2.1b: Decrement exploit lock
+        if self.state.exploit_lock_remaining > 0 {
+            self.state.exploit_lock_remaining -= 1;
+        }
+
+        // Phase 2.1b: Decrement post-reset boost
+        if self.state.post_reset_boost_remaining > 0 {
+            self.state.post_reset_boost_remaining -= 1;
+        }
+
         // Check reset effectiveness after 10 ticks
         if let Some(reset_tick) = self.state.last_reset_tick {
             if current_tick == reset_tick + 10 {
@@ -393,6 +506,137 @@ impl ModePolicy {
 
         state.last_mode = mode;
         mode
+    }
+
+    /// Choose mode with Phase 2.1b guardrails (exploit lock + explore rescue).
+    /// Returns (mode, rescue_triggered).
+    pub fn choose_mode_with_guardrails(&mut self, current_tick: u64) -> (Mode, bool) {
+        // Store previous value for drop detection
+        let current_value = self.state.recent_values.last().unwrap_or(0.0);
+        let value_drop = self.state.prev_anchor_value - current_value;
+        self.state.prev_anchor_value = current_value;
+
+        // Check for catastrophic conditions (escape exploit lock)
+        let recent_td = self.state.recent_abs_td.mean();
+        let catastrophic = recent_td >= self.config.catastrophic_abs_td
+            || value_drop >= self.config.catastrophic_value_drop;
+
+        // Check if we're in exploit lock
+        if self.state.exploit_lock_remaining > 0 && !catastrophic {
+            // Forced to stay in Exploit mode
+            self.state.exploit_count += 1;
+            self.state.exploit_streak += 1;
+            if self.state.exploit_streak > self.state.exploit_streak_max {
+                self.state.exploit_streak_max = self.state.exploit_streak;
+            }
+            self.state.explore_streak = 0;
+            self.state.last_mode = Mode::Exploit;
+            return (Mode::Exploit, false);
+        }
+
+        // Check for rescue conditions
+        let rescue_needed = self.state.rescue_cooldown == 0
+            && (self.state.explore_streak >= self.config.explore_streak_rescue
+                || self.state.gate_fail_streak >= self.config.fail_streak_rescue);
+
+        if rescue_needed {
+            // Trigger rescue: force Reset mode
+            self.state.rescue_count += 1;
+            self.state.rescue_cooldown = self.config.rescue_cooldown;
+            self.state.explore_streak = 0;
+            self.state.exploit_streak = 0;
+            self.state.gate_fail_streak = 0;
+            self.state.reset_count += 1;
+            self.state.last_mode = Mode::Reset;
+            self.state.post_reset_boost_remaining = self.config.post_reset_boost_ticks;
+
+            // Record pre-reset TD for effectiveness
+            let pre_td_values = self.state.recent_abs_td.last_n(10);
+            if !pre_td_values.is_empty() {
+                self.state.pre_reset_td_mean =
+                    pre_td_values.iter().sum::<f32>() / pre_td_values.len() as f32;
+            }
+            self.state.last_reset_tick = Some(current_tick);
+            self.state.cooldown = self.config.post_reset_cooldown;
+
+            return (Mode::Reset, true);
+        }
+
+        // Normal mode selection with reset check
+        let should_reset = self.state.cooldown == 0 && self.check_reset_conditions();
+
+        let mode = if should_reset {
+            let pre_td_values = self.state.recent_abs_td.last_n(10);
+            if !pre_td_values.is_empty() {
+                self.state.pre_reset_td_mean =
+                    pre_td_values.iter().sum::<f32>() / pre_td_values.len() as f32;
+            }
+            self.state.last_reset_tick = Some(current_tick);
+            self.state.cooldown = self.config.post_reset_cooldown;
+            self.state.gate_fail_streak = 0;
+            self.state.post_reset_boost_remaining = self.config.post_reset_boost_ticks;
+            Mode::Reset
+        } else {
+            // Natural Exploit emergence
+            let stable_ok = !self.config.exploit_requires_stable || self.state.last_is_stable;
+            let proto_ok = self.state.last_proto_align >= self.config.exploit_proto_min;
+            let margin_ok = self.state.last_topk_margin >= self.config.exploit_margin_min;
+            let gate_ok = self.state.last_gate_passed;
+            let can_exploit = gate_ok && stable_ok && proto_ok && margin_ok;
+
+            let recent_v = self.state.recent_values.mean();
+
+            if can_exploit {
+                Mode::Exploit
+            } else if recent_v < self.config.explore_v_max {
+                Mode::Explore
+            } else if recent_v >= self.config.exploit_v_min {
+                Mode::Exploit
+            } else {
+                Mode::Explore
+            }
+        };
+
+        // Update streaks and counters
+        match mode {
+            Mode::Explore => {
+                self.state.explore_count += 1;
+                self.state.explore_streak += 1;
+                self.state.exploit_streak = 0;
+                if self.state.explore_streak > self.state.explore_streak_max {
+                    self.state.explore_streak_max = self.state.explore_streak;
+                }
+            }
+            Mode::Exploit => {
+                self.state.exploit_count += 1;
+                self.state.exploit_streak += 1;
+                self.state.explore_streak = 0;
+                if self.state.exploit_streak > self.state.exploit_streak_max {
+                    self.state.exploit_streak_max = self.state.exploit_streak;
+                }
+                // Start exploit lock on transition from non-Exploit
+                if self.state.last_mode != Mode::Exploit {
+                    self.state.exploit_lock_remaining = self.config.min_exploit_ticks_on;
+                }
+            }
+            Mode::Reset => {
+                self.state.reset_count += 1;
+                self.state.explore_streak = 0;
+                self.state.exploit_streak = 0;
+            }
+        }
+
+        self.state.last_mode = mode;
+        (mode, false)
+    }
+
+    /// Get margin scale with post-reset boost applied.
+    pub fn get_margin_scale_with_boost(&self, base_scale: f32) -> f32 {
+        if self.state.post_reset_boost_remaining > 0 {
+            base_scale * self.config.post_reset_margin_scale
+        } else {
+            base_scale
+        }
     }
 
     /// Check if reset conditions are met.
@@ -502,6 +746,11 @@ impl ModePolicy {
             } else {
                 0.0
             },
+            // Phase 2.1b: Guardrail metrics
+            explore_streak_max: self.state.explore_streak_max,
+            exploit_streak_max: self.state.exploit_streak_max,
+            gate_fail_streak_max: self.state.gate_fail_streak_max,
+            rescue_count: self.state.rescue_count,
         }
     }
 }
@@ -519,6 +768,11 @@ pub struct ModeStats {
     pub reset_effectiveness_count: usize,
     pub gate_pass_rate_explore: f64,
     pub gate_pass_rate_exploit: f64,
+    // Phase 2.1b: Guardrail metrics
+    pub explore_streak_max: u32,
+    pub exploit_streak_max: u32,
+    pub gate_fail_streak_max: u32,
+    pub rescue_count: usize,
 }
 
 // ============================================================================
