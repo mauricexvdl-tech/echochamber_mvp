@@ -51,8 +51,12 @@ pub struct SeedDiagnostics {
     pub rescues_per_10k: f64,
     pub post_rescue_lock_share: f64,
     pub total_ticks: usize,
-    // Phase 2.1d: Chronic clamp metrics
+    // Phase 2.1f: Chronic clamp metrics
     pub chronic_lock_share: f64,
+    pub chronic_enter_count: u32,
+    pub chronic_exit_count: u32,
+    pub chronic_enter_by_bad: u32,
+    pub chronic_enter_by_unstable: u32,
     // Phase 2.1e: Perturb rate
     pub perturb_rate: f64,
 }
@@ -97,15 +101,15 @@ impl WarmupStats {
 /// Print per-seed diagnostics table.
 fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
     println!();
-    println!("Per-Seed Diagnostics (Phase 2.1e):");
+    println!("Per-Seed Diagnostics (Phase 2.1f):");
     println!(
-        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     println!(
-        "  Seed       | explore% | exploit% | stable% | bad%  | perturb% | chronic% | rescues"
+        "  Seed       | explore% | exploit% | stable% | bad%  | perturb% | chronic% | enters | exits | by_bad | by_unstable"
     );
     println!(
-        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     for d in diagnostics {
         let collapse_marker = if d.explore_rate > 0.25
@@ -119,7 +123,7 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
             ""
         };
         println!(
-            "  0x{:08X} | {:6.1}%  | {:6.1}%  | {:5.1}%  | {:4.1}% | {:7.1}%  | {:7.1}%  | {:7}{}",
+            "  0x{:08X} | {:6.1}%  | {:6.1}%  | {:5.1}%  | {:4.1}% | {:7.1}%  | {:7.1}%  | {:6} | {:5} | {:6} | {:11}{}",
             d.seed,
             d.explore_rate * 100.0,
             d.exploit_rate * 100.0,
@@ -127,12 +131,15 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
             d.bad_state_share * 100.0,
             d.perturb_rate * 100.0,
             d.chronic_lock_share * 100.0,
-            d.rescue_count,
+            d.chronic_enter_count,
+            d.chronic_exit_count,
+            d.chronic_enter_by_bad,
+            d.chronic_enter_by_unstable,
             collapse_marker,
         );
     }
     println!(
-        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 }
 
@@ -467,7 +474,7 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
 
     // C6) Phase 2.1e: Perturb control + chronic control
     println!();
-    println!("C6) Perturb & chronic control (Phase 2.1e):");
+    println!("C6) Perturb & chronic control (Phase 2.1f):");
 
     let perturb_rate_mean = full_agg.perturb_rate_mean;
     let perturb_ok = perturb_rate_mean <= 0.05; // <= 5%
@@ -496,7 +503,7 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
         regression_ok && policy_advantage_ok && thrash_ok && worst_seed_ok && perturb_chronic_ok;
     println!();
     if all_ok {
-        println!("  → Phase 2.1e: ALL ACCEPTANCE CRITERIA MET!");
+        println!("  → Phase 2.1f: ALL ACCEPTANCE CRITERIA MET!");
         if low_variability {
             println!("  → Low variability across seeds - results are robust.");
         }
@@ -517,7 +524,7 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
         if !perturb_chronic_ok {
             issues.push("perturb/chronic control");
         }
-        println!("  → Phase 2.1e: Failed checks: {}", issues.join(", "));
+        println!("  → Phase 2.1f: Failed checks: {}", issues.join(", "));
     }
 
     // ==========================================================================
@@ -1095,8 +1102,12 @@ fn run_single_seed_full(
         rescues_per_10k,
         post_rescue_lock_share,
         total_ticks,
-        // Phase 2.1d: Chronic clamp metrics
+        // Phase 2.1f: Chronic clamp metrics
         chronic_lock_share,
+        chronic_enter_count: mode_stats.chronic_enter_count,
+        chronic_exit_count: mode_stats.chronic_exit_count,
+        chronic_enter_by_bad: mode_stats.chronic_enter_by_bad,
+        chronic_enter_by_unstable: mode_stats.chronic_enter_by_unstable,
         // Phase 2.1e: Perturb rate
         perturb_rate: run.perturb_rate,
     };

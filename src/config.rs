@@ -279,7 +279,7 @@ pub struct Config {
     pub rescue_bad_value: f32,
 
     // =========================================================================
-    // Phase 2.1e: Chronic Instability Clamp v2 (hysteresis + watchdog)
+    // Phase 2.1f: Chronic Instability Clamp v3 (no re-arm + reachable exit)
     // =========================================================================
     /// Window size for chronic instability detection (ticks).
     pub chronic_window_ticks: u32,
@@ -287,12 +287,14 @@ pub struct Config {
     pub chronic_bad_share_hi: f32,
     /// Stable share threshold to ENTER clamp (below this = clamp).
     pub chronic_stable_share_lo: f32,
-    /// Bad state share threshold to EXIT clamp (must be below this).
-    pub chronic_bad_share_hi_exit: f32,
-    /// Stable share threshold to EXIT clamp (must be above this).
-    pub chronic_stable_share_lo_exit: f32,
+    /// Bad state share threshold to EXIT clamp (exit if below this).
+    pub chronic_exit_bad_max: f32,
+    /// Stable share threshold to EXIT clamp (exit if above this).
+    pub chronic_exit_stable_min: f32,
     /// Ticks to hold exit conditions before actually exiting clamp.
     pub chronic_exit_hold_ticks: u32,
+    /// Fraction of ticks in hold window that can fail and still count.
+    pub chronic_exit_hold_tolerance: f32,
     /// Max Explore rate during clamp (soft cap).
     pub chronic_explore_cap: f32,
     /// Minimum ticks to keep clamp active once triggered.
@@ -303,6 +305,8 @@ pub struct Config {
     pub chronic_focus_bias: f32,
     /// Minimum ticks before enabling chronic detection.
     pub chronic_min_ticks_before_enable: u32,
+    /// Cooldown after chronic lock expires (prevent immediate re-arm).
+    pub chronic_rearm_cooldown: u32,
     /// Maximum chronic active share before forced release (watchdog).
     pub chronic_max_share: f32,
     /// Cooldown ticks after watchdog forces release.
@@ -702,18 +706,20 @@ impl Default for Config {
             rescue_bad_margin: 0.03,     // Below this = bad margin (stricter)
             rescue_bad_value: 0.12,      // Below this = bad value (stricter)
 
-            // Phase 2.1e: Chronic Instability Clamp v2 defaults
+            // Phase 2.1f: Chronic Instability Clamp v3 defaults (no re-arm + reachable exit)
             chronic_window_ticks: 2000,            // Detection window
             chronic_bad_share_hi: 0.30,            // ENTER if bad_state > 30%
-            chronic_stable_share_lo: 0.50,         // ENTER if stable_share < 50%
-            chronic_bad_share_hi_exit: 0.18,       // EXIT requires bad_state < 18%
-            chronic_stable_share_lo_exit: 0.72,    // EXIT requires stable_share > 72%
-            chronic_exit_hold_ticks: 400,          // Hold exit conditions for 400 ticks
+            chronic_stable_share_lo: 0.50,         // ENTER if stable_share < 40% (stricter)
+            chronic_exit_bad_max: 0.24,            // EXIT if bad_state < 24% (OR condition)
+            chronic_exit_stable_min: 0.75,         // EXIT if stable_share > 75% (OR condition)
+            chronic_exit_hold_ticks: 250,          // Hold exit conditions for 250 ticks
+            chronic_exit_hold_tolerance: 0.10,     // Allow 10% of ticks to fail in hold window
             chronic_explore_cap: 0.08,             // Max 8% Explore while clamped
             chronic_lock_ticks: 200,               // Minimum lock duration
             chronic_exploit_margin_scale: 1.25,    // Stricter margin during clamp
             chronic_focus_bias: 3.0,               // Focus bias during clamp
             chronic_min_ticks_before_enable: 8000, // Wait before enabling
+            chronic_rearm_cooldown: 500,           // Cooldown after natural expiry (prevent re-arm)
             chronic_max_share: 0.40,               // Watchdog: max 40% chronic time
             chronic_release_cooldown: 300,         // Cooldown after watchdog release
             chronic_escape_after: 1500,            // Escape pulse after 1500 continuous ticks
