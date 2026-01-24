@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🦖 T-REX TETRIS 🦖</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Courier New', monospace;
+            color: #fff;
+            overflow: hidden;
+        }
+
+        h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 0 0 20px #00ff88, 0 0 40px #00ff88;
+            animation: roar 2s ease-in-out infinite;
+        }
+
+        @keyframes roar {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+
+        .game-container {
+            display: flex;
+            gap: 20px;
+            align-items: flex-start;
+        }
+
+        .side-panel {
+            background: rgba(0, 0, 0, 0.5);
+            border: 3px solid #00ff88;
+            border-radius: 10px;
+            padding: 15px;
+            min-width: 150px;
+        }
+
+        #game-canvas {
+            border: 4px solid #00ff88;
+            border-radius: 10px;
+            box-shadow: 0 0 30px rgba(0, 255, 136, 0.5);
+            background: #000;
+        }
+
+        .info-title {
+            color: #00ff88;
+            font-size: 1.2em;
+            margin-bottom: 10px;
+            text-align: center;
+        }
+
+        .score-display {
+            font-size: 1.5em;
+            text-align: center;
+            color: #ffcc00;
+            text-shadow: 0 0 10px #ffcc00;
+        }
+
+        #next-canvas {
+            display: block;
+            margin: 10px auto;
+            border: 2px solid #00ff88;
+            border-radius: 5px;
+            background: #000;
+        }
+
+        .level-display {
+            text-align: center;
+            margin-top: 15px;
+            font-size: 1.2em;
+            color: #ff6b6b;
+        }
+
+        .dino-comment {
+            background: rgba(0, 255, 136, 0.2);
+            border-radius: 10px;
+            padding: 10px;
+            margin-top: 15px;
+            font-size: 0.9em;
+            text-align: center;
+            min-height: 60px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .controls {
+            margin-top: 20px;
+            text-align: center;
+            font-size: 0.9em;
+            color: #aaa;
+        }
+
+        .controls span {
+            display: inline-block;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 5px 10px;
+            margin: 2px;
+            border-radius: 5px;
+        }
+
+        .game-over {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.9);
+            border: 4px solid #ff6b6b;
+            border-radius: 20px;
+            padding: 40px;
+            text-align: center;
+            display: none;
+            z-index: 100;
+        }
+
+        .game-over h2 {
+            color: #ff6b6b;
+            font-size: 2em;
+            margin-bottom: 20px;
+        }
+
+        .game-over button {
+            background: linear-gradient(45deg, #00ff88, #00cc6a);
+            border: none;
+            padding: 15px 30px;
+            font-size: 1.2em;
+            border-radius: 10px;
+            cursor: pointer;
+            color: #000;
+            font-weight: bold;
+            margin-top: 20px;
+            transition: transform 0.2s;
+        }
+
+        .game-over button:hover {
+            transform: scale(1.1);
+        }
+
+        .trex-ascii {
+            font-size: 0.6em;
+            color: #00ff88;
+            white-space: pre;
+            line-height: 1;
+            margin: 10px 0;
+        }
+
+        .paused-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.8);
+            border: 3px solid #ffcc00;
+            border-radius: 15px;
+            padding: 30px;
+            text-align: center;
+            display: none;
+            z-index: 50;
+        }
+
+        .combo-display {
+            position: fixed;
+            top: 20%;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 3em;
+            color: #ffcc00;
+            text-shadow: 0 0 20px #ffcc00;
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+        }
+
+        .high-score {
+            color: #ff6b6b;
+            text-align: center;
+            margin-top: 10px;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <h1>🦖 T-REX TETRIS 🦖</h1>
+
+    <div class="trex-ascii">
+        __
+       / _)  RAWR!
+  _.--/ /
+ /    _/
+/____(
+    </div>
+
+    <div class="game-container">
+        <div class="side-panel">
+            <div class="info-title">🏆 SCORE</div>
+            <div class="score-display" id="score">0</div>
+            <div class="high-score">Best: <span id="high-score">0</span></div>
+
+            <div class="info-title" style="margin-top: 20px;">📊 LEVEL</div>
+            <div class="level-display" id="level">1</div>
+
+            <div class="info-title" style="margin-top: 20px;">🥚 LINES</div>
+            <div class="score-display" id="lines" style="font-size: 1.2em;">0</div>
+        </div>
+
+        <canvas id="game-canvas" width="300" height="600"></canvas>
+
+        <div class="side-panel">
+            <div class="info-title">🦴 NEXT</div>
+            <canvas id="next-canvas" width="120" height="120"></canvas>
+
+            <div class="dino-comment" id="dino-comment">
+                Drück SPACE zum Starten! 🦖
+            </div>
+        </div>
+    </div>
+
+    <div class="controls">
+        <span>⬅️ ➡️</span> Bewegen
+        <span>⬆️</span> Drehen
+        <span>⬇️</span> Schneller
+        <span>SPACE</span> Drop
+        <span>P</span> Pause
+    </div>
+
+    <div class="game-over" id="game-over">
+        <h2>🦴 AUSGESTORBEN! 🦴</h2>
+        <div class="trex-ascii">
+   __
+  / _)  *tot*
+ ( (
+  \\_\\___
+        </div>
+        <p>Score: <span id="final-score">0</span></p>
+        <p style="color: #ffcc00;">Dinos gespielt: <span id="dinos-played">0</span></p>
+        <button onclick="restartGame()">🦖 NOCHMAL RAWR!</button>
+    </div>
+
+    <div class="paused-overlay" id="paused">
+        <h2 style="color: #ffcc00;">⏸️ PAUSE ⏸️</h2>
+        <p>Der Dino macht Mittagsschlaf...</p>
+        <p style="margin-top: 10px; color: #aaa;">Drück P zum Weiterspielen</p>
+    </div>
+
+    <div class="combo-display" id="combo"></div>
+
+    <script>
+        // ===== T-REX TETRIS =====
+        const canvas = document.getElementById('game-canvas');
+        const ctx = canvas.getContext('2d');
+        const nextCanvas = document.getElementById('next-canvas');
+        const nextCtx = nextCanvas.getContext('2d');
+
+        const COLS = 10;
+        const ROWS = 20;
+        const BLOCK_SIZE = 30;
+
+        // Lustige Dino-Kommentare
+        const COMMENTS = {
+            start: [
+                "Los geht's! RAWR! 🦖",
+                "Zeit zu stapeln wie ein Profi-Dino!",
+                "Möge der Tetris mit dir sein!",
+                "Ein T-Rex hat kurze Arme, aber großes Herz!"
+            ],
+            lineCleared: [
+                "RAWR! Linie weg! 🦴",
+                "NOM NOM NOM! Lecker! 🍖",
+                "Das war DINO-mite! 💥",
+                "Kurze Arme, großer Score!",
+                "Meteor? Welcher Meteor?",
+                "Tetris macht Dinos glücklich!",
+                "STOMPY STOMP! 🦶"
+            ],
+            tetris: [
+                "TETRIS! 4 LINIEN! RAAAAWR! 🔥🦖🔥",
+                "MEGA-DINO-POWER! BRÜLL!",
+                "DAS IST LEGENDÄR! T-REX STYLE!",
+                "4 LINIEN?! DU BIST EIN DINOSAURIER-GOTT!"
+            ],
+            levelUp: [
+                "LEVEL UP! Schneller rawr! 🚀",
+                "Evolution! Du wirst stärker!",
+                "Nächstes Level! Panik-Modus! 😱",
+                "Der Dino beschleunigt! STOMP STOMP!"
+            ],
+            gameOver: [
+                "Der Asteroid hat gewonnen... 💫",
+                "Ausgestorben! Wie damals... 🦴",
+                "Respekt! Das war episch! (aber tot)",
+                "65 Millionen Jahre... und dann das!"
+            ],
+            idle: [
+                "Tick tack... der Dino wartet... 🦖",
+                "*Gähnt* Noch wach? 😴",
+                "Kleine Arme, große Träume!",
+                "RAWR bedeutet 'Ich liebe dich' auf Dinosaurisch! 💕"
+            ]
+        };
+
+        // Tetris-Formen (als T-Rex themed!)
+        const SHAPES = [
+            // I-Stück (Dino-Schwanz)
+            { shape: [[1,1,1,1]], color: '#00ffff', name: '🦕 Schwanz' },
+            // O-Stück (Dino-Ei)
+            { shape: [[1,1],[1,1]], color: '#ffff00', name: '🥚 Ei' },
+            // T-Stück (T-REX!)
+            { shape: [[0,1,0],[1,1,1]], color: '#aa00ff', name: '🦖 T-Rex' },
+            // S-Stück
+            { shape: [[0,1,1],[1,1,0]], color: '#00ff00', name: '🐍 Schlange' },
+            // Z-Stück
+            { shape: [[1,1,0],[0,1,1]], color: '#ff0000', name: '⚡ Blitz' },
+            // J-Stück (Dino-Fuß links)
+            { shape: [[1,0,0],[1,1,1]], color: '#0000ff', name: '🦶 Fuß L' },
+            // L-Stück (Dino-Fuß rechts)
+            { shape: [[0,0,1],[1,1,1]], color: '#ff8800', name: '🦶 Fuß R' }
+        ];
+
+        // Spiel-State
+        let board = [];
+        let currentPiece = null;
+        let nextPiece = null;
+        let score = 0;
+        let highScore = localStorage.getItem('trexTetrisHighScore') || 0;
+        let lines = 0;
+        let level = 1;
+        let gameRunning = false;
+        let gamePaused = false;
+        let gameLoop = null;
+        let dropSpeed = 1000;
+        let dinosPlayed = 0;
+        let lastCommentTime = Date.now();
+
+        document.getElementById('high-score').textContent = highScore;
+
+        // Board initialisieren
+        function initBoard() {
+            board = [];
+            for (let r = 0; r < ROWS; r++) {
+                board[r] = [];
+                for (let c = 0; c < COLS; c++) {
+                    board[r][c] = null;
+                }
+            }
+        }
+
+        // Zufälliges Stück holen
+        function getRandomPiece() {
+            const idx = Math.floor(Math.random() * SHAPES.length);
+            const piece = SHAPES[idx];
+            return {
+                shape: piece.shape.map(row => [...row]),
+                color: piece.color,
+                name: piece.name,
+                x: Math.floor(COLS / 2) - Math.floor(piece.shape[0].length / 2),
+                y: 0
+            };
+        }
+
+        // Kollisionserkennung
+        function collision(piece, offsetX = 0, offsetY = 0) {
+            for (let r = 0; r < piece.shape.length; r++) {
+                for (let c = 0; c < piece.shape[r].length; c++) {
+                    if (piece.shape[r][c]) {
+                        const newX = piece.x + c + offsetX;
+                        const newY = piece.y + r + offsetY;
+
+                        if (newX < 0 || newX >= COLS || newY >= ROWS) {
+                            return true;
+                        }
+                        if (newY >= 0 && board[newY][newX]) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+
+        // Stück auf Board fixieren
+        function lockPiece() {
+            for (let r = 0; r < currentPiece.shape.length; r++) {
+                for (let c = 0; c < currentPiece.shape[r].length; c++) {
+                    if (currentPiece.shape[r][c]) {
+                        const y = currentPiece.y + r;
+                        const x = currentPiece.x + c;
+                        if (y >= 0) {
+                            board[y][x] = currentPiece.color;
+                        }
+                    }
+                }
+            }
+            dinosPlayed++;
+        }
+
+        // Volle Reihen löschen
+        function clearLines() {
+            let cleared = 0;
+
+            for (let r = ROWS - 1; r >= 0; r--) {
+                if (board[r].every(cell => cell !== null)) {
+                    board.splice(r, 1);
+                    board.unshift(Array(COLS).fill(null));
+                    cleared++;
+                    r++; // Gleiche Zeile nochmal prüfen
+                }
+            }
+
+            if (cleared > 0) {
+                // Punkte berechnen (mehr Punkte für mehr Linien)
+                const points = [0, 100, 300, 500, 800][cleared] * level;
+                score += points;
+                lines += cleared;
+
+                // Level-Up alle 10 Linien
+                const newLevel = Math.floor(lines / 10) + 1;
+                if (newLevel > level) {
+                    level = newLevel;
+                    dropSpeed = Math.max(100, 1000 - (level - 1) * 100);
+                    showComment(COMMENTS.levelUp);
+                    showCombo(`LEVEL ${level}! 🚀`);
+                } else if (cleared === 4) {
+                    showComment(COMMENTS.tetris);
+                    showCombo('TETRIS! 🦖🔥');
+                } else {
+                    showComment(COMMENTS.lineCleared);
+                    if (cleared >= 2) {
+                        showCombo(`${cleared}x COMBO! 💥`);
+                    }
+                }
+
+                updateDisplay();
+            }
+
+            return cleared;
+        }
+
+        // Stück drehen
+        function rotatePiece() {
+            const rotated = currentPiece.shape[0].map((_, i) =>
+                currentPiece.shape.map(row => row[i]).reverse()
+            );
+
+            const oldShape = currentPiece.shape;
+            currentPiece.shape = rotated;
+
+            // Wall kick
+            if (collision(currentPiece)) {
+                if (!collision(currentPiece, -1, 0)) {
+                    currentPiece.x -= 1;
+                } else if (!collision(currentPiece, 1, 0)) {
+                    currentPiece.x += 1;
+                } else if (!collision(currentPiece, -2, 0)) {
+                    currentPiece.x -= 2;
+                } else if (!collision(currentPiece, 2, 0)) {
+                    currentPiece.x += 2;
+                } else {
+                    currentPiece.shape = oldShape; // Rotation abbrechen
+                }
+            }
+        }
+
+        // Hard Drop
+        function hardDrop() {
+            while (!collision(currentPiece, 0, 1)) {
+                currentPiece.y++;
+                score += 2;
+            }
+            updateDisplay();
+        }
+
+        // Board zeichnen
+        function draw() {
+            // Canvas löschen
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Grid zeichnen
+            ctx.strokeStyle = '#222';
+            for (let r = 0; r < ROWS; r++) {
+                for (let c = 0; c < COLS; c++) {
+                    ctx.strokeRect(c * BLOCK_SIZE, r * BLOCK_SIZE, BLOCK_SIZE, BLOCK_SIZE);
+                }
+            }
+
+            // Board zeichnen
+            for (let r = 0; r < ROWS; r++) {
+                for (let c = 0; c < COLS; c++) {
+                    if (board[r][c]) {
+                        drawBlock(ctx, c, r, board[r][c]);
+                    }
+                }
+            }
+
+            // Aktuelles Stück zeichnen
+            if (currentPiece) {
+                // Ghost piece (Vorschau wo es landet)
+                let ghostY = currentPiece.y;
+                while (!collision(currentPiece, 0, ghostY - currentPiece.y + 1)) {
+                    ghostY++;
+                }
+
+                ctx.globalAlpha = 0.3;
+                for (let r = 0; r < currentPiece.shape.length; r++) {
+                    for (let c = 0; c < currentPiece.shape[r].length; c++) {
+                        if (currentPiece.shape[r][c]) {
+                            drawBlock(ctx, currentPiece.x + c, ghostY + r, currentPiece.color);
+                        }
+                    }
+                }
+                ctx.globalAlpha = 1;
+
+                // Aktuelles Stück
+                for (let r = 0; r < currentPiece.shape.length; r++) {
+                    for (let c = 0; c < currentPiece.shape[r].length; c++) {
+                        if (currentPiece.shape[r][c]) {
+                            drawBlock(ctx, currentPiece.x + c, currentPiece.y + r, currentPiece.color);
+                        }
+                    }
+                }
+            }
+
+            // Nächstes Stück zeichnen
+            drawNextPiece();
+        }
+
+        // Block zeichnen mit Dino-Style
+        function drawBlock(context, x, y, color) {
+            const size = context === ctx ? BLOCK_SIZE : 25;
+            const px = x * size;
+            const py = y * size;
+
+            // Hauptfarbe
+            context.fillStyle = color;
+            context.fillRect(px + 1, py + 1, size - 2, size - 2);
+
+            // 3D-Effekt
+            context.fillStyle = 'rgba(255,255,255,0.3)';
+            context.fillRect(px + 1, py + 1, size - 2, 4);
+            context.fillRect(px + 1, py + 1, 4, size - 2);
+
+            context.fillStyle = 'rgba(0,0,0,0.3)';
+            context.fillRect(px + size - 5, py + 1, 4, size - 2);
+            context.fillRect(px + 1, py + size - 5, size - 2, 4);
+
+            // Kleines Dino-Muster
+            context.fillStyle = 'rgba(0,0,0,0.2)';
+            context.beginPath();
+            context.arc(px + size/2, py + size/2, size/6, 0, Math.PI * 2);
+            context.fill();
+        }
+
+        // Nächstes Stück Preview
+        function drawNextPiece() {
+            nextCtx.fillStyle = '#000';
+            nextCtx.fillRect(0, 0, nextCanvas.width, nextCanvas.height);
+
+            if (nextPiece) {
+                const offsetX = (nextCanvas.width / 25 - nextPiece.shape[0].length) / 2;
+                const offsetY = (nextCanvas.height / 25 - nextPiece.shape.length) / 2;
+
+                for (let r = 0; r < nextPiece.shape.length; r++) {
+                    for (let c = 0; c < nextPiece.shape[r].length; c++) {
+                        if (nextPiece.shape[r][c]) {
+                            drawBlock(nextCtx, offsetX + c, offsetY + r, nextPiece.color);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Display aktualisieren
+        function updateDisplay() {
+            document.getElementById('score').textContent = score;
+            document.getElementById('level').textContent = level;
+            document.getElementById('lines').textContent = lines;
+
+            if (score > highScore) {
+                highScore = score;
+                localStorage.setItem('trexTetrisHighScore', highScore);
+                document.getElementById('high-score').textContent = highScore;
+            }
+        }
+
+        // Kommentar anzeigen
+        function showComment(commentArray) {
+            const comment = commentArray[Math.floor(Math.random() * commentArray.length)];
+            document.getElementById('dino-comment').textContent = comment;
+            lastCommentTime = Date.now();
+        }
+
+        // Combo-Text anzeigen
+        function showCombo(text) {
+            const combo = document.getElementById('combo');
+            combo.textContent = text;
+            combo.style.opacity = '1';
+            setTimeout(() => {
+                combo.style.opacity = '0';
+            }, 1500);
+        }
+
+        // Spiel-Tick
+        function gameTick() {
+            if (!gameRunning || gamePaused) return;
+
+            if (!collision(currentPiece, 0, 1)) {
+                currentPiece.y++;
+            } else {
+                lockPiece();
+                clearLines();
+
+                currentPiece = nextPiece;
+                nextPiece = getRandomPiece();
+
+                if (collision(currentPiece)) {
+                    gameOver();
+                    return;
+                }
+            }
+
+            // Zufällige Idle-Kommentare
+            if (Date.now() - lastCommentTime > 15000) {
+                showComment(COMMENTS.idle);
+            }
+
+            draw();
+        }
+
+        // Game Over
+        function gameOver() {
+            gameRunning = false;
+            clearInterval(gameLoop);
+
+            showComment(COMMENTS.gameOver);
+
+            document.getElementById('final-score').textContent = score;
+            document.getElementById('dinos-played').textContent = dinosPlayed;
+            document.getElementById('game-over').style.display = 'block';
+        }
+
+        // Spiel starten
+        function startGame() {
+            initBoard();
+            score = 0;
+            lines = 0;
+            level = 1;
+            dropSpeed = 1000;
+            dinosPlayed = 0;
+
+            currentPiece = getRandomPiece();
+            nextPiece = getRandomPiece();
+
+            gameRunning = true;
+            gamePaused = false;
+
+            showComment(COMMENTS.start);
+            updateDisplay();
+            draw();
+
+            if (gameLoop) clearInterval(gameLoop);
+            gameLoop = setInterval(gameTick, dropSpeed);
+        }
+
+        // Spiel neustarten
+        function restartGame() {
+            document.getElementById('game-over').style.display = 'none';
+            startGame();
+        }
+
+        // Pause umschalten
+        function togglePause() {
+            if (!gameRunning) return;
+
+            gamePaused = !gamePaused;
+            document.getElementById('paused').style.display = gamePaused ? 'block' : 'none';
+
+            if (gamePaused) {
+                clearInterval(gameLoop);
+            } else {
+                gameLoop = setInterval(gameTick, dropSpeed);
+            }
+        }
+
+        // Tastatureingaben
+        document.addEventListener('keydown', (e) => {
+            if (!gameRunning) {
+                if (e.code === 'Space') {
+                    startGame();
+                }
+                return;
+            }
+
+            if (e.code === 'KeyP') {
+                togglePause();
+                return;
+            }
+
+            if (gamePaused) return;
+
+            switch (e.code) {
+                case 'ArrowLeft':
+                    if (!collision(currentPiece, -1, 0)) {
+                        currentPiece.x--;
+                    }
+                    break;
+                case 'ArrowRight':
+                    if (!collision(currentPiece, 1, 0)) {
+                        currentPiece.x++;
+                    }
+                    break;
+                case 'ArrowDown':
+                    if (!collision(currentPiece, 0, 1)) {
+                        currentPiece.y++;
+                        score += 1;
+                        updateDisplay();
+                    }
+                    break;
+                case 'ArrowUp':
+                    rotatePiece();
+                    break;
+                case 'Space':
+                    hardDrop();
+                    break;
+            }
+
+            draw();
+            e.preventDefault();
+        });
+
+        // Level-Speed aktualisieren
+        setInterval(() => {
+            if (gameRunning && !gamePaused) {
+                clearInterval(gameLoop);
+                gameLoop = setInterval(gameTick, dropSpeed);
+            }
+        }, 5000);
+
+        // Initiales Zeichnen
+        initBoard();
+        draw();
+        showComment(COMMENTS.start);
+    </script>
+</body>
+</html>
