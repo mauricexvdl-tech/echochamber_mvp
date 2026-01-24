@@ -22,7 +22,7 @@ use crate::results::{
 };
 use crate::rng::Rng;
 
-/// Phase 2.1b: Per-seed diagnostics for collapse detection.
+/// Phase 2.1b/c: Per-seed diagnostics for collapse detection.
 #[derive(Clone, Debug, Default)]
 pub struct SeedDiagnostics {
     pub seed: u64,
@@ -47,6 +47,10 @@ pub struct SeedDiagnostics {
     // Adaptive thresholds used
     pub adaptive_proto_min: f32,
     pub adaptive_margin_min: f64,
+    // Phase 2.1c: Thrash metrics
+    pub rescues_per_10k: f64,
+    pub post_rescue_lock_share: f64,
+    pub total_ticks: usize,
 }
 
 /// Phase 2.1b: Warmup stats collector for adaptive thresholds.
@@ -89,35 +93,35 @@ impl WarmupStats {
 /// Print per-seed diagnostics table.
 fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
     println!();
-    println!("Per-Seed Diagnostics (Phase 2.1b):");
+    println!("Per-Seed Diagnostics (Phase 2.1c):");
     println!(
-        "─────────────────────────────────────────────────────────────────────────────────────"
+        "───────────────────────────────────────────────────────────────────────────────────────────────────"
     );
-    println!("  Seed       | explore% | exploit% | stable% | bad%  | exp_max | fail_max | rescues");
+    println!("  Seed       | explore% | exploit% | stable% | bad%  | rescues | resc/10k | lock%");
     println!(
-        "─────────────────────────────────────────────────────────────────────────────────────"
+        "───────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     for d in diagnostics {
-        let collapse_marker = if d.explore_rate > 0.80 || d.exploit_rate < 0.15 {
+        let collapse_marker = if d.explore_rate > 0.80 || d.exploit_rate < 0.15 || d.rescue_count > 15 {
             " ⚠"
         } else {
             ""
         };
         println!(
-            "  0x{:08X} | {:6.1}%  | {:6.1}%  | {:5.1}%  | {:4.1}% | {:7} | {:8} | {:7}{}",
+            "  0x{:08X} | {:6.1}%  | {:6.1}%  | {:5.1}%  | {:4.1}% | {:7} | {:8.1} | {:5.1}%{}",
             d.seed,
             d.explore_rate * 100.0,
             d.exploit_rate * 100.0,
             d.stable_share * 100.0,
             d.bad_state_share * 100.0,
-            d.explore_streak_max,
-            d.gate_fail_streak_max,
             d.rescue_count,
+            d.rescues_per_10k,
+            d.post_rescue_lock_share * 100.0,
             collapse_marker,
         );
     }
     println!(
-        "─────────────────────────────────────────────────────────────────────────────────────"
+        "───────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 }
 
@@ -404,22 +408,65 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
         );
     }
 
+    // Phase 2.1c: Thrash reduction checks
+    println!();
+    println!("C4) Thrash reduction (Phase 2.1c):");
+
+    let max_rescues = full_diagnostics.iter().map(|d| d.rescue_count).max().unwrap_or(0);
+    let max_rescues_ok = max_rescues <= 15;
+    println!(
+        "  [{}] max_rescues_per_seed <= 15: {}",
+        if max_rescues_ok { "✓" } else { "✗" },
+        max_rescues
+    );
+
+    // C5) Worst-seed floor
+    println!();
+    println!("C5) Worst-seed floor (Phase 2.1c):");
+
+    let worst_coverage = full_runs.iter().map(|r| r.coverage_pos).fold(f64::INFINITY, f64::min);
+    let worst_sel_acc = full_runs.iter().map(|r| r.selective_accuracy).fold(f64::INFINITY, f64::min);
+
+    let worst_coverage_ok = worst_coverage >= 0.65;
+    let worst_sel_acc_ok = worst_sel_acc >= 0.75;
+
+    println!(
+        "  [{}] worst_seed_coverage_pos >= 65%: {:.1}%",
+        if worst_coverage_ok { "✓" } else { "✗" },
+        worst_coverage * 100.0
+    );
+    println!(
+        "  [{}] worst_seed_selective_accuracy >= 75%: {:.1}%",
+        if worst_sel_acc_ok { "✓" } else { "✗" },
+        worst_sel_acc * 100.0
+    );
+
+    let thrash_ok = max_rescues_ok;
+    let worst_seed_ok = worst_coverage_ok && worst_sel_acc_ok;
+
     // Summary
-    let all_ok = regression_ok && policy_advantage_ok;
+    let all_ok = regression_ok && policy_advantage_ok && thrash_ok && worst_seed_ok;
     println!();
     if all_ok {
-        println!("  → Phase 2.1: ALL ACCEPTANCE CRITERIA MET!");
+        println!("  → Phase 2.1c: ALL ACCEPTANCE CRITERIA MET!");
         if low_variability {
             println!("  → Low variability across seeds - results are robust.");
         }
     } else {
-        if regression_ok {
-            println!("  → Phase 2.1: Regression guard OK. Policy advantage needs work.");
-        } else if policy_advantage_ok {
-            println!("  → Phase 2.1: Policy advantage OK. Regression guard failed.");
-        } else {
-            println!("  → Phase 2.1: Multiple criteria not met. Tuning needed.");
+        let mut issues = Vec::new();
+        if !regression_ok {
+            issues.push("regression guard");
         }
+        if !policy_advantage_ok {
+            issues.push("policy advantage");
+        }
+        if !thrash_ok {
+            issues.push("thrash reduction");
+        }
+        if !worst_seed_ok {
+            issues.push("worst-seed floor");
+        }
+        println!("  → Phase 2.1c: Failed checks: {}", issues.join(", "));
     }
 
     // ==========================================================================
@@ -691,7 +738,11 @@ fn run_single_seed_full(
                 Mode::Reset => reset_count += 1,
             }
 
-            // Action policy with triggers
+            // Phase 2.1c: Action policy with post-rescue lock bias
+            let lock_active = mode_policy.is_post_rescue_lock_active();
+            let lock_focus_bias = mode_policy.get_lock_focus_bias();
+
+            // First get base action with triggers
             let (mut action, trigger_reason) = action_policy.choose_action_with_triggers(
                 mode,
                 abs_td as f32,
@@ -701,6 +752,17 @@ fn run_single_seed_full(
                 anchor_value,
                 config,
             );
+
+            // Phase 2.1c: Override with lock bias if active (except for Perturb from triggers)
+            if lock_active && trigger_reason.is_none() {
+                action = action_policy.choose_action_with_lock(
+                    mode,
+                    lock_active,
+                    lock_focus_bias,
+                    abs_td as f32,
+                    config.mode_reset_td_min,
+                );
+            }
 
             // Phase 2.1b: Min perturb guard
             if config.demo13_enable_min_perturb_guard && action != Action::Perturb {
@@ -727,6 +789,12 @@ fn run_single_seed_full(
 
             let mut adjusted_gate_params = base_gate_params.clone();
             adjusted_gate_params.margin_mult *= action_overrides.margin_scale as f64;
+
+            // Phase 2.1c: Apply lock margin scale during post-rescue lock
+            if lock_active {
+                let lock_margin_scale = mode_policy.get_lock_margin_scale();
+                adjusted_gate_params.margin_mult *= lock_margin_scale as f64;
+            }
 
             let gate_passed = confidence.passes_gate_with_params(&adjusted_gate_params);
 
@@ -877,9 +945,21 @@ fn run_single_seed_full(
     run.bad_state_share = Some(lift_stats.bad_state_share());
     run.recovery_improve = Some(lift_stats.recovery_after_perturb());
 
-    // Phase 2.1b: Collect diagnostics
+    // Phase 2.1b/c: Collect diagnostics
     let mode_stats = mode_policy.mode_stats();
     let (proto_p50, margin_p50) = warmup_stats.compute_p50();
+
+    // Phase 2.1c: Compute thrash metrics
+    let rescues_per_10k = if total_ticks > 0 {
+        (mode_stats.rescue_count as f64 / total_ticks as f64) * 10000.0
+    } else {
+        0.0
+    };
+    let post_rescue_lock_share = if total_ticks > 0 {
+        mode_stats.post_rescue_lock_total_ticks as f64 / total_ticks as f64
+    } else {
+        0.0
+    };
 
     let diag = SeedDiagnostics {
         seed,
@@ -925,6 +1005,10 @@ fn run_single_seed_full(
         rescue_count: mode_stats.rescue_count,
         adaptive_proto_min: mode_policy.config.exploit_proto_min,
         adaptive_margin_min: mode_policy.config.exploit_margin_min,
+        // Phase 2.1c: Thrash metrics
+        rescues_per_10k,
+        post_rescue_lock_share,
+        total_ticks,
     };
 
     (run, lift_stats, diag)

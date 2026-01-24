@@ -261,6 +261,24 @@ pub struct Config {
     pub demo13_perturb_window: usize,
 
     // =========================================================================
+    // Phase 2.1c: Anti-Thrash Post-Rescue Lock
+    // =========================================================================
+    /// Ticks to lock in Exploit mode after a rescue (anti-thrash).
+    pub post_rescue_lock_ticks: u32,
+    /// Margin min scale during post-rescue lock (higher = stricter).
+    pub lock_margin_min_scale: f32,
+    /// Focus bias additive boost during post-rescue lock.
+    pub lock_focus_bias: f32,
+    /// Require bad_state for rescue to fire (stricter trigger).
+    pub rescue_requires_bad_state: bool,
+    /// Bad state proto alignment threshold for rescue trigger.
+    pub rescue_bad_proto: f32,
+    /// Bad state margin threshold for rescue trigger.
+    pub rescue_bad_margin: f64,
+    /// Bad state value threshold for rescue trigger.
+    pub rescue_bad_value: f32,
+
+    // =========================================================================
     // Phase 2.0e: Regret/Recovery Metrics Configuration
     // =========================================================================
     /// Margin threshold for "bad state" (topk_margin < margin_bad).
@@ -613,14 +631,14 @@ impl Default for Config {
             lift_bad_value: 0.15,
 
             // Phase 2.1b: Seed-Robust Policy Stabilization defaults
-            min_exploit_ticks_on: 10,
-            explore_streak_rescue: 100, // Very aggressive rescue threshold
-            fail_streak_rescue: 6,      // Very aggressive rescue threshold
-            rescue_cooldown: 40,
+            min_exploit_ticks_on: 20,
+            explore_streak_rescue: 200, // Less aggressive - only rescue truly stuck states
+            fail_streak_rescue: 10,     // Less aggressive
+            rescue_cooldown: 80,        // Longer cooldown between rescues
             post_reset_exploit_boost_ticks: 60,
             post_reset_exploit_margin_scale: 1.35, // Strong margin boost post-reset
-            catastrophic_abs_td: 0.50, // Lower threshold to escape bad exploits faster
-            catastrophic_value_drop: 0.08,
+            catastrophic_abs_td: 0.55, // Moderate threshold
+            catastrophic_value_drop: 0.10,
             exploit_proto_min_floor: 0.20, // Much higher floor - require good proto alignment
             exploit_margin_min_floor: 0.045, // Higher margin floor
             exploit_proto_p50_scale: 0.65, // Very conservative - require strong proto
@@ -630,6 +648,15 @@ impl Default for Config {
             demo13_enable_min_perturb_guard: true,
             demo13_min_perturb_rate: 0.010, // Higher perturb floor
             demo13_perturb_window: 1500,
+
+            // Phase 2.1c: Anti-Thrash Post-Rescue Lock defaults
+            post_rescue_lock_ticks: 250,     // Lock in Exploit for 250 ticks after rescue (very long stabilization)
+            lock_margin_min_scale: 1.40,     // Stricter margin during lock
+            lock_focus_bias: 4.0,            // Very strong Focus bias during lock
+            rescue_requires_bad_state: true, // Require bad state for rescue
+            rescue_bad_proto: 0.12,          // Below this = bad proto (stricter)
+            rescue_bad_margin: 0.03,         // Below this = bad margin (stricter)
+            rescue_bad_value: 0.12,          // Below this = bad value (stricter)
 
             // Phase 2.0e: Regret/Recovery Metrics defaults
             regret_margin_bad: 0.02,

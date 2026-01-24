@@ -70,6 +70,22 @@ pub struct ModePolicyConfig {
     pub post_reset_boost_ticks: u32,
     /// Scale factor for margin during post-reset boost.
     pub post_reset_margin_scale: f32,
+
+    // Phase 2.1c: Anti-Thrash Post-Rescue Lock
+    /// Ticks to lock in Exploit mode after a rescue.
+    pub post_rescue_lock_ticks: u32,
+    /// Margin min scale during post-rescue lock.
+    pub lock_margin_min_scale: f32,
+    /// Focus bias during post-rescue lock.
+    pub lock_focus_bias: f32,
+    /// Require bad_state for rescue to fire.
+    pub rescue_requires_bad_state: bool,
+    /// Bad state proto threshold.
+    pub rescue_bad_proto: f32,
+    /// Bad state margin threshold.
+    pub rescue_bad_margin: f64,
+    /// Bad state value threshold.
+    pub rescue_bad_value: f32,
 }
 
 impl Default for ModePolicyConfig {
@@ -100,6 +116,15 @@ impl Default for ModePolicyConfig {
             catastrophic_value_drop: 0.20,
             post_reset_boost_ticks: 40,
             post_reset_margin_scale: 1.15,
+
+            // Phase 2.1c: Anti-Thrash Post-Rescue Lock
+            post_rescue_lock_ticks: 80,
+            lock_margin_min_scale: 1.20,
+            lock_focus_bias: 2.0,
+            rescue_requires_bad_state: true,
+            rescue_bad_proto: 0.12,
+            rescue_bad_margin: 0.03,
+            rescue_bad_value: 0.10,
         }
     }
 }
@@ -131,6 +156,15 @@ impl ModePolicyConfig {
             catastrophic_value_drop: config.catastrophic_value_drop,
             post_reset_boost_ticks: config.post_reset_exploit_boost_ticks,
             post_reset_margin_scale: config.post_reset_exploit_margin_scale,
+
+            // Phase 2.1c: Anti-Thrash Post-Rescue Lock
+            post_rescue_lock_ticks: config.post_rescue_lock_ticks,
+            lock_margin_min_scale: config.lock_margin_min_scale,
+            lock_focus_bias: config.lock_focus_bias,
+            rescue_requires_bad_state: config.rescue_requires_bad_state,
+            rescue_bad_proto: config.rescue_bad_proto,
+            rescue_bad_margin: config.rescue_bad_margin,
+            rescue_bad_value: config.rescue_bad_value,
         }
     }
 }
@@ -279,6 +313,12 @@ pub struct ModePolicyState {
     pub prev_anchor_value: f32,
     /// Maximum consecutive gate fails observed.
     pub gate_fail_streak_max: u32,
+
+    // Phase 2.1c: Post-rescue lock state
+    /// Ticks remaining in post-rescue lock.
+    pub post_rescue_lock_remaining: u32,
+    /// Total ticks spent in post-rescue lock.
+    pub post_rescue_lock_total_ticks: usize,
 }
 
 impl ModePolicyState {
@@ -317,6 +357,10 @@ impl ModePolicyState {
             post_reset_boost_remaining: 0,
             prev_anchor_value: 0.0,
             gate_fail_streak_max: 0,
+
+            // Phase 2.1c: Post-rescue lock state
+            post_rescue_lock_remaining: 0,
+            post_rescue_lock_total_ticks: 0,
         }
     }
 }
@@ -427,6 +471,12 @@ impl ModePolicy {
             self.state.post_reset_boost_remaining -= 1;
         }
 
+        // Phase 2.1c: Decrement post-rescue lock
+        if self.state.post_rescue_lock_remaining > 0 {
+            self.state.post_rescue_lock_remaining -= 1;
+            self.state.post_rescue_lock_total_ticks += 1;
+        }
+
         // Check reset effectiveness after 10 ticks
         if let Some(reset_tick) = self.state.last_reset_tick {
             if current_tick == reset_tick + 10 {
@@ -508,7 +558,7 @@ impl ModePolicy {
         mode
     }
 
-    /// Choose mode with Phase 2.1b guardrails (exploit lock + explore rescue).
+    /// Choose mode with Phase 2.1b/c guardrails (exploit lock + explore rescue + post-rescue lock).
     /// Returns (mode, rescue_triggered).
     pub fn choose_mode_with_guardrails(&mut self, current_tick: u64) -> (Mode, bool) {
         // Store previous value for drop detection
@@ -516,10 +566,23 @@ impl ModePolicy {
         let value_drop = self.state.prev_anchor_value - current_value;
         self.state.prev_anchor_value = current_value;
 
-        // Check for catastrophic conditions (escape exploit lock)
+        // Check for catastrophic conditions (escape exploit lock and post-rescue lock)
         let recent_td = self.state.recent_abs_td.mean();
         let catastrophic = recent_td >= self.config.catastrophic_abs_td
             || value_drop >= self.config.catastrophic_value_drop;
+
+        // Phase 2.1c: Check post-rescue lock (takes priority over exploit lock)
+        if self.state.post_rescue_lock_remaining > 0 && !catastrophic {
+            // Forced to stay in Exploit mode during post-rescue lock
+            self.state.exploit_count += 1;
+            self.state.exploit_streak += 1;
+            if self.state.exploit_streak > self.state.exploit_streak_max {
+                self.state.exploit_streak_max = self.state.exploit_streak;
+            }
+            self.state.explore_streak = 0;
+            self.state.last_mode = Mode::Exploit;
+            return (Mode::Exploit, false);
+        }
 
         // Check if we're in exploit lock
         if self.state.exploit_lock_remaining > 0 && !catastrophic {
@@ -534,10 +597,25 @@ impl ModePolicy {
             return (Mode::Exploit, false);
         }
 
+        // Phase 2.1c: Check for bad_state condition for stricter rescue
+        let is_bad_state = self.state.last_proto_align < self.config.rescue_bad_proto
+            && self.state.last_topk_margin < self.config.rescue_bad_margin
+            && current_value < self.config.rescue_bad_value;
+
         // Check for rescue conditions
-        let rescue_needed = self.state.rescue_cooldown == 0
-            && (self.state.explore_streak >= self.config.explore_streak_rescue
-                || self.state.gate_fail_streak >= self.config.fail_streak_rescue);
+        // Phase 2.1c: Require (streak condition) AND (td OR value_drop OR bad_state) if rescue_requires_bad_state
+        let streak_condition = self.state.explore_streak >= self.config.explore_streak_rescue
+            || self.state.gate_fail_streak >= self.config.fail_streak_rescue;
+
+        let secondary_condition = if self.config.rescue_requires_bad_state {
+            recent_td >= self.config.reset_td_min
+                || value_drop >= self.config.catastrophic_value_drop * 0.5
+                || is_bad_state
+        } else {
+            true
+        };
+
+        let rescue_needed = self.state.rescue_cooldown == 0 && streak_condition && secondary_condition;
 
         if rescue_needed {
             // Trigger rescue: force Reset mode
@@ -549,6 +627,9 @@ impl ModePolicy {
             self.state.reset_count += 1;
             self.state.last_mode = Mode::Reset;
             self.state.post_reset_boost_remaining = self.config.post_reset_boost_ticks;
+
+            // Phase 2.1c: Set post-rescue lock
+            self.state.post_rescue_lock_remaining = self.config.post_rescue_lock_ticks;
 
             // Record pre-reset TD for effectiveness
             let pre_td_values = self.state.recent_abs_td.last_n(10);
@@ -637,6 +718,34 @@ impl ModePolicy {
         } else {
             base_scale
         }
+    }
+
+    /// Phase 2.1c: Check if post-rescue lock is active.
+    pub fn is_post_rescue_lock_active(&self) -> bool {
+        self.state.post_rescue_lock_remaining > 0
+    }
+
+    /// Phase 2.1c: Get the Focus bias to apply during post-rescue lock.
+    pub fn get_lock_focus_bias(&self) -> f32 {
+        if self.state.post_rescue_lock_remaining > 0 {
+            self.config.lock_focus_bias
+        } else {
+            0.0
+        }
+    }
+
+    /// Phase 2.1c: Get margin scale during post-rescue lock.
+    pub fn get_lock_margin_scale(&self) -> f32 {
+        if self.state.post_rescue_lock_remaining > 0 {
+            self.config.lock_margin_min_scale
+        } else {
+            1.0
+        }
+    }
+
+    /// Phase 2.1c: Get total ticks spent in post-rescue lock.
+    pub fn post_rescue_lock_total_ticks(&self) -> usize {
+        self.state.post_rescue_lock_total_ticks
     }
 
     /// Check if reset conditions are met.
@@ -751,6 +860,8 @@ impl ModePolicy {
             exploit_streak_max: self.state.exploit_streak_max,
             gate_fail_streak_max: self.state.gate_fail_streak_max,
             rescue_count: self.state.rescue_count,
+            // Phase 2.1c: Post-rescue lock metrics
+            post_rescue_lock_total_ticks: self.state.post_rescue_lock_total_ticks,
         }
     }
 }
@@ -773,6 +884,8 @@ pub struct ModeStats {
     pub exploit_streak_max: u32,
     pub gate_fail_streak_max: u32,
     pub rescue_count: usize,
+    // Phase 2.1c: Post-rescue lock metrics
+    pub post_rescue_lock_total_ticks: usize,
 }
 
 // ============================================================================

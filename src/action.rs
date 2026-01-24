@@ -743,6 +743,37 @@ impl ActionPolicy {
         scaled.max(1) // At least 1 node
     }
 
+    /// Phase 2.1c: Choose action with post-rescue lock bias toward Focus.
+    /// During post-rescue lock, strongly prefer Focus over Scan unless TD spike.
+    pub fn choose_action_with_lock(
+        &self,
+        mode: Mode,
+        lock_active: bool,
+        lock_focus_bias: f32,
+        abs_td: f32,
+        td_threshold: f32,
+    ) -> Action {
+        let base_action = Action::from_mode(mode);
+
+        // If not in lock or base action is already Perturb, return base
+        if !lock_active || base_action == Action::Perturb {
+            return base_action;
+        }
+
+        // During lock: check if TD spike warrants Perturb despite lock
+        if abs_td >= td_threshold {
+            return Action::Perturb;
+        }
+
+        // During lock: bias toward Focus
+        // If mode says Scan (Explore mode), override to Focus if bias is strong enough
+        if base_action == Action::Scan && lock_focus_bias >= 1.0 {
+            return Action::Focus;
+        }
+
+        base_action
+    }
+
     /// Phase 2.1b: Check if min perturb guard should force a perturb action.
     /// Returns true if perturb should be forced due to low perturb rate + bad state.
     pub fn should_force_perturb_guard(
