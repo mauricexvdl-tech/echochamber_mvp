@@ -981,10 +981,8 @@ impl ModePolicy {
         let bad_share = self.state.chronic_bad_share_ema;
         let stable_share = self.state.chronic_stable_share_ema;
 
-        // Decrement cooldowns
-        if self.state.chronic_release_cooldown > 0 {
-            self.state.chronic_release_cooldown -= 1;
-        }
+        // NOTE: chronic_release_cooldown is already decremented in observe_extended()
+        // Only decrement rearm cooldown here (not in observe_extended)
         if self.state.chronic_rearm_cooldown_remaining > 0 {
             self.state.chronic_rearm_cooldown_remaining -= 1;
         }
