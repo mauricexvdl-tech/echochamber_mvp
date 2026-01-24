@@ -9,11 +9,14 @@ mod causes;
 mod complex;
 mod concepts;
 mod config;
+mod demo13;
 mod demos;
 mod distill;
 mod echo;
+mod lift;
 mod memory;
 mod mode;
+mod multiseed;
 mod regret;
 mod rng;
 
@@ -71,6 +74,11 @@ fn main() {
     if config.run_demo_12 {
         println!();
         demo_12_action_distillation(&config);
+    }
+
+    if config.run_demo_13 {
+        println!();
+        demo13::run(&config);
     }
 
     if config.run_capacity_sweep {

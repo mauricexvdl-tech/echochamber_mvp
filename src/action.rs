@@ -6,7 +6,6 @@
 //! Actions are controlled, reversible perturbations of sampling
 //! and gating — executive control only.
 
-use crate::config::Config;
 use crate::mode::Mode;
 
 /// The three executive actions available.

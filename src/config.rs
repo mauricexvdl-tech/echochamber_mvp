@@ -207,6 +207,20 @@ pub struct Config {
     pub run_demo_11: bool,
     /// Run demo 12 (Phase 2.0f-A Action Distillation).
     pub run_demo_12: bool,
+    /// Run demo 13 (Phase 2.1 Multi-seed + Lift Metrics).
+    pub run_demo_13: bool,
+
+    // =========================================================================
+    // Phase 2.1: Multi-seed Evaluation + Lift Metrics Configuration
+    // =========================================================================
+    /// Number of seeds for Demo 13 multi-seed evaluation.
+    pub demo13_num_seeds: usize,
+    /// Margin threshold for "bad state" in lift metrics.
+    pub lift_bad_margin: f64,
+    /// Proto alignment threshold for "bad state" in lift metrics.
+    pub lift_bad_proto: f32,
+    /// Value threshold for "bad state" in lift metrics.
+    pub lift_bad_value: f32,
 
     // =========================================================================
     // Phase 2.0e: Regret/Recovery Metrics Configuration
@@ -552,6 +566,13 @@ impl Default for Config {
             run_demo_10: true, // Phase 2.0d: Action Ablations + Sweep demo
             run_demo_11: true, // Phase 2.0e: Trigger-Matched Random + Regret Metrics demo
             run_demo_12: true, // Phase 2.0f-D: Action Distillation demo
+            run_demo_13: true, // Phase 2.1: Multi-seed + Lift Metrics demo
+
+            // Phase 2.1: Multi-seed + Lift Metrics defaults
+            demo13_num_seeds: 5,
+            lift_bad_margin: 0.02,
+            lift_bad_proto: 0.10,
+            lift_bad_value: 0.15,
 
             // Phase 2.0e: Regret/Recovery Metrics defaults
             regret_margin_bad: 0.02,
