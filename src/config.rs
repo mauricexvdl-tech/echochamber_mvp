@@ -279,10 +279,12 @@ pub struct Config {
     pub rescue_bad_value: f32,
 
     // =========================================================================
-    // Phase 2.1g: Chronic Instability Clamp v4 (enter-hold + true sliding window)
+    // Phase 2.1h: Chronic Instability Clamp v5 (EMA smoothing + hysteresis)
     // =========================================================================
     /// Window size for chronic instability detection (ticks).
     pub chronic_window_ticks: usize,
+    /// EMA smoothing alpha for chronic shares (0.0=no smoothing, 1.0=no memory).
+    pub chronic_share_ema_alpha: f32,
     /// Bad state share threshold to ENTER clamp.
     pub chronic_bad_share_hi: f32,
     /// Stable share threshold to ENTER clamp (below this = clamp).
@@ -710,27 +712,28 @@ impl Default for Config {
             rescue_bad_margin: 0.03,     // Below this = bad margin (stricter)
             rescue_bad_value: 0.12,      // Below this = bad value (stricter)
 
-            // Phase 2.1g: Chronic Instability Clamp v4 defaults (hysteresis + strict enter)
-            chronic_window_ticks: 500,          // Sliding window for stats
-            chronic_bad_share_hi: 0.35,         // ENTER if bad_state > 35%
-            chronic_stable_share_lo: 0.45,      // ENTER if stable_share < 45%
-            chronic_enter_hold_ticks: 1,        // Phase 2.1f: No streak (immediate enter)
-            chronic_enter_hold_tolerance: 0.10, // (unused with strict streak)
-            chronic_exit_bad_max: 0.28,         // EXIT if bad < 28% AND stable > 60%
-            chronic_exit_stable_min: 0.60,      // EXIT requires BOTH conditions (AND)
-            chronic_exit_hold_ticks: 100,       // Hold exit conditions for 100 ticks
-            chronic_exit_hold_tolerance: 0.15,  // Allow 15% of ticks to fail in exit-hold
-            chronic_explore_cap: 0.10,          // Max 10% Explore while clamped
-            chronic_lock_ticks: 150,            // Minimum lock duration
+            // Phase 2.1h: Chronic Instability Clamp v5 defaults (EMA smoothing + hysteresis)
+            chronic_window_ticks: 500,     // Sliding window for raw stats
+            chronic_share_ema_alpha: 0.05, // EMA smoothing (slower response)
+            chronic_bad_share_hi: 0.35,    // ENTER if bad_ema > 35%
+            chronic_stable_share_lo: 0.42, // ENTER if stable_ema < 42% (stricter threshold)
+            chronic_enter_hold_ticks: 200, // Enter-hold window for pass-rate check (longer)
+            chronic_enter_hold_tolerance: 0.10, // Allow 10% failures in enter-hold
+            chronic_exit_bad_max: 0.28,    // EXIT if bad_ema < 28% AND stable_ema > 52%
+            chronic_exit_stable_min: 0.52, // EXIT requires BOTH (Schmitt gap = 10% above enter)
+            chronic_exit_hold_ticks: 100,  // Hold exit conditions for 100 ticks
+            chronic_exit_hold_tolerance: 0.15, // Allow 15% failures in exit-hold
+            chronic_explore_cap: 0.10,     // Max 10% Explore while clamped
+            chronic_lock_ticks: 150,       // Minimum lock duration
             chronic_exploit_margin_scale: 1.20, // Slightly stricter margin during clamp
-            chronic_focus_bias: 2.5,            // Focus bias during clamp
+            chronic_focus_bias: 2.5,       // Focus bias during clamp
             chronic_min_ticks_before_enable: 5000, // Wait before enabling
-            chronic_rearm_cooldown: 300,        // Cooldown after expiry (Phase 2.1f original)
-            chronic_max_share: 0.50,            // Watchdog: max 50% chronic time
-            chronic_release_cooldown: 200,      // Cooldown after watchdog release
-            chronic_escape_after: 1000,         // Escape pulse after 1000 continuous ticks
-            chronic_escape_ticks: 50,           // Escape pulse duration
-            chronic_disallow_perturb: true,     // No Perturb during chronic (except Reset)
+            chronic_rearm_cooldown: 300,   // Cooldown after expiry (Phase 2.1f original)
+            chronic_max_share: 0.50,       // Watchdog: max 50% chronic time
+            chronic_release_cooldown: 200, // Cooldown after watchdog release
+            chronic_escape_after: 1000,    // Escape pulse after 1000 continuous ticks
+            chronic_escape_ticks: 50,      // Escape pulse duration
+            chronic_disallow_perturb: true, // No Perturb during chronic (except Reset)
 
             // Phase 2.1e: Perturb Budget Cap defaults
             perturb_cap: 0.03,           // Max 3% perturb rate

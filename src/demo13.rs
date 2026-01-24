@@ -51,7 +51,7 @@ pub struct SeedDiagnostics {
     pub rescues_per_10k: f64,
     pub post_rescue_lock_share: f64,
     pub total_ticks: usize,
-    // Phase 2.1f: Chronic clamp metrics
+    // Phase 2.1h: Chronic clamp metrics
     pub chronic_lock_share: f64,
     pub chronic_lock_total_ticks: usize,
     pub chronic_enter_count: u32,
@@ -59,6 +59,9 @@ pub struct SeedDiagnostics {
     pub chronic_enter_by_bad: u32,
     pub chronic_enter_by_unstable: u32,
     pub chronic_exit_by_watchdog: u32,
+    // Phase 2.1h: EMA shares at end of run
+    pub chronic_stable_ema_final: f32,
+    pub chronic_bad_ema_final: f32,
     // Phase 2.1e: Perturb rate
     pub perturb_rate: f64,
 }
@@ -103,15 +106,15 @@ impl WarmupStats {
 /// Print per-seed diagnostics table.
 fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
     println!();
-    println!("Per-Seed Diagnostics (Phase 2.1g):");
+    println!("Per-Seed Diagnostics (Phase 2.1h):");
     println!(
-        "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     println!(
-        "  Seed       | explore% | exploit% | stable% | bad%  | perturb% | chronic% | active_tks | enters | mean_len"
+        "  Seed       | explore% | exploit% | stable% | bad%  | perturb% | chronic% | enters | mean_len | ema_stab | ema_bad | by_bad | by_unstab"
     );
     println!(
-        "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     for d in diagnostics {
         let collapse_marker = if d.explore_rate > 0.25
@@ -130,7 +133,7 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
             0.0
         };
         println!(
-            "  0x{:08X} | {:6.1}%  | {:6.1}%  | {:5.1}%  | {:4.1}% | {:7.1}%  | {:7.1}%  | {:10} | {:6} | {:8.1}{}",
+            "  0x{:08X} | {:6.1}%  | {:6.1}%  | {:5.1}%  | {:4.1}% | {:7.1}%  | {:7.1}%  | {:6} | {:8.1} | {:8.1}% | {:7.1}% | {:6} | {:9}{}",
             d.seed,
             d.explore_rate * 100.0,
             d.exploit_rate * 100.0,
@@ -138,14 +141,17 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
             d.bad_state_share * 100.0,
             d.perturb_rate * 100.0,
             d.chronic_lock_share * 100.0,
-            d.chronic_lock_total_ticks,
             d.chronic_enter_count,
             mean_lock_len,
+            d.chronic_stable_ema_final * 100.0,
+            d.chronic_bad_ema_final * 100.0,
+            d.chronic_enter_by_bad,
+            d.chronic_enter_by_unstable,
             collapse_marker,
         );
     }
     println!(
-        "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 }
 
@@ -1108,7 +1114,7 @@ fn run_single_seed_full(
         rescues_per_10k,
         post_rescue_lock_share,
         total_ticks,
-        // Phase 2.1f: Chronic clamp metrics
+        // Phase 2.1h: Chronic clamp metrics
         chronic_lock_share,
         chronic_lock_total_ticks: mode_stats.chronic_lock_total_ticks,
         chronic_enter_count: mode_stats.chronic_enter_count,
@@ -1116,6 +1122,9 @@ fn run_single_seed_full(
         chronic_enter_by_bad: mode_stats.chronic_enter_by_bad,
         chronic_enter_by_unstable: mode_stats.chronic_enter_by_unstable,
         chronic_exit_by_watchdog: mode_stats.chronic_exit_by_watchdog,
+        // Phase 2.1h: EMA final values
+        chronic_stable_ema_final: mode_stats.chronic_stable_ema_final,
+        chronic_bad_ema_final: mode_stats.chronic_bad_ema_final,
         // Phase 2.1e: Perturb rate
         perturb_rate: run.perturb_rate,
     };

@@ -204,9 +204,11 @@ pub struct ModePolicyConfig {
     /// Bad state value threshold.
     pub rescue_bad_value: f32,
 
-    // Phase 2.1g: Chronic Instability Clamp v4 (enter-hold + true sliding window)
+    // Phase 2.1h: Chronic Instability Clamp v5 (EMA smoothing + hysteresis)
     /// Window size for chronic instability detection (true sliding window).
     pub chronic_window_ticks: usize,
+    /// EMA smoothing alpha for chronic shares (0.0=no smoothing, 1.0=no memory).
+    pub chronic_share_ema_alpha: f32,
     /// Bad state share threshold to ENTER clamp.
     pub chronic_bad_share_hi: f32,
     /// Stable share threshold to ENTER clamp.
@@ -285,14 +287,15 @@ impl Default for ModePolicyConfig {
             rescue_bad_margin: 0.03,
             rescue_bad_value: 0.10,
 
-            // Phase 2.1g: Chronic Instability Clamp v4 (hysteresis + strict enter)
+            // Phase 2.1h: Chronic Instability Clamp v5 (EMA smoothing + hysteresis)
             chronic_window_ticks: 500,
+            chronic_share_ema_alpha: 0.08,
             chronic_bad_share_hi: 0.35,
-            chronic_stable_share_lo: 0.45,
-            chronic_enter_hold_ticks: 50,
+            chronic_stable_share_lo: 0.47,
+            chronic_enter_hold_ticks: 120,
             chronic_enter_hold_tolerance: 0.10,
             chronic_exit_bad_max: 0.28,
-            chronic_exit_stable_min: 0.60,
+            chronic_exit_stable_min: 0.57,
             chronic_exit_hold_ticks: 100,
             chronic_exit_hold_tolerance: 0.15,
             chronic_explore_cap: 0.10,
@@ -347,8 +350,9 @@ impl ModePolicyConfig {
             rescue_bad_margin: config.rescue_bad_margin,
             rescue_bad_value: config.rescue_bad_value,
 
-            // Phase 2.1g: Chronic Instability Clamp v4 (hysteresis + enter-hold)
+            // Phase 2.1h: Chronic Instability Clamp v5 (EMA smoothing + hysteresis)
             chronic_window_ticks: config.chronic_window_ticks,
+            chronic_share_ema_alpha: config.chronic_share_ema_alpha,
             chronic_bad_share_hi: config.chronic_bad_share_hi,
             chronic_stable_share_lo: config.chronic_stable_share_lo,
             chronic_enter_hold_ticks: config.chronic_enter_hold_ticks,
@@ -523,9 +527,13 @@ pub struct ModePolicyState {
     /// Total ticks spent in post-rescue lock.
     pub post_rescue_lock_total_ticks: usize,
 
-    // Phase 2.1g: Chronic Instability Clamp v4 state (true sliding window)
-    /// True sliding window buffer for chronic stats.
+    // Phase 2.1h: Chronic Instability Clamp v5 state (EMA smoothing + hysteresis)
+    /// True sliding window buffer for chronic stats (raw values).
     pub chronic_window: ChronicWindowBuffer,
+    /// EMA-smoothed stable share for ENTER/EXIT decisions.
+    pub chronic_stable_share_ema: f32,
+    /// EMA-smoothed bad share for ENTER/EXIT decisions.
+    pub chronic_bad_share_ema: f32,
     /// Ticks remaining in chronic lock.
     pub chronic_lock_remaining: u32,
     /// Total ticks spent in chronic lock.
@@ -551,7 +559,7 @@ pub struct ModePolicyState {
     /// Cooldown after natural expiry (re-arm prevention).
     pub chronic_rearm_cooldown_remaining: u32,
 
-    // Phase 2.1g: Chronic diagnostics
+    // Phase 2.1h: Chronic diagnostics
     /// Number of times chronic lock was entered.
     pub chronic_enter_count: u32,
     /// Number of times chronic lock was exited.
@@ -605,8 +613,10 @@ impl ModePolicyState {
             post_rescue_lock_remaining: 0,
             post_rescue_lock_total_ticks: 0,
 
-            // Phase 2.1g: Chronic Instability Clamp v4 state (hysteresis + enter-hold)
+            // Phase 2.1h: Chronic Instability Clamp v5 state (EMA smoothing + hysteresis)
             chronic_window: ChronicWindowBuffer::new(chronic_window_size),
+            chronic_stable_share_ema: 0.5, // Initialize at neutral
+            chronic_bad_share_ema: 0.3,    // Initialize at neutral
             chronic_lock_remaining: 0,
             chronic_lock_total_ticks: 0,
             chronic_explore_count: 0,
@@ -951,14 +961,25 @@ impl ModePolicy {
             return (Mode::Reset, true);
         }
 
-        // Phase 2.1g: Chronic clamp v4 with enter-hold + true sliding window
+        // Phase 2.1h: Chronic clamp v5 with EMA smoothing + hysteresis
         let chronic_enabled =
             self.state.global_tick_count >= self.config.chronic_min_ticks_before_enable as u64;
 
-        // Get shares from true sliding window buffer
-        let bad_share = self.state.chronic_window.bad_share();
-        let stable_share = self.state.chronic_window.stable_share();
+        // Get RAW shares from true sliding window buffer (for diagnostics)
+        let bad_share_raw = self.state.chronic_window.bad_share();
+        let stable_share_raw = self.state.chronic_window.stable_share();
         let chronic_active_share = self.state.chronic_window.active_share();
+
+        // Update EMA-smoothed shares (used for ENTER/EXIT decisions)
+        let alpha = self.config.chronic_share_ema_alpha;
+        self.state.chronic_stable_share_ema =
+            (1.0 - alpha) * self.state.chronic_stable_share_ema + alpha * stable_share_raw;
+        self.state.chronic_bad_share_ema =
+            (1.0 - alpha) * self.state.chronic_bad_share_ema + alpha * bad_share_raw;
+
+        // Use EMA values for decisions
+        let bad_share = self.state.chronic_bad_share_ema;
+        let stable_share = self.state.chronic_stable_share_ema;
 
         // Decrement cooldowns
         if self.state.chronic_release_cooldown > 0 {
@@ -992,10 +1013,10 @@ impl ModePolicy {
 
         if chronic_enabled && self.state.chronic_release_cooldown == 0 {
             if self.state.chronic_lock_remaining > 0 {
-                // Phase 2.1f: Check EXIT conditions with OR (easier to exit)
-                // Exit if bad_share improved OR stable_share improved
+                // Phase 2.1h: Check EXIT with AND condition (both must improve)
+                // Exit only if bad_share improved AND stable_share improved (Schmitt hysteresis)
                 let exit_ok = bad_share < self.config.chronic_exit_bad_max
-                    || stable_share > self.config.chronic_exit_stable_min;
+                    && stable_share > self.config.chronic_exit_stable_min;
 
                 // Track exit hold with tolerance
                 self.state.chronic_exit_hold_window += 1;
@@ -1022,36 +1043,43 @@ impl ModePolicy {
                     self.state.chronic_continuous_ticks = 0;
                 }
             } else if self.state.chronic_rearm_cooldown_remaining == 0 {
-                // Phase 2.1g: Check ENTER with strict consecutive streak requirement
+                // Phase 2.1h: Check ENTER with pass-rate window (tolerance-based)
                 let enter_by_bad = bad_share > self.config.chronic_bad_share_hi;
                 let enter_by_unstable = stable_share < self.config.chronic_stable_share_lo;
-                let enter_cond = (enter_by_bad || enter_by_unstable)
-                    && self.state.chronic_window.is_full();
+                let enter_cond =
+                    (enter_by_bad || enter_by_unstable) && self.state.chronic_window.is_full();
 
-                // Strict streak: reset on any false tick (including when window not full)
+                // Pass-rate window: track successes over window, not consecutive streak
+                self.state.chronic_enter_hold_window += 1;
                 if enter_cond {
                     self.state.chronic_enter_hold_count += 1;
-                } else {
-                    self.state.chronic_enter_hold_count = 0;
                 }
 
-                // Enter only if streak meets requirement
-                if self.state.chronic_enter_hold_count >= self.config.chronic_enter_hold_ticks {
-                    // Trigger chronic clamp
-                    self.state.chronic_lock_remaining = self.config.chronic_lock_ticks;
-                    self.state.chronic_explore_count = 0;
-                    self.state.chronic_exit_hold_count = 0;
-                    self.state.chronic_exit_hold_window = 0;
-                    self.state.chronic_enter_hold_count = 0;
-                    self.state.chronic_enter_count += 1;
+                // Check pass-rate when window is full
+                if self.state.chronic_enter_hold_window >= self.config.chronic_enter_hold_ticks {
+                    let pass_rate = self.state.chronic_enter_hold_count as f32
+                        / self.state.chronic_enter_hold_window as f32;
+                    let min_pass_rate = 1.0 - self.config.chronic_enter_hold_tolerance;
 
-                    // Track enter reason
-                    if enter_by_bad {
-                        self.state.chronic_enter_by_bad += 1;
+                    if pass_rate >= min_pass_rate {
+                        // Trigger chronic clamp
+                        self.state.chronic_lock_remaining = self.config.chronic_lock_ticks;
+                        self.state.chronic_explore_count = 0;
+                        self.state.chronic_exit_hold_count = 0;
+                        self.state.chronic_exit_hold_window = 0;
+                        self.state.chronic_enter_count += 1;
+
+                        // Track enter reason (based on last tick's conditions)
+                        if enter_by_bad {
+                            self.state.chronic_enter_by_bad += 1;
+                        }
+                        if enter_by_unstable {
+                            self.state.chronic_enter_by_unstable += 1;
+                        }
                     }
-                    if enter_by_unstable {
-                        self.state.chronic_enter_by_unstable += 1;
-                    }
+                    // Reset enter-hold window for next attempt
+                    self.state.chronic_enter_hold_count = 0;
+                    self.state.chronic_enter_hold_window = 0;
                 }
             }
         }
@@ -1338,13 +1366,16 @@ impl ModePolicy {
             rescue_count: self.state.rescue_count,
             // Phase 2.1c: Post-rescue lock metrics
             post_rescue_lock_total_ticks: self.state.post_rescue_lock_total_ticks,
-            // Phase 2.1f: Chronic clamp metrics
+            // Phase 2.1h: Chronic clamp metrics
             chronic_lock_total_ticks: self.state.chronic_lock_total_ticks,
             chronic_enter_count: self.state.chronic_enter_count,
             chronic_exit_count: self.state.chronic_exit_count,
             chronic_enter_by_bad: self.state.chronic_enter_by_bad,
             chronic_enter_by_unstable: self.state.chronic_enter_by_unstable,
             chronic_exit_by_watchdog: self.state.chronic_exit_by_watchdog,
+            // Phase 2.1h: EMA final values
+            chronic_stable_ema_final: self.state.chronic_stable_share_ema,
+            chronic_bad_ema_final: self.state.chronic_bad_share_ema,
         }
     }
 }
@@ -1369,13 +1400,16 @@ pub struct ModeStats {
     pub rescue_count: usize,
     // Phase 2.1c: Post-rescue lock metrics
     pub post_rescue_lock_total_ticks: usize,
-    // Phase 2.1f: Chronic clamp metrics
+    // Phase 2.1h: Chronic clamp metrics
     pub chronic_lock_total_ticks: usize,
     pub chronic_enter_count: u32,
     pub chronic_exit_count: u32,
     pub chronic_enter_by_bad: u32,
     pub chronic_enter_by_unstable: u32,
     pub chronic_exit_by_watchdog: u32,
+    // Phase 2.1h: EMA final values
+    pub chronic_stable_ema_final: f32,
+    pub chronic_bad_ema_final: f32,
 }
 
 // ============================================================================
