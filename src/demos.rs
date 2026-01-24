@@ -333,7 +333,7 @@ fn run_label_binding_experiment(config: &Config, num_labels: usize) -> LabelBind
             causes.inject_for_tick(&mut rng, &mut chamber, active_mask);
             let topk = get_top_k(&chamber, config.top_k);
             let topk_ids: Vec<usize> = topk.iter().map(|(id, _)| *id).collect();
-            let tick_metrics = chamber.tick_with_context_plasticity(z_inj, &[], false);
+            let _tick_metrics = chamber.tick_with_context_plasticity(z_inj, &[], false);
             let signature = topk_to_mask(&topk_ids);
 
             if t == config.bind_tick {
@@ -1196,8 +1196,8 @@ pub fn demo_phase_1_5b_comparison(config: &Config) {
 
     let phase16_ok = cov_ok && sel_ok && fp_ok && abs_ok && anc_ok && thrash_ok;
     let phase17a_ok = proto_updates_ok && proto_support_ok;
-    let phase17b_ok = v_updates_ok && delta_v_ok;
-    let phase17d_ok = probe_filled_ok && probe_evals_ok && probe_converging_ok;
+    let _phase17b_ok = v_updates_ok && delta_v_ok;
+    let _phase17d_ok = probe_filled_ok && probe_evals_ok && probe_converging_ok;
 
     // Phase 1.8 acceptance criteria
     let has_wins = lifecycle_stats.total_wins > 0;
@@ -1619,7 +1619,7 @@ impl ValueStats {
     }
 
     /// Phase 1.7c: Record a value update and track if it clipped.
-    fn record_v_update(&mut self, v_before: f32, v_after: f32, v_clip: f32) {
+    fn record_v_update(&mut self, _v_before: f32, v_after: f32, v_clip: f32) {
         self.clip_total += 1;
         if v_after.abs() >= v_clip - 0.001 {
             self.clip_count += 1;
@@ -2547,7 +2547,7 @@ fn flip_bits_simple(signature: u64, n_bits: u32, rng_val: u64) -> u64 {
 // =============================================================================
 
 pub fn demo_7_mode_policy(config: &Config) {
-    use mode::{Mode, ModeAction, ModePolicy, ModePolicyConfig};
+    use mode::{ModeAction, ModePolicy, ModePolicyConfig};
 
     println!();
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -2990,11 +2990,7 @@ pub fn demo_7_mode_policy(config: &Config) {
 // =============================================================================
 
 pub fn demo_8_ablations(config: &Config) {
-    use ablate::{
-        select_reset_targets, AblationConfig, PerModeStats, ResetTargetMode, ResetTargetStats,
-        VariantReport,
-    };
-    use mode::{Mode, ModeAction, ModePolicy, ModePolicyConfig};
+    use ablate::{AblationConfig, VariantReport};
 
     println!();
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -3245,7 +3241,7 @@ fn run_ablation_variant(
     ablation_config: ablate::AblationConfig,
 ) -> ablate::VariantReport {
     use ablate::{select_reset_targets, PerModeStats, ResetTargetStats, VariantReport};
-    use mode::{Mode, ModeAction, ModePolicy, ModePolicyConfig};
+    use mode::{ModeAction, ModePolicy, ModePolicyConfig};
 
     let mode_policy_config = ModePolicyConfig {
         explore_v_max: config.mode_explore_v_max,
@@ -3303,7 +3299,6 @@ fn run_ablation_variant(
     let mut prev_topk_margin: f64 = 0.0;
     let mut prev_proto_align: f32 = 0.0;
     let mut reward_ema: f32 = 0.0;
-    let mut current_mode = Mode::Exploit;
 
     for _ep in 0..config.competitive_episodes {
         window.reset();
@@ -3417,7 +3412,7 @@ fn run_ablation_variant(
                 ablation_config.enable_reset,
                 ablation_config.enable_explore,
             );
-            current_mode = mode;
+            let current_mode = mode;
 
             // Get mode overrides and action
             let (overrides, action) = mode_policy.apply_mode_overrides(mode);
@@ -3580,7 +3575,7 @@ fn run_ablation_variant(
 
 pub fn demo_9_action_loop(config: &Config) {
     use action::{Action, ActionConfig, ActionPolicy};
-    use mode::{Mode, ModePolicy, ModePolicyConfig};
+    use mode::{ModePolicy, ModePolicyConfig};
 
     println!();
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -4129,11 +4124,7 @@ pub fn demo_9_action_loop(config: &Config) {
 // =============================================================================
 
 pub fn demo_10_action_ablations(config: &Config) {
-    use action::{Action, ActionConfig, ActionPolicy};
-    use action_ablate::{
-        ActionAblationVariant, SweepConfig, SweepPoint, VariantConfig, VariantReport,
-    };
-    use mode::{ModePolicy, ModePolicyConfig};
+    use action_ablate::{ActionAblationVariant, SweepConfig, SweepPoint, VariantConfig, VariantReport};
 
     println!();
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -4331,7 +4322,7 @@ pub fn demo_10_action_ablations(config: &Config) {
     let full_report = &reports[0]; // FULL variant
     let no_scan_report = &reports[1];
     let no_perturb_report = &reports[2];
-    let no_focus_report = &reports[3];
+    let _no_focus_report = &reports[3];
     let random_report = &reports[4];
 
     // C1) Directional effects
@@ -4505,7 +4496,7 @@ fn run_action_variant(
     budget_targets: Option<(f64, f64)>, // (scan_rate, perturb_rate) for budgeted random
 ) -> action_ablate::VariantReport {
     use action::{Action, ActionConfig, ActionPolicy};
-    use action_ablate::{BudgetedRandomAction, VariantReport};
+    use action_ablate::BudgetedRandomAction;
     use mode::{ModePolicy, ModePolicyConfig};
 
     let mode_policy_config = ModePolicyConfig {
@@ -4798,7 +4789,7 @@ fn run_action_variant(
 
     // Build report
     let action_stats = &action_policy.stats;
-    let total_actions = action_stats.total_count();
+    let _total_actions = action_stats.total_count();
 
     let mut report = action_ablate::VariantReport::new(label);
     report.scan_count = action_stats.scan_count;
@@ -4842,7 +4833,7 @@ fn run_sweep_point(
     explore_v_max_override: Option<f32>,
     reset_td_min_override: Option<f32>,
 ) -> action_ablate::SweepPoint {
-    use action::{Action, ActionConfig, ActionPolicy};
+    use action::{ActionConfig, ActionPolicy};
     use mode::{ModePolicy, ModePolicyConfig};
 
     // Create modified mode policy config
@@ -5146,10 +5137,7 @@ fn run_sweep_point(
 // =============================================================================
 
 pub fn demo_11_trigger_matched(config: &Config) {
-    use action::{Action, ActionConfig, ActionPolicy};
-    use action_ablate::{BudgetedRandomAction, TriggerMatchedRandom, TriggerTrace};
-    use mode::{ModePolicy, ModePolicyConfig};
-    use regret::{RegretConfig, RegretReport, RegretStats};
+    use regret::RegretConfig;
 
     println!();
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -5734,7 +5722,7 @@ fn run_demo11_variant_budgeted(
     scan_target: f64,
     perturb_target: f64,
 ) -> regret::RegretReport {
-    use action::{Action, ActionConfig, ActionPolicy};
+    use action::{ActionConfig, ActionPolicy};
     use action_ablate::BudgetedRandomAction;
     use mode::{ModePolicy, ModePolicyConfig};
     use regret::RegretStats;
@@ -6061,7 +6049,7 @@ fn run_demo11_variant_trigger_matched(
     regret_config: &regret::RegretConfig,
     trigger_trace: &action_ablate::TriggerTrace,
 ) -> regret::RegretReport {
-    use action::{Action, ActionConfig, ActionPolicy};
+    use action::{ActionConfig, ActionPolicy};
     use action_ablate::TriggerMatchedRandom;
     use mode::{ModePolicy, ModePolicyConfig};
     use regret::RegretStats;
@@ -6391,9 +6379,6 @@ fn run_demo11_variant_trigger_matched(
 /// Demo 12: Action Distillation
 /// Trains a lightweight linear-softmax student to imitate the teacher ActionPolicy.
 pub fn demo_12_action_distillation(config: &Config) {
-    use action::{Action, ActionConfig, ActionPolicy};
-    use mode::{Mode, ModePolicy, ModePolicyConfig};
-
     println!();
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("DEMO 12: Phase 2.0f-E - NATURAL TEACHER VIABILITY + EXPLOIT EMERGENCE");
@@ -6698,7 +6683,7 @@ pub fn demo_12_action_distillation(config: &Config) {
     // D) Budget fairness (optional for natural teacher)
     println!();
     println!("D) Budget fairness (informational):");
-    let budget_tol = 0.05; // 5% tolerance for natural teacher
+    let _budget_tol = 0.05; // 5% tolerance for natural teacher
     let scan_delta = (student_metrics.scan_rate() - calib_rates.scan_rate).abs();
     let focus_delta = (student_metrics.focus_rate() - calib_rates.focus_rate).abs();
     let perturb_delta = (student_metrics.perturb_rate() - calib_rates.perturb_rate).abs();
@@ -7158,7 +7143,7 @@ fn run_demo12_train_student(
         focus_margin_scale: config.focus_margin_scale,
         perturb_noise_amp: config.perturb_noise_amp,
     };
-    let mut action_policy = ActionPolicy::new(action_config);
+    let action_policy = ActionPolicy::new(action_config);
 
     // Use same seed as teacher baseline for consistent chamber dynamics
     let mut rng = Rng::new(config.seed.wrapping_add(0xD1571));

@@ -549,7 +549,7 @@ pub fn select_reset_targets(
         ResetTargetMode::TopK => {
             // Original behavior: dampen all top-K up to max
             let nodes: Vec<usize> = topk.iter().take(max_nodes).map(|(id, _)| *id).collect();
-            let count = nodes.len();
+            let _count = nodes.len();
             // Count how many are on-proto vs off-proto
             let mut on_proto = 0;
             let mut off_proto = 0;

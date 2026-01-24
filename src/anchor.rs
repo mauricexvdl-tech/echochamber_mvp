@@ -1411,7 +1411,7 @@ impl AnchorBank {
                 let proto_score = a_low.proto_score_against(a_high, proto_m);
 
                 // Phase 1.9d: Try standard compatibility first
-                let (compatible, block_reason) = a_low.merge_compatible_with(a_high);
+                let (compatible, _block_reason) = a_low.merge_compatible_with(a_high);
 
                 // Track cross-partition info
                 let mut is_cross_mode = false;
@@ -1611,7 +1611,7 @@ impl AnchorBank {
             low_stable,
             high_stable,
             low_support,
-            high_support,
+            _high_support,
             earliest_stable_tick,
         ) = {
             let a_low = match self.anchors.get(&id_low) {
@@ -1748,7 +1748,7 @@ impl AnchorBank {
         // Normalize proto weights to stay bounded
         {
             let a_high = self.anchors.get_mut(&id_high).unwrap();
-            let mut weight_sum: f32 = a_high.proto_w.iter().take(proto_m).sum();
+            let weight_sum: f32 = a_high.proto_w.iter().take(proto_m).sum();
             if weight_sum > 2.0 {
                 // Normalize to prevent unbounded growth
                 for i in 0..proto_m {
