@@ -554,6 +554,8 @@ pub struct ModePolicyState {
     pub chronic_enter_by_bad: u32,
     /// Enters triggered by stable_share < threshold.
     pub chronic_enter_by_unstable: u32,
+    /// Exits forced by watchdog (chronic_active_share > max_share).
+    pub chronic_exit_by_watchdog: u32,
 }
 
 impl ModePolicyState {
@@ -616,6 +618,7 @@ impl ModePolicyState {
             chronic_exit_count: 0,
             chronic_enter_by_bad: 0,
             chronic_enter_by_unstable: 0,
+            chronic_exit_by_watchdog: 0,
         }
     }
 }
@@ -969,6 +972,7 @@ impl ModePolicy {
             self.state.chronic_continuous_ticks = 0;
             self.state.chronic_enter_streak = 0;
             self.state.chronic_exit_count += 1;
+            self.state.chronic_exit_by_watchdog += 1;
         }
 
         // Escape pulse: if chronic lock continuous too long, allow brief escape
@@ -1331,6 +1335,7 @@ impl ModePolicy {
             chronic_exit_count: self.state.chronic_exit_count,
             chronic_enter_by_bad: self.state.chronic_enter_by_bad,
             chronic_enter_by_unstable: self.state.chronic_enter_by_unstable,
+            chronic_exit_by_watchdog: self.state.chronic_exit_by_watchdog,
         }
     }
 }
@@ -1361,6 +1366,7 @@ pub struct ModeStats {
     pub chronic_exit_count: u32,
     pub chronic_enter_by_bad: u32,
     pub chronic_enter_by_unstable: u32,
+    pub chronic_exit_by_watchdog: u32,
 }
 
 // ============================================================================

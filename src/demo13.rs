@@ -53,10 +53,12 @@ pub struct SeedDiagnostics {
     pub total_ticks: usize,
     // Phase 2.1f: Chronic clamp metrics
     pub chronic_lock_share: f64,
+    pub chronic_lock_total_ticks: usize,
     pub chronic_enter_count: u32,
     pub chronic_exit_count: u32,
     pub chronic_enter_by_bad: u32,
     pub chronic_enter_by_unstable: u32,
+    pub chronic_exit_by_watchdog: u32,
     // Phase 2.1e: Perturb rate
     pub perturb_rate: f64,
 }
@@ -101,15 +103,15 @@ impl WarmupStats {
 /// Print per-seed diagnostics table.
 fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
     println!();
-    println!("Per-Seed Diagnostics (Phase 2.1f):");
+    println!("Per-Seed Diagnostics (Phase 2.1g):");
     println!(
-        "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     println!(
-        "  Seed       | explore% | exploit% | stable% | bad%  | perturb% | chronic% | enters | exits | by_bad | by_unstable"
+        "  Seed       | explore% | exploit% | stable% | bad%  | perturb% | chronic% | active_ticks | enters | exits | watchdog"
     );
     println!(
-        "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     for d in diagnostics {
         let collapse_marker = if d.explore_rate > 0.25
@@ -123,7 +125,7 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
             ""
         };
         println!(
-            "  0x{:08X} | {:6.1}%  | {:6.1}%  | {:5.1}%  | {:4.1}% | {:7.1}%  | {:7.1}%  | {:6} | {:5} | {:6} | {:11}{}",
+            "  0x{:08X} | {:6.1}%  | {:6.1}%  | {:5.1}%  | {:4.1}% | {:7.1}%  | {:7.1}%  | {:12} | {:6} | {:5} | {:8}{}",
             d.seed,
             d.explore_rate * 100.0,
             d.exploit_rate * 100.0,
@@ -131,15 +133,15 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
             d.bad_state_share * 100.0,
             d.perturb_rate * 100.0,
             d.chronic_lock_share * 100.0,
+            d.chronic_lock_total_ticks,
             d.chronic_enter_count,
             d.chronic_exit_count,
-            d.chronic_enter_by_bad,
-            d.chronic_enter_by_unstable,
+            d.chronic_exit_by_watchdog,
             collapse_marker,
         );
     }
     println!(
-        "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 }
 
@@ -1104,10 +1106,12 @@ fn run_single_seed_full(
         total_ticks,
         // Phase 2.1f: Chronic clamp metrics
         chronic_lock_share,
+        chronic_lock_total_ticks: mode_stats.chronic_lock_total_ticks,
         chronic_enter_count: mode_stats.chronic_enter_count,
         chronic_exit_count: mode_stats.chronic_exit_count,
         chronic_enter_by_bad: mode_stats.chronic_enter_by_bad,
         chronic_enter_by_unstable: mode_stats.chronic_enter_by_unstable,
+        chronic_exit_by_watchdog: mode_stats.chronic_exit_by_watchdog,
         // Phase 2.1e: Perturb rate
         perturb_rate: run.perturb_rate,
     };
