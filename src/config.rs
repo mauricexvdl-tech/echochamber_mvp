@@ -279,14 +279,20 @@ pub struct Config {
     pub rescue_bad_value: f32,
 
     // =========================================================================
-    // Phase 2.1d: Chronic Instability Clamp
+    // Phase 2.1e: Chronic Instability Clamp v2 (hysteresis + watchdog)
     // =========================================================================
     /// Window size for chronic instability detection (ticks).
     pub chronic_window_ticks: u32,
-    /// Bad state share threshold to trigger clamp.
+    /// Bad state share threshold to ENTER clamp.
     pub chronic_bad_share_hi: f32,
-    /// Stable share threshold to trigger clamp (below this = clamp).
+    /// Stable share threshold to ENTER clamp (below this = clamp).
     pub chronic_stable_share_lo: f32,
+    /// Bad state share threshold to EXIT clamp (must be below this).
+    pub chronic_bad_share_hi_exit: f32,
+    /// Stable share threshold to EXIT clamp (must be above this).
+    pub chronic_stable_share_lo_exit: f32,
+    /// Ticks to hold exit conditions before actually exiting clamp.
+    pub chronic_exit_hold_ticks: u32,
     /// Max Explore rate during clamp (soft cap).
     pub chronic_explore_cap: f32,
     /// Minimum ticks to keep clamp active once triggered.
@@ -297,6 +303,24 @@ pub struct Config {
     pub chronic_focus_bias: f32,
     /// Minimum ticks before enabling chronic detection.
     pub chronic_min_ticks_before_enable: u32,
+    /// Maximum chronic active share before forced release (watchdog).
+    pub chronic_max_share: f32,
+    /// Cooldown ticks after watchdog forces release.
+    pub chronic_release_cooldown: u32,
+    /// Ticks of continuous chronic lock before escape pulse.
+    pub chronic_escape_after: u32,
+    /// Duration of escape pulse (slightly relaxed).
+    pub chronic_escape_ticks: u32,
+    /// Disallow Perturb during chronic lock (except Reset mode).
+    pub chronic_disallow_perturb: bool,
+
+    // =========================================================================
+    // Phase 2.1e: Perturb Budget Cap
+    // =========================================================================
+    /// Maximum perturb rate (hard cap).
+    pub perturb_cap: f32,
+    /// Window size for perturb budget calculation.
+    pub perturb_budget_window: usize,
 
     // =========================================================================
     // Phase 2.0e: Regret/Recovery Metrics Configuration
@@ -657,7 +681,7 @@ impl Default for Config {
             rescue_cooldown: 80,        // Longer cooldown between rescues
             post_reset_exploit_boost_ticks: 60,
             post_reset_exploit_margin_scale: 1.35, // Strong margin boost post-reset
-            catastrophic_abs_td: 0.55, // Moderate threshold
+            catastrophic_abs_td: 0.55,             // Moderate threshold
             catastrophic_value_drop: 0.10,
             exploit_proto_min_floor: 0.20, // Much higher floor - require good proto alignment
             exploit_margin_min_floor: 0.045, // Higher margin floor
@@ -670,23 +694,35 @@ impl Default for Config {
             demo13_perturb_window: 1500,
 
             // Phase 2.1c: Anti-Thrash Post-Rescue Lock defaults
-            post_rescue_lock_ticks: 250,     // Lock in Exploit for 250 ticks after rescue (very long stabilization)
-            lock_margin_min_scale: 1.40,     // Stricter margin during lock
-            lock_focus_bias: 4.0,            // Very strong Focus bias during lock
+            post_rescue_lock_ticks: 250, // Lock in Exploit for 250 ticks after rescue (very long stabilization)
+            lock_margin_min_scale: 1.40, // Stricter margin during lock
+            lock_focus_bias: 4.0,        // Very strong Focus bias during lock
             rescue_requires_bad_state: true, // Require bad state for rescue
-            rescue_bad_proto: 0.12,          // Below this = bad proto (stricter)
-            rescue_bad_margin: 0.03,         // Below this = bad margin (stricter)
-            rescue_bad_value: 0.12,          // Below this = bad value (stricter)
+            rescue_bad_proto: 0.12,      // Below this = bad proto (stricter)
+            rescue_bad_margin: 0.03,     // Below this = bad margin (stricter)
+            rescue_bad_value: 0.12,      // Below this = bad value (stricter)
 
-            // Phase 2.1d: Chronic Instability Clamp defaults
-            chronic_window_ticks: 1500,        // Shorter window for faster detection
-            chronic_bad_share_hi: 0.22,        // If bad_state > 22% in window -> clamp (stricter)
-            chronic_stable_share_lo: 0.60,     // If stable_share < 60% in window -> clamp (stricter)
-            chronic_explore_cap: 0.03,         // Max 3% Explore while clamped (very strict)
-            chronic_lock_ticks: 400,           // Once clamped, keep for 400 ticks (longer)
-            chronic_exploit_margin_scale: 1.40, // Much stricter margin during clamp
-            chronic_focus_bias: 5.0,           // Very strong Focus during clamp
-            chronic_min_ticks_before_enable: 5000, // Enable earlier
+            // Phase 2.1e: Chronic Instability Clamp v2 defaults
+            chronic_window_ticks: 2000,            // Detection window
+            chronic_bad_share_hi: 0.30,            // ENTER if bad_state > 30%
+            chronic_stable_share_lo: 0.50,         // ENTER if stable_share < 50%
+            chronic_bad_share_hi_exit: 0.18,       // EXIT requires bad_state < 18%
+            chronic_stable_share_lo_exit: 0.72,    // EXIT requires stable_share > 72%
+            chronic_exit_hold_ticks: 400,          // Hold exit conditions for 400 ticks
+            chronic_explore_cap: 0.08,             // Max 8% Explore while clamped
+            chronic_lock_ticks: 200,               // Minimum lock duration
+            chronic_exploit_margin_scale: 1.25,    // Stricter margin during clamp
+            chronic_focus_bias: 3.0,               // Focus bias during clamp
+            chronic_min_ticks_before_enable: 8000, // Wait before enabling
+            chronic_max_share: 0.40,               // Watchdog: max 40% chronic time
+            chronic_release_cooldown: 300,         // Cooldown after watchdog release
+            chronic_escape_after: 1500,            // Escape pulse after 1500 continuous ticks
+            chronic_escape_ticks: 60,              // Escape pulse duration
+            chronic_disallow_perturb: true,        // No Perturb during chronic (except Reset)
+
+            // Phase 2.1e: Perturb Budget Cap defaults
+            perturb_cap: 0.03,           // Max 3% perturb rate
+            perturb_budget_window: 2000, // Budget window size
 
             // Phase 2.0e: Regret/Recovery Metrics defaults
             regret_margin_bad: 0.02,

@@ -87,13 +87,19 @@ pub struct ModePolicyConfig {
     /// Bad state value threshold.
     pub rescue_bad_value: f32,
 
-    // Phase 2.1d: Chronic Instability Clamp
+    // Phase 2.1e: Chronic Instability Clamp v2 (hysteresis + watchdog)
     /// Window size for chronic instability detection.
     pub chronic_window_ticks: u32,
-    /// Bad state share threshold to trigger clamp.
+    /// Bad state share threshold to ENTER clamp.
     pub chronic_bad_share_hi: f32,
-    /// Stable share threshold to trigger clamp.
+    /// Stable share threshold to ENTER clamp.
     pub chronic_stable_share_lo: f32,
+    /// Bad state share threshold to EXIT clamp.
+    pub chronic_bad_share_hi_exit: f32,
+    /// Stable share threshold to EXIT clamp.
+    pub chronic_stable_share_lo_exit: f32,
+    /// Ticks to hold exit conditions before exiting.
+    pub chronic_exit_hold_ticks: u32,
     /// Max Explore rate during clamp.
     pub chronic_explore_cap: f32,
     /// Minimum ticks to keep clamp active.
@@ -104,6 +110,16 @@ pub struct ModePolicyConfig {
     pub chronic_focus_bias: f32,
     /// Minimum ticks before enabling chronic detection.
     pub chronic_min_ticks_before_enable: u32,
+    /// Maximum chronic active share (watchdog).
+    pub chronic_max_share: f32,
+    /// Cooldown after watchdog release.
+    pub chronic_release_cooldown: u32,
+    /// Continuous ticks before escape pulse.
+    pub chronic_escape_after: u32,
+    /// Escape pulse duration.
+    pub chronic_escape_ticks: u32,
+    /// Disallow Perturb during chronic (except Reset).
+    pub chronic_disallow_perturb: bool,
 }
 
 impl Default for ModePolicyConfig {
@@ -144,15 +160,23 @@ impl Default for ModePolicyConfig {
             rescue_bad_margin: 0.03,
             rescue_bad_value: 0.10,
 
-            // Phase 2.1d: Chronic Instability Clamp
+            // Phase 2.1e: Chronic Instability Clamp v2
             chronic_window_ticks: 2000,
-            chronic_bad_share_hi: 0.28,
-            chronic_stable_share_lo: 0.55,
-            chronic_explore_cap: 0.05,
-            chronic_lock_ticks: 300,
+            chronic_bad_share_hi: 0.30,
+            chronic_stable_share_lo: 0.50,
+            chronic_bad_share_hi_exit: 0.18,
+            chronic_stable_share_lo_exit: 0.72,
+            chronic_exit_hold_ticks: 400,
+            chronic_explore_cap: 0.08,
+            chronic_lock_ticks: 200,
             chronic_exploit_margin_scale: 1.25,
             chronic_focus_bias: 3.0,
             chronic_min_ticks_before_enable: 8000,
+            chronic_max_share: 0.40,
+            chronic_release_cooldown: 300,
+            chronic_escape_after: 1500,
+            chronic_escape_ticks: 60,
+            chronic_disallow_perturb: true,
         }
     }
 }
@@ -194,15 +218,23 @@ impl ModePolicyConfig {
             rescue_bad_margin: config.rescue_bad_margin,
             rescue_bad_value: config.rescue_bad_value,
 
-            // Phase 2.1d: Chronic Instability Clamp
+            // Phase 2.1e: Chronic Instability Clamp v2
             chronic_window_ticks: config.chronic_window_ticks,
             chronic_bad_share_hi: config.chronic_bad_share_hi,
             chronic_stable_share_lo: config.chronic_stable_share_lo,
+            chronic_bad_share_hi_exit: config.chronic_bad_share_hi_exit,
+            chronic_stable_share_lo_exit: config.chronic_stable_share_lo_exit,
+            chronic_exit_hold_ticks: config.chronic_exit_hold_ticks,
             chronic_explore_cap: config.chronic_explore_cap,
             chronic_lock_ticks: config.chronic_lock_ticks,
             chronic_exploit_margin_scale: config.chronic_exploit_margin_scale,
             chronic_focus_bias: config.chronic_focus_bias,
             chronic_min_ticks_before_enable: config.chronic_min_ticks_before_enable,
+            chronic_max_share: config.chronic_max_share,
+            chronic_release_cooldown: config.chronic_release_cooldown,
+            chronic_escape_after: config.chronic_escape_after,
+            chronic_escape_ticks: config.chronic_escape_ticks,
+            chronic_disallow_perturb: config.chronic_disallow_perturb,
         }
     }
 }
@@ -358,7 +390,7 @@ pub struct ModePolicyState {
     /// Total ticks spent in post-rescue lock.
     pub post_rescue_lock_total_ticks: usize,
 
-    // Phase 2.1d: Chronic Instability Clamp state
+    // Phase 2.1e: Chronic Instability Clamp v2 state
     /// Ticks remaining in chronic lock.
     pub chronic_lock_remaining: u32,
     /// Total ticks spent in chronic lock.
@@ -373,6 +405,16 @@ pub struct ModePolicyState {
     pub chronic_explore_count: u32,
     /// Total ticks for global tracking.
     pub global_tick_count: u64,
+    /// Ticks exit conditions have been satisfied.
+    pub chronic_exit_hold_count: u32,
+    /// Continuous ticks in chronic lock (for escape pulse).
+    pub chronic_continuous_ticks: u32,
+    /// Ticks in escape pulse mode.
+    pub chronic_escape_remaining: u32,
+    /// Cooldown after watchdog release.
+    pub chronic_release_cooldown: u32,
+    /// Rolling chronic active count for watchdog.
+    pub chronic_active_count: u32,
 }
 
 impl ModePolicyState {
@@ -416,7 +458,7 @@ impl ModePolicyState {
             post_rescue_lock_remaining: 0,
             post_rescue_lock_total_ticks: 0,
 
-            // Phase 2.1d: Chronic Instability Clamp state
+            // Phase 2.1e: Chronic Instability Clamp v2 state
             chronic_lock_remaining: 0,
             chronic_lock_total_ticks: 0,
             chronic_bad_count: 0,
@@ -424,6 +466,11 @@ impl ModePolicyState {
             chronic_total_count: 0,
             chronic_explore_count: 0,
             global_tick_count: 0,
+            chronic_exit_hold_count: 0,
+            chronic_continuous_ticks: 0,
+            chronic_escape_remaining: 0,
+            chronic_release_cooldown: 0,
+            chronic_active_count: 0,
         }
     }
 }
@@ -540,13 +587,27 @@ impl ModePolicy {
             self.state.post_rescue_lock_total_ticks += 1;
         }
 
-        // Phase 2.1d: Decrement chronic lock
+        // Phase 2.1e: Update chronic lock state
         if self.state.chronic_lock_remaining > 0 {
             self.state.chronic_lock_remaining -= 1;
             self.state.chronic_lock_total_ticks += 1;
+            self.state.chronic_continuous_ticks += 1;
+            self.state.chronic_active_count += 1;
+        } else {
+            self.state.chronic_continuous_ticks = 0;
         }
 
-        // Phase 2.1d: Track chronic metrics (rolling window approximation)
+        // Phase 2.1e: Decrement escape pulse
+        if self.state.chronic_escape_remaining > 0 {
+            self.state.chronic_escape_remaining -= 1;
+        }
+
+        // Phase 2.1e: Decrement release cooldown
+        if self.state.chronic_release_cooldown > 0 {
+            self.state.chronic_release_cooldown -= 1;
+        }
+
+        // Phase 2.1e: Track chronic metrics (rolling window approximation)
         self.state.global_tick_count += 1;
 
         // Determine if current tick is "bad state"
@@ -721,7 +782,8 @@ impl ModePolicy {
             true
         };
 
-        let rescue_needed = self.state.rescue_cooldown == 0 && streak_condition && secondary_condition;
+        let rescue_needed =
+            self.state.rescue_cooldown == 0 && streak_condition && secondary_condition;
 
         if rescue_needed {
             // Trigger rescue: force Reset mode
@@ -749,25 +811,76 @@ impl ModePolicy {
             return (Mode::Reset, true);
         }
 
-        // Phase 2.1d: Check and update chronic clamp
-        let chronic_enabled = self.state.global_tick_count >= self.config.chronic_min_ticks_before_enable as u64;
-        if chronic_enabled && self.state.chronic_lock_remaining == 0 {
-            // Check if chronic clamp should trigger
-            let window = self.config.chronic_window_ticks.max(1) as f32;
-            let total = self.state.chronic_total_count.max(1) as f32;
-            let effective_window = total.min(window);
+        // Phase 2.1e: Chronic clamp v2 with hysteresis + exit + watchdog
+        let chronic_enabled =
+            self.state.global_tick_count >= self.config.chronic_min_ticks_before_enable as u64;
+        let window = self.config.chronic_window_ticks.max(1) as f32;
+        let total = self.state.chronic_total_count.max(1) as f32;
+        let effective_window = total.min(window);
 
-            let bad_share = self.state.chronic_bad_count as f32 / effective_window;
-            let stable_share = self.state.chronic_stable_count as f32 / effective_window;
+        let bad_share = self.state.chronic_bad_count as f32 / effective_window;
+        let stable_share = self.state.chronic_stable_count as f32 / effective_window;
 
-            if bad_share > self.config.chronic_bad_share_hi
-                || stable_share < self.config.chronic_stable_share_lo
-            {
-                // Trigger chronic clamp
-                self.state.chronic_lock_remaining = self.config.chronic_lock_ticks;
-                // Reset explore budget counter for soft cap
-                self.state.chronic_explore_count = 0;
+        // Compute chronic active share for watchdog
+        let chronic_active_share = if self.state.global_tick_count > 0 {
+            self.state.chronic_active_count as f32 / effective_window
+        } else {
+            0.0
+        };
+
+        // Watchdog: force release if chronic is on too much
+        if self.state.chronic_lock_remaining > 0
+            && chronic_active_share > self.config.chronic_max_share
+        {
+            self.state.chronic_lock_remaining = 0;
+            self.state.chronic_release_cooldown = self.config.chronic_release_cooldown;
+            self.state.chronic_exit_hold_count = 0;
+            self.state.chronic_continuous_ticks = 0;
+        }
+
+        // Escape pulse: if chronic lock continuous too long, allow brief escape
+        if self.state.chronic_continuous_ticks >= self.config.chronic_escape_after
+            && self.state.chronic_escape_remaining == 0
+        {
+            self.state.chronic_escape_remaining = self.config.chronic_escape_ticks;
+        }
+
+        if chronic_enabled && self.state.chronic_release_cooldown == 0 {
+            if self.state.chronic_lock_remaining > 0 {
+                // Check EXIT conditions with hysteresis
+                let exit_ok = bad_share < self.config.chronic_bad_share_hi_exit
+                    && stable_share > self.config.chronic_stable_share_lo_exit;
+
+                if exit_ok {
+                    self.state.chronic_exit_hold_count += 1;
+                    if self.state.chronic_exit_hold_count >= self.config.chronic_exit_hold_ticks {
+                        // Exit chronic clamp
+                        self.state.chronic_lock_remaining = 0;
+                        self.state.chronic_exit_hold_count = 0;
+                        self.state.chronic_continuous_ticks = 0;
+                    }
+                } else {
+                    // Reset exit hold counter if conditions not met
+                    self.state.chronic_exit_hold_count = 0;
+                }
+            } else {
+                // Check ENTER conditions
+                if bad_share > self.config.chronic_bad_share_hi
+                    || stable_share < self.config.chronic_stable_share_lo
+                {
+                    // Trigger chronic clamp
+                    self.state.chronic_lock_remaining = self.config.chronic_lock_ticks;
+                    self.state.chronic_explore_count = 0;
+                    self.state.chronic_exit_hold_count = 0;
+                }
             }
+        }
+
+        // Decay chronic_active_count with window
+        if self.state.chronic_total_count >= self.config.chronic_window_ticks {
+            let decay_factor = 1.0 - 1.0 / window as f64;
+            self.state.chronic_active_count =
+                ((self.state.chronic_active_count as f64 * decay_factor) as u32).max(0);
         }
 
         // Normal mode selection with reset check
@@ -805,15 +918,23 @@ impl ModePolicy {
             }
         };
 
-        // Phase 2.1d: Apply chronic clamp - during chronic lock, ALWAYS force Exploit
-        // unless Reset is needed (handled above). This is more aggressive than soft cap.
+        // Phase 2.1e: Apply chronic clamp - during chronic lock, enforce Explore cap
+        // Exception: during escape pulse, allow slightly more Explore
         if self.state.chronic_lock_remaining > 0 && mode == Mode::Explore {
-            // Compute actual explore rate from mode counters
-            let total_modes = (self.state.explore_count + self.state.exploit_count + self.state.reset_count).max(1);
+            let total_modes =
+                (self.state.explore_count + self.state.exploit_count + self.state.reset_count)
+                    .max(1);
             let actual_explore_rate = self.state.explore_count as f32 / total_modes as f32;
 
+            // During escape pulse, use relaxed cap (2x normal)
+            let effective_cap = if self.state.chronic_escape_remaining > 0 {
+                self.config.chronic_explore_cap * 2.0
+            } else {
+                self.config.chronic_explore_cap
+            };
+
             // If actual explore rate is over cap, force Exploit
-            if actual_explore_rate >= self.config.chronic_explore_cap {
+            if actual_explore_rate >= effective_cap {
                 mode = Mode::Exploit;
             }
         }
@@ -913,6 +1034,16 @@ impl ModePolicy {
         } else {
             1.0
         }
+    }
+
+    /// Phase 2.1e: Check if Perturb is disallowed during chronic lock.
+    pub fn is_chronic_perturb_disallowed(&self) -> bool {
+        self.state.chronic_lock_remaining > 0 && self.config.chronic_disallow_perturb
+    }
+
+    /// Phase 2.1e: Check if we're in escape pulse mode.
+    pub fn is_escape_pulse_active(&self) -> bool {
+        self.state.chronic_escape_remaining > 0
     }
 
     /// Phase 2.1d: Get total ticks spent in chronic lock.

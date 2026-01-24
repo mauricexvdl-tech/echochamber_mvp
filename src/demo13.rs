@@ -53,6 +53,8 @@ pub struct SeedDiagnostics {
     pub total_ticks: usize,
     // Phase 2.1d: Chronic clamp metrics
     pub chronic_lock_share: f64,
+    // Phase 2.1e: Perturb rate
+    pub perturb_rate: f64,
 }
 
 /// Phase 2.1b: Warmup stats collector for adaptive thresholds.
@@ -95,34 +97,42 @@ impl WarmupStats {
 /// Print per-seed diagnostics table.
 fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
     println!();
-    println!("Per-Seed Diagnostics (Phase 2.1d):");
+    println!("Per-Seed Diagnostics (Phase 2.1e):");
     println!(
-        "─────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
-    println!("  Seed       | explore% | exploit% | stable% | bad%  | rescues | chronic%");
     println!(
-        "─────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "  Seed       | explore% | exploit% | stable% | bad%  | perturb% | chronic% | rescues"
+    );
+    println!(
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     for d in diagnostics {
-        let collapse_marker = if d.explore_rate > 0.25 || d.stable_share < 0.55 || d.rescue_count > 15 {
+        let collapse_marker = if d.explore_rate > 0.25
+            || d.stable_share < 0.55
+            || d.rescue_count > 15
+            || d.perturb_rate > 0.05
+            || d.chronic_lock_share > 0.50
+        {
             " ⚠"
         } else {
             ""
         };
         println!(
-            "  0x{:08X} | {:6.1}%  | {:6.1}%  | {:5.1}%  | {:4.1}% | {:7} | {:7.1}%{}",
+            "  0x{:08X} | {:6.1}%  | {:6.1}%  | {:5.1}%  | {:4.1}% | {:7.1}%  | {:7.1}%  | {:7}{}",
             d.seed,
             d.explore_rate * 100.0,
             d.exploit_rate * 100.0,
             d.stable_share * 100.0,
             d.bad_state_share * 100.0,
-            d.rescue_count,
+            d.perturb_rate * 100.0,
             d.chronic_lock_share * 100.0,
+            d.rescue_count,
             collapse_marker,
         );
     }
     println!(
-        "─────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 }
 
@@ -413,7 +423,11 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
     println!();
     println!("C4) Thrash reduction (Phase 2.1c):");
 
-    let max_rescues = full_diagnostics.iter().map(|d| d.rescue_count).max().unwrap_or(0);
+    let max_rescues = full_diagnostics
+        .iter()
+        .map(|d| d.rescue_count)
+        .max()
+        .unwrap_or(0);
     let max_rescues_ok = max_rescues <= 15;
     println!(
         "  [{}] max_rescues_per_seed <= 15: {}",
@@ -425,8 +439,14 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
     println!();
     println!("C5) Worst-seed floor (Phase 2.1c):");
 
-    let worst_coverage = full_runs.iter().map(|r| r.coverage_pos).fold(f64::INFINITY, f64::min);
-    let worst_sel_acc = full_runs.iter().map(|r| r.selective_accuracy).fold(f64::INFINITY, f64::min);
+    let worst_coverage = full_runs
+        .iter()
+        .map(|r| r.coverage_pos)
+        .fold(f64::INFINITY, f64::min);
+    let worst_sel_acc = full_runs
+        .iter()
+        .map(|r| r.selective_accuracy)
+        .fold(f64::INFINITY, f64::min);
 
     let worst_coverage_ok = worst_coverage >= 0.65;
     let worst_sel_acc_ok = worst_sel_acc >= 0.75;
@@ -445,11 +465,38 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
     let thrash_ok = max_rescues_ok;
     let worst_seed_ok = worst_coverage_ok && worst_sel_acc_ok;
 
+    // C6) Phase 2.1e: Perturb control + chronic control
+    println!();
+    println!("C6) Perturb & chronic control (Phase 2.1e):");
+
+    let perturb_rate_mean = full_agg.perturb_rate_mean;
+    let perturb_ok = perturb_rate_mean <= 0.05; // <= 5%
+    println!(
+        "  [{}] perturb_rate_mean <= 5%: {:.1}%",
+        if perturb_ok { "✓" } else { "✗" },
+        perturb_rate_mean * 100.0
+    );
+
+    let chronic_mean = full_diagnostics
+        .iter()
+        .map(|d| d.chronic_lock_share)
+        .sum::<f64>()
+        / full_diagnostics.len().max(1) as f64;
+    let chronic_ok = chronic_mean <= 0.50; // <= 50%
+    println!(
+        "  [{}] chronic_lock_share_mean <= 50%: {:.1}%",
+        if chronic_ok { "✓" } else { "✗" },
+        chronic_mean * 100.0
+    );
+
+    let perturb_chronic_ok = perturb_ok && chronic_ok;
+
     // Summary
-    let all_ok = regression_ok && policy_advantage_ok && thrash_ok && worst_seed_ok;
+    let all_ok =
+        regression_ok && policy_advantage_ok && thrash_ok && worst_seed_ok && perturb_chronic_ok;
     println!();
     if all_ok {
-        println!("  → Phase 2.1c: ALL ACCEPTANCE CRITERIA MET!");
+        println!("  → Phase 2.1e: ALL ACCEPTANCE CRITERIA MET!");
         if low_variability {
             println!("  → Low variability across seeds - results are robust.");
         }
@@ -467,7 +514,10 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
         if !worst_seed_ok {
             issues.push("worst-seed floor");
         }
-        println!("  → Phase 2.1c: Failed checks: {}", issues.join(", "));
+        if !perturb_chronic_ok {
+            issues.push("perturb/chronic control");
+        }
+        println!("  → Phase 2.1e: Failed checks: {}", issues.join(", "));
     }
 
     // ==========================================================================
@@ -534,10 +584,13 @@ fn run_single_seed_full(
         focus_margin_scale: config.focus_margin_scale,
         perturb_noise_amp: config.perturb_noise_amp,
     };
-    let mut action_policy = ActionPolicy::new_with_floor(
+    // Phase 2.1e: Use constructor with both floor and budget cap
+    let mut action_policy = ActionPolicy::new_with_floor_and_budget(
         action_config,
         config.perturb_floor_window,
         config.perturb_floor_min_rate,
+        config.perturb_budget_window,
+        config.perturb_cap,
     );
 
     let mut rng = Rng::new(seed.wrapping_add(0x7A7A_7A7A));
@@ -769,8 +822,25 @@ fn run_single_seed_full(
                 );
             }
 
-            // Phase 2.1b: Min perturb guard
-            if config.demo13_enable_min_perturb_guard && action != Action::Perturb {
+            // Phase 2.1e: Enforce perturb budget cap (BEFORE min perturb guard)
+            // If over budget and action is Perturb (not from Reset mode), downgrade to Focus
+            if action == Action::Perturb && mode != Mode::Reset {
+                if action_policy.is_perturb_over_budget() {
+                    action = Action::Focus; // Downgrade to Focus
+                }
+                // Also check chronic perturb disallow
+                if mode_policy.is_chronic_perturb_disallowed() {
+                    action = Action::Focus; // Downgrade to Focus during chronic
+                }
+            }
+
+            // Phase 2.1b: Min perturb guard (only if not over budget and not chronic-disallowed)
+            let perturb_allowed = !action_policy.is_perturb_over_budget()
+                && !mode_policy.is_chronic_perturb_disallowed();
+            if config.demo13_enable_min_perturb_guard
+                && action != Action::Perturb
+                && perturb_allowed
+            {
                 if action_policy.should_force_perturb_guard(
                     config.demo13_min_perturb_rate,
                     base_gate_passed,
@@ -1027,6 +1097,8 @@ fn run_single_seed_full(
         total_ticks,
         // Phase 2.1d: Chronic clamp metrics
         chronic_lock_share,
+        // Phase 2.1e: Perturb rate
+        perturb_rate: run.perturb_rate,
     };
 
     (run, lift_stats, diag)

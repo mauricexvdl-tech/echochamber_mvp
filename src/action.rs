@@ -385,6 +385,60 @@ pub struct PerturbFloor {
     min_rate: f32,
 }
 
+/// Phase 2.1e: Rolling window for perturb budget cap.
+#[derive(Clone, Debug)]
+pub struct PerturbBudget {
+    /// Rolling action counts: true=Perturb, false=other.
+    actions: Vec<bool>,
+    /// Window size.
+    window_size: usize,
+    /// Write index.
+    idx: usize,
+    /// Number of entries written.
+    count: usize,
+    /// Maximum perturb rate (hard cap).
+    max_rate: f32,
+}
+
+impl PerturbBudget {
+    pub fn new(window_size: usize, max_rate: f32) -> Self {
+        Self {
+            actions: vec![false; window_size],
+            window_size,
+            idx: 0,
+            count: 0,
+            max_rate,
+        }
+    }
+
+    /// Record an action.
+    pub fn record(&mut self, is_perturb: bool) {
+        self.actions[self.idx] = is_perturb;
+        self.idx = (self.idx + 1) % self.window_size;
+        if self.count < self.window_size {
+            self.count += 1;
+        }
+    }
+
+    /// Get current perturb rate in window.
+    pub fn perturb_rate(&self) -> f32 {
+        if self.count == 0 {
+            return 0.0;
+        }
+        let perturb_count = self.actions[..self.count].iter().filter(|&&a| a).count();
+        perturb_count as f32 / self.count as f32
+    }
+
+    /// Check if perturb rate is over cap.
+    pub fn over_cap(&self) -> bool {
+        // Only enforce after warm-up period
+        if self.count < self.window_size / 4 {
+            return false;
+        }
+        self.perturb_rate() >= self.max_rate
+    }
+}
+
 impl PerturbFloor {
     pub fn new(window_size: usize, min_rate: f32) -> Self {
         Self {
@@ -556,6 +610,8 @@ pub struct ActionPolicy {
     pub triggers: ActionTriggers,
     pub trigger_stats: PerturbTriggerStats,
     pub floor: Option<PerturbFloor>,
+    /// Phase 2.1e: Perturb budget cap.
+    pub budget: Option<PerturbBudget>,
 }
 
 impl ActionPolicy {
@@ -566,6 +622,7 @@ impl ActionPolicy {
             triggers: ActionTriggers::new(),
             trigger_stats: PerturbTriggerStats::new(),
             floor: None,
+            budget: None,
         }
     }
 
@@ -577,6 +634,25 @@ impl ActionPolicy {
             triggers: ActionTriggers::new(),
             trigger_stats: PerturbTriggerStats::new(),
             floor: Some(PerturbFloor::new(floor_window, floor_min_rate)),
+            budget: None,
+        }
+    }
+
+    /// Phase 2.1e: Create with perturb floor and budget cap enabled.
+    pub fn new_with_floor_and_budget(
+        config: ActionConfig,
+        floor_window: usize,
+        floor_min_rate: f32,
+        budget_window: usize,
+        budget_max_rate: f32,
+    ) -> Self {
+        Self {
+            config,
+            stats: ActionPolicyStats::new(),
+            triggers: ActionTriggers::new(),
+            trigger_stats: PerturbTriggerStats::new(),
+            floor: Some(PerturbFloor::new(floor_window, floor_min_rate)),
+            budget: Some(PerturbBudget::new(budget_window, budget_max_rate)),
         }
     }
 
@@ -655,10 +731,32 @@ impl ActionPolicy {
         (base_action, None)
     }
 
-    /// Record action in floor window (call after choosing action).
+    /// Record action in floor window and budget (call after choosing action).
     pub fn record_action_for_floor(&mut self, action: Action) {
         if let Some(ref mut floor) = self.floor {
             floor.record(action);
+        }
+        // Phase 2.1e: Also record in budget
+        if let Some(ref mut budget) = self.budget {
+            budget.record(action == Action::Perturb);
+        }
+    }
+
+    /// Phase 2.1e: Check if perturb is over budget cap.
+    pub fn is_perturb_over_budget(&self) -> bool {
+        if let Some(ref budget) = self.budget {
+            budget.over_cap()
+        } else {
+            false
+        }
+    }
+
+    /// Phase 2.1e: Get current perturb rate from budget window.
+    pub fn budget_perturb_rate(&self) -> f32 {
+        if let Some(ref budget) = self.budget {
+            budget.perturb_rate()
+        } else {
+            0.0
         }
     }
 
