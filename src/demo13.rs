@@ -15,10 +15,38 @@ use crate::lift::{self, LiftConfig, LiftStats};
 use crate::memory::RollingWindow;
 use crate::mode::{Mode, ModePolicy, ModePolicyConfig};
 use crate::multiseed::{self, SeedRun};
+use crate::results::{
+    AcceptanceResult, Demo13Result, LiftResult, ResultMeta, SeedRunResult, VariantResult,
+    AggregateResult, write_json,
+};
 use crate::rng::Rng;
+
+/// Options for running Demo 13.
+#[derive(Clone, Debug, Default)]
+pub struct Demo13Options {
+    /// Custom seeds (overrides config.demo13_num_seeds).
+    pub seeds: Option<Vec<u64>>,
+    /// Quick mode: reduced tick budgets.
+    pub quick: bool,
+    /// Output path for JSON results.
+    pub out_path: Option<String>,
+}
 
 /// Run Demo 13: Multi-seed evaluation with lift metrics.
 pub fn run(config: &Config) {
+    run_with_options(config, Demo13Options::default());
+}
+
+/// Run Demo 13 with options.
+pub fn run_with_options(config: &Config, options: Demo13Options) {
+    // Apply quick mode overrides
+    let mut config = config.clone();
+    if options.quick {
+        // Reduce tick budgets for faster CI runs while keeping metrics meaningful
+        config.competitive_episodes = 200; // Was 400 (50% reduction)
+        config.competitive_episode_ticks = 300; // Was 500 (40% reduction)
+        // Total ticks: 200*300 = 60,000 (vs 200,000 normally) - 70% faster
+    }
     println!();
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("DEMO 13: Phase 2.1 - MULTI-SEED EVALUATION + LIFT METRICS");
@@ -30,11 +58,29 @@ pub fn run(config: &Config) {
         return;
     }
 
-    let num_seeds = config.demo13_num_seeds;
+    // Get config hash for reproducibility
+    let config_hash = config.config_hash();
+
+    // Use custom seeds from options, or generate from config
+    let seeds: Vec<u64> = if let Some(ref custom_seeds) = options.seeds {
+        custom_seeds.clone()
+    } else {
+        let base_seed = config.seed;
+        (0..config.demo13_num_seeds)
+            .map(|i| base_seed.wrapping_add(0x1000_0000 * i as u64))
+            .collect()
+    };
+    let num_seeds = seeds.len();
+
     println!("Configuration:");
+    println!("  config_hash: {}", config_hash);
     println!("  num_seeds: {}", num_seeds);
+    println!("  seeds: {:?}", seeds);
     println!("  episodes_per_seed: {}", config.competitive_episodes);
     println!("  ticks_per_episode: {}", config.competitive_episode_ticks);
+    if options.quick {
+        println!("  mode: QUICK (reduced ticks for CI)");
+    }
     println!();
 
     let lift_config = LiftConfig {
@@ -43,12 +89,6 @@ pub fn run(config: &Config) {
         bad_value: config.lift_bad_value,
         recovery_window: 10,
     };
-
-    // Generate seeds
-    let base_seed = config.seed;
-    let seeds: Vec<u64> = (0..num_seeds)
-        .map(|i| base_seed.wrapping_add(0x1000_0000 * i as u64))
-        .collect();
 
     // ==========================================================================
     // Run FULL variant across all seeds
@@ -59,7 +99,7 @@ pub fn run(config: &Config) {
 
     for (i, &seed) in seeds.iter().enumerate() {
         print!("  Seed {}/{} (0x{:08X})... ", i + 1, num_seeds, seed);
-        let (run, lift_stats) = run_single_seed_full(config, &lift_config, seed);
+        let (run, lift_stats) = run_single_seed_full(&config, &lift_config, seed);
         println!(
             "cov={:.1}% sel={:.1}% FP={:.1}%",
             run.coverage_pos * 100.0,
@@ -89,7 +129,7 @@ pub fn run(config: &Config) {
     for (i, &seed) in seeds.iter().enumerate() {
         print!("  Seed {}/{} (0x{:08X})... ", i + 1, num_seeds, seed);
         let (run, lift_stats) = run_single_seed_budgeted(
-            config,
+            &config,
             &lift_config,
             seed,
             target_scan_rate,
@@ -268,6 +308,49 @@ pub fn run(config: &Config) {
             println!("  → Phase 2.1: Policy advantage OK. Regression guard failed.");
         } else {
             println!("  → Phase 2.1: Multiple criteria not met. Tuning needed.");
+        }
+    }
+
+    // ==========================================================================
+    // JSON Export (if --out specified)
+    // ==========================================================================
+    if let Some(ref out_path) = options.out_path {
+        let meta = ResultMeta::new(13, &config_hash, Some(seeds.clone()), options.quick);
+
+        let full_result = VariantResult {
+            name: "FULL".to_string(),
+            runs: full_runs.iter().map(SeedRunResult::from).collect(),
+            aggregate: AggregateResult::from(&full_agg),
+            lift: LiftResult::from(&full_lift_agg),
+        };
+
+        let budgeted_result = VariantResult {
+            name: "RANDOM_BUDGETED".to_string(),
+            runs: budgeted_runs.iter().map(SeedRunResult::from).collect(),
+            aggregate: AggregateResult::from(&budgeted_agg),
+            lift: LiftResult::from(&budgeted_lift_agg),
+        };
+
+        let acceptance = AcceptanceResult {
+            regression_guard_ok: regression_ok,
+            coverage_ok,
+            selective_accuracy_ok: selective_ok,
+            false_positive_ok: fp_ok,
+            policy_advantage_ok,
+            lift_wins,
+            all_pass: all_ok,
+        };
+
+        let result = Demo13Result {
+            meta,
+            full: full_result,
+            random_budgeted: budgeted_result,
+            acceptance,
+        };
+
+        match write_json(&result, out_path) {
+            Ok(()) => println!("\nJSON written to: {}", out_path),
+            Err(e) => eprintln!("\nError writing JSON: {}", e),
         }
     }
 }

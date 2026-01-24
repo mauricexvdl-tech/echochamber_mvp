@@ -697,4 +697,53 @@ impl Config {
         let spacing = self.competitive_episode_ticks / (n + 1);
         (1..=n).map(|i| i * spacing).collect()
     }
+
+    /// Convert config to canonical string for hashing.
+    /// Includes key parameters in stable order.
+    pub fn to_canonical_string(&self) -> String {
+        // Include key parameters that affect behavior
+        format!(
+            "config_v1:\
+            num_nodes={},num_ctx={},decay={:.4},clamp={:.2},pow_target={:.1},\
+            top_k={},train_ticks={},eval_ticks={},seed={},\
+            proto_m={},proto_eta={:.3},alpha_v={:.3},gamma_v={:.2},\
+            mode_explore_v_max={:.2},mode_exploit_v_min={:.2},mode_reset_td_min={:.2},\
+            scan_topk_scale={:.2},focus_topk_scale={:.2},perturb_noise_amp={:.3},\
+            competitive_episodes={},competitive_episode_ticks={},\
+            demo13_num_seeds={}",
+            self.num_nodes,
+            self.num_ctx,
+            self.decay_per_tick,
+            self.clamp_max_amp,
+            self.pow_target,
+            self.top_k,
+            self.train_ticks,
+            self.eval_ticks,
+            self.seed,
+            self.proto_m,
+            self.proto_eta,
+            self.alpha_v,
+            self.gamma_v,
+            self.mode_explore_v_max,
+            self.mode_exploit_v_min,
+            self.mode_reset_td_min,
+            self.scan_topk_scale,
+            self.focus_topk_scale,
+            self.perturb_noise_amp,
+            self.competitive_episodes,
+            self.competitive_episode_ticks,
+            self.demo13_num_seeds,
+        )
+    }
+
+    /// Compute SHA256 hash of canonical config string.
+    pub fn config_hash(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let canonical = self.to_canonical_string();
+        let mut hasher = Sha256::new();
+        hasher.update(canonical.as_bytes());
+        let result = hasher.finalize();
+        // Return first 16 hex chars for brevity
+        format!("{:x}", result)[..16].to_string()
+    }
 }
