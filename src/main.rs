@@ -19,8 +19,8 @@ mod rng;
 
 use config::Config;
 use demos::{
-    demo_7_mode_policy, demo_8_ablations, demo_9_action_loop, demo_10_action_ablations,
-    demo_11_trigger_matched, demo_12_action_distillation, demo_competitive_binding,
+    demo_10_action_ablations, demo_11_trigger_matched, demo_12_action_distillation,
+    demo_7_mode_policy, demo_8_ablations, demo_9_action_loop, demo_competitive_binding,
     demo_label_binding, demo_latent_causes, demo_lie_triangle, demo_phase_1_5b_comparison,
     run_capacity_sweep,
 };

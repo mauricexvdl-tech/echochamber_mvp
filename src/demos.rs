@@ -1898,8 +1898,6 @@ fn compute_reward(delta_power: f64, topk_margin: f64, proto_align: f32, config: 
     reward.clamp(-1.0, 1.0)
 }
 
-
-
 /// DEMO 5a: Baseline Phase 1.4c (unchanged competitive binding)
 fn run_demo_5a_baseline(config: &Config) -> (GlobalLabelMetrics, f64) {
     println!("DEMO 5a: Baseline (Phase 1.4c Competitive Binding)");
@@ -3612,7 +3610,7 @@ pub fn demo_9_action_loop(config: &Config) {
     };
     let mut mode_policy = ModePolicy::new(mode_policy_config);
 
-    // Initialize action policy from config
+    // Initialize action policy from config with perturb floor enabled
     let action_config = ActionConfig {
         scan_topk_scale: config.scan_topk_scale,
         focus_topk_scale: config.focus_topk_scale,
@@ -3620,7 +3618,11 @@ pub fn demo_9_action_loop(config: &Config) {
         focus_margin_scale: config.focus_margin_scale,
         perturb_noise_amp: config.perturb_noise_amp,
     };
-    let mut action_policy = ActionPolicy::new(action_config);
+    let mut action_policy = ActionPolicy::new_with_floor(
+        action_config,
+        config.perturb_floor_window,
+        config.perturb_floor_min_rate,
+    );
 
     // Use same seed as Demo 7 for comparable mode distribution
     let mut rng = Rng::new(config.seed.wrapping_add(0x7A7A_7A7A));
@@ -3773,14 +3775,37 @@ pub fn demo_9_action_loop(config: &Config) {
             // Check if base gate passes
             let base_gate_passed = confidence.passes_gate_with_params(&base_gate_params);
 
+            // Compute proto_align for trigger evaluation
+            let proto_align = if anchor_id != 0xFFFF {
+                if let Some(anchor) = anchor_bank.get_anchor(anchor_id) {
+                    anchor.proto_score(&base_topk, config.proto_m)
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+
             // Observe state for mode policy
             mode_policy.observe(global_tick, anchor_value, abs_td as f32, base_gate_passed);
 
             // Choose mode
             let mode = mode_policy.choose_mode(global_tick);
 
-            // Map Mode → Action
-            let action = action_policy.choose_action(mode);
+            // Map Mode → Action with trigger system (Phase 2.0c-FIX)
+            let (action, trigger_reason) = action_policy.choose_action_with_triggers(
+                mode,
+                abs_td as f32,
+                base_gate_passed,
+                topk_margin as f32,
+                proto_align,
+                anchor_value,
+                config,
+            );
+
+            // Record trigger for stats
+            action_policy.record_trigger(trigger_reason);
+            action_policy.record_action_for_floor(action);
 
             // Get action overrides
             let action_overrides = action_policy.get_overrides(action);
@@ -3978,6 +4003,49 @@ pub fn demo_9_action_loop(config: &Config) {
         action_stats.perturb_effectiveness_samples
     );
 
+    // Perturb trigger breakdown (Phase 2.0c-FIX)
+    let trigger_stats = &action_policy.trigger_stats;
+    let trigger_total = trigger_stats.total();
+    if trigger_total > 0 {
+        println!();
+        println!("  Perturb trigger breakdown (n={}):", trigger_total);
+        println!(
+            "    by_mode_reset: {:5} ({:5.1}%)",
+            trigger_stats.by_mode_reset,
+            trigger_stats.by_mode_reset as f64 / trigger_total as f64 * 100.0
+        );
+        println!(
+            "    by_high_td:    {:5} ({:5.1}%)",
+            trigger_stats.by_high_td,
+            trigger_stats.by_high_td as f64 / trigger_total as f64 * 100.0
+        );
+        println!(
+            "    by_gate_fail:  {:5} ({:5.1}%)",
+            trigger_stats.by_gate_fail,
+            trigger_stats.by_gate_fail as f64 / trigger_total as f64 * 100.0
+        );
+        println!(
+            "    by_low_margin: {:5} ({:5.1}%)",
+            trigger_stats.by_low_margin,
+            trigger_stats.by_low_margin as f64 / trigger_total as f64 * 100.0
+        );
+        println!(
+            "    by_off_proto:  {:5} ({:5.1}%)",
+            trigger_stats.by_off_proto,
+            trigger_stats.by_off_proto as f64 / trigger_total as f64 * 100.0
+        );
+        println!(
+            "    by_value_drop: {:5} ({:5.1}%)",
+            trigger_stats.by_value_drop,
+            trigger_stats.by_value_drop as f64 / trigger_total as f64 * 100.0
+        );
+        println!(
+            "    by_floor:      {:5} ({:5.1}%)",
+            trigger_stats.by_floor,
+            trigger_stats.by_floor as f64 / trigger_total as f64 * 100.0
+        );
+    }
+
     // C) Regression guard
     println!();
     println!("C) Regression guard:");
@@ -4124,7 +4192,9 @@ pub fn demo_9_action_loop(config: &Config) {
 // =============================================================================
 
 pub fn demo_10_action_ablations(config: &Config) {
-    use action_ablate::{ActionAblationVariant, SweepConfig, SweepPoint, VariantConfig, VariantReport};
+    use action_ablate::{
+        ActionAblationVariant, SweepConfig, SweepPoint, VariantConfig, VariantReport,
+    };
 
     println!();
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -6402,7 +6472,10 @@ pub fn demo_12_action_distillation(config: &Config) {
     println!("  budget_lambda_def:  {}", config.budget_lambda_def);
     println!("  exploit_proto_min:  {}", config.exploit_proto_min);
     println!("  exploit_margin_min: {}", config.exploit_margin_min);
-    println!("  exploit_requires_stable: {}", config.exploit_requires_stable);
+    println!(
+        "  exploit_requires_stable: {}",
+        config.exploit_requires_stable
+    );
     println!();
 
     // =========================================================================
@@ -6621,7 +6694,8 @@ pub fn demo_12_action_distillation(config: &Config) {
     println!();
 
     // Compute teacher mode rates
-    let teacher_total = teacher_per_mode.total(0) + teacher_per_mode.total(1) + teacher_per_mode.total(2);
+    let teacher_total =
+        teacher_per_mode.total(0) + teacher_per_mode.total(1) + teacher_per_mode.total(2);
     let teacher_explore_rate = teacher_per_mode.total(0) as f64 / teacher_total.max(1) as f64;
     let teacher_exploit_rate = teacher_per_mode.total(1) as f64 / teacher_total.max(1) as f64;
     let teacher_reset_rate = teacher_per_mode.total(2) as f64 / teacher_total.max(1) as f64;

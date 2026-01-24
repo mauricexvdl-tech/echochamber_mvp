@@ -6,6 +6,7 @@
 //! Actions are controlled, reversible perturbations of sampling
 //! and gating — executive control only.
 
+use crate::config::Config;
 use crate::mode::Mode;
 
 /// The three executive actions available.
@@ -317,11 +318,245 @@ impl ActionPolicyStats {
     }
 }
 
+// =============================================================================
+// Phase 2.0c-FIX: Perturb Trigger System
+// =============================================================================
+
+/// Tracks conditions that indicate "bad states" requiring intervention.
+#[derive(Clone, Debug, Default)]
+pub struct ActionTriggers {
+    /// Consecutive ticks where gate failed.
+    pub gate_fail_streak: u32,
+    /// Consecutive ticks with low margin (weak winner separation).
+    pub low_margin_streak: u32,
+    /// Consecutive ticks with low proto alignment.
+    pub off_proto_streak: u32,
+    /// Consecutive ticks with declining value.
+    pub value_drop_streak: u32,
+    /// Cooldown counter (ticks since last perturb).
+    pub cooldown: u32,
+    /// Rolling value buffer for drop detection.
+    value_buffer: [f32; 32],
+    /// Write index into value buffer.
+    value_idx: usize,
+    /// Number of values written.
+    value_count: usize,
+}
+
+/// Statistics for perturb trigger breakdown.
+#[derive(Clone, Debug, Default)]
+pub struct PerturbTriggerStats {
+    pub by_mode_reset: usize, // Triggered by Mode::Reset
+    pub by_high_td: usize,    // Triggered by high |TD|
+    pub by_gate_fail: usize,  // Triggered by gate fail streak
+    pub by_low_margin: usize, // Triggered by low margin streak
+    pub by_off_proto: usize,  // Triggered by off-proto streak
+    pub by_value_drop: usize, // Triggered by value drop streak
+    pub by_floor: usize,      // Triggered by floor mechanism
+}
+
+impl PerturbTriggerStats {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn total(&self) -> usize {
+        self.by_mode_reset
+            + self.by_high_td
+            + self.by_gate_fail
+            + self.by_low_margin
+            + self.by_off_proto
+            + self.by_value_drop
+            + self.by_floor
+    }
+}
+
+/// Rolling window for perturb floor calculation.
+#[derive(Clone, Debug)]
+pub struct PerturbFloor {
+    /// Rolling action counts: 0=Scan, 1=Focus, 2=Perturb.
+    actions: Vec<u8>,
+    /// Window size.
+    window_size: usize,
+    /// Write index.
+    idx: usize,
+    /// Number of entries written.
+    count: usize,
+    /// Target minimum perturb rate.
+    min_rate: f32,
+}
+
+impl PerturbFloor {
+    pub fn new(window_size: usize, min_rate: f32) -> Self {
+        Self {
+            actions: vec![0; window_size],
+            window_size,
+            idx: 0,
+            count: 0,
+            min_rate,
+        }
+    }
+
+    /// Record an action.
+    pub fn record(&mut self, action: Action) {
+        let code = match action {
+            Action::Scan => 0,
+            Action::Focus => 1,
+            Action::Perturb => 2,
+        };
+        self.actions[self.idx] = code;
+        self.idx = (self.idx + 1) % self.window_size;
+        if self.count < self.window_size {
+            self.count += 1;
+        }
+    }
+
+    /// Get current perturb rate in window.
+    pub fn perturb_rate(&self) -> f32 {
+        if self.count == 0 {
+            return 0.0;
+        }
+        let perturb_count = self.actions[..self.count]
+            .iter()
+            .filter(|&&a| a == 2)
+            .count();
+        perturb_count as f32 / self.count as f32
+    }
+
+    /// Check if perturb rate is below floor.
+    pub fn below_floor(&self) -> bool {
+        // Only enforce floor after warm-up period
+        if self.count < self.window_size / 4 {
+            return false;
+        }
+        self.perturb_rate() < self.min_rate
+    }
+}
+
+impl ActionTriggers {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Update trigger state based on current tick observations.
+    pub fn update(
+        &mut self,
+        gate_passed: bool,
+        topk_margin: f32,
+        proto_align: f32,
+        anchor_value: f32,
+        margin_min: f32,
+        proto_min: f32,
+        value_drop_threshold: f32,
+    ) {
+        // Update gate fail streak
+        if gate_passed {
+            self.gate_fail_streak = 0;
+        } else {
+            self.gate_fail_streak += 1;
+        }
+
+        // Update low margin streak
+        if topk_margin < margin_min {
+            self.low_margin_streak += 1;
+        } else {
+            self.low_margin_streak = 0;
+        }
+
+        // Update off-proto streak
+        if proto_align < proto_min {
+            self.off_proto_streak += 1;
+        } else {
+            self.off_proto_streak = 0;
+        }
+
+        // Update value buffer and compute drop streak
+        self.value_buffer[self.value_idx] = anchor_value;
+        self.value_idx = (self.value_idx + 1) % 32;
+        if self.value_count < 32 {
+            self.value_count += 1;
+        }
+
+        // Check for value drop (compare recent avg to older avg)
+        if self.value_count >= 16 {
+            let recent_start = (self.value_idx + 32 - 8) % 32;
+            let older_start = (self.value_idx + 32 - 24) % 32;
+
+            let mut recent_sum = 0.0f32;
+            let mut older_sum = 0.0f32;
+            for i in 0..8 {
+                recent_sum += self.value_buffer[(recent_start + i) % 32];
+                older_sum += self.value_buffer[(older_start + i) % 32];
+            }
+            let recent_avg = recent_sum / 8.0;
+            let older_avg = older_sum / 8.0;
+
+            if older_avg - recent_avg > value_drop_threshold {
+                self.value_drop_streak += 1;
+            } else {
+                self.value_drop_streak = 0;
+            }
+        }
+
+        // Decrement cooldown
+        if self.cooldown > 0 {
+            self.cooldown -= 1;
+        }
+    }
+
+    /// Check if any trigger condition is met.
+    pub fn should_perturb(
+        &self,
+        abs_td: f32,
+        td_threshold: f32,
+        fail_streak_threshold: u32,
+        margin_streak_threshold: u32,
+        offproto_streak_threshold: u32,
+        value_streak_threshold: u32,
+    ) -> Option<&'static str> {
+        // Cooldown active - no trigger
+        if self.cooldown > 0 {
+            return None;
+        }
+
+        // Check triggers in priority order
+        if abs_td >= td_threshold {
+            return Some("high_td");
+        }
+        if self.gate_fail_streak >= fail_streak_threshold {
+            return Some("gate_fail");
+        }
+        if self.low_margin_streak >= margin_streak_threshold {
+            return Some("low_margin");
+        }
+        if self.off_proto_streak >= offproto_streak_threshold {
+            return Some("off_proto");
+        }
+        if self.value_drop_streak >= value_streak_threshold {
+            return Some("value_drop");
+        }
+
+        None
+    }
+
+    /// Reset trigger after perturb is applied.
+    pub fn on_perturb(&mut self, cooldown_ticks: u32) {
+        self.gate_fail_streak = 0;
+        self.low_margin_streak = 0;
+        self.off_proto_streak = 0;
+        self.value_drop_streak = 0;
+        self.cooldown = cooldown_ticks;
+    }
+}
+
 /// The action policy controller.
 #[derive(Clone, Debug)]
 pub struct ActionPolicy {
     pub config: ActionConfig,
     pub stats: ActionPolicyStats,
+    pub triggers: ActionTriggers,
+    pub trigger_stats: PerturbTriggerStats,
+    pub floor: Option<PerturbFloor>,
 }
 
 impl ActionPolicy {
@@ -329,12 +564,119 @@ impl ActionPolicy {
         Self {
             config,
             stats: ActionPolicyStats::new(),
+            triggers: ActionTriggers::new(),
+            trigger_stats: PerturbTriggerStats::new(),
+            floor: None,
         }
     }
 
-    /// Choose action based on current mode.
+    /// Create with perturb floor enabled.
+    pub fn new_with_floor(config: ActionConfig, floor_window: usize, floor_min_rate: f32) -> Self {
+        Self {
+            config,
+            stats: ActionPolicyStats::new(),
+            triggers: ActionTriggers::new(),
+            trigger_stats: PerturbTriggerStats::new(),
+            floor: Some(PerturbFloor::new(floor_window, floor_min_rate)),
+        }
+    }
+
+    /// Choose action based on current mode (basic, no triggers).
     pub fn choose_action(&self, mode: Mode) -> Action {
         Action::from_mode(mode)
+    }
+
+    /// Choose action with trigger system enabled.
+    /// Returns (action, trigger_reason) where trigger_reason is Some if perturb was triggered.
+    pub fn choose_action_with_triggers(
+        &mut self,
+        mode: Mode,
+        abs_td: f32,
+        gate_passed: bool,
+        topk_margin: f32,
+        proto_align: f32,
+        anchor_value: f32,
+        config: &crate::config::Config,
+    ) -> (Action, Option<&'static str>) {
+        // Update trigger state
+        self.triggers.update(
+            gate_passed,
+            topk_margin as f32,
+            proto_align,
+            anchor_value,
+            config.perturb_trig_margin_min,
+            config.perturb_trig_proto_min,
+            config.perturb_trig_value_drop,
+        );
+
+        // Base action from mode
+        let base_action = Action::from_mode(mode);
+
+        // If mode already wants Perturb (Reset mode), use it
+        if base_action == Action::Perturb {
+            self.triggers.on_perturb(config.perturb_cooldown_ticks);
+            return (Action::Perturb, Some("mode_reset"));
+        }
+
+        // Check if extra triggers are enabled
+        if !config.perturb_extra_triggers {
+            return (base_action, None);
+        }
+
+        // Check trigger conditions
+        if let Some(reason) = self.triggers.should_perturb(
+            abs_td,
+            config.mode_reset_td_min,
+            config.perturb_trig_fail_streak,
+            config.perturb_trig_margin_streak,
+            config.perturb_trig_offproto_streak,
+            config.perturb_trig_value_streak,
+        ) {
+            self.triggers.on_perturb(config.perturb_cooldown_ticks);
+            return (Action::Perturb, Some(reason));
+        }
+
+        // Check floor mechanism
+        if config.perturb_floor_enabled {
+            if let Some(ref floor) = self.floor {
+                if floor.below_floor() && self.triggers.cooldown == 0 {
+                    // Floor trigger: use weaker conditions
+                    // Trigger if any of: gate failed, low margin, or off-proto (single tick)
+                    if !gate_passed
+                        || topk_margin < config.perturb_trig_margin_min * 2.0
+                        || proto_align < config.perturb_trig_proto_min * 1.5
+                    {
+                        self.triggers.on_perturb(config.perturb_cooldown_ticks);
+                        return (Action::Perturb, Some("floor"));
+                    }
+                }
+            }
+        }
+
+        (base_action, None)
+    }
+
+    /// Record action in floor window (call after choosing action).
+    pub fn record_action_for_floor(&mut self, action: Action) {
+        if let Some(ref mut floor) = self.floor {
+            floor.record(action);
+        }
+    }
+
+    /// Update trigger stats based on trigger reason.
+    pub fn record_trigger(&mut self, reason: Option<&'static str>) {
+        if let Some(r) = reason {
+            match r {
+                "mode_reset" => self.trigger_stats.by_mode_reset += 1,
+                "high_td" => self.trigger_stats.by_high_td += 1,
+                "gate_fail" => self.trigger_stats.by_gate_fail += 1,
+                "low_margin" => self.trigger_stats.by_low_margin += 1,
+                "off_proto" => self.trigger_stats.by_off_proto += 1,
+                "value_drop" => self.trigger_stats.by_value_drop += 1,
+                "floor" => self.trigger_stats.by_floor += 1,
+                _ => {}
+            }
+        }
     }
 
     /// Choose action with ablation configuration applied.

@@ -269,7 +269,15 @@ impl ModePolicy {
         gate_passed: bool,
     ) {
         // Delegate to extended observe with default extended values
-        self.observe_extended(current_tick, anchor_value, abs_td, gate_passed, 0.0, 0.0, false);
+        self.observe_extended(
+            current_tick,
+            anchor_value,
+            abs_td,
+            gate_passed,
+            0.0,
+            0.0,
+            false,
+        );
     }
 
     /// Extended observe with proto_align, margin, and stable flag for natural Exploit emergence.

@@ -158,7 +158,12 @@ impl Demo12Diagnostics {
         for (i, &count) in self.v_buckets.iter().enumerate() {
             let pct = 100.0 * count as f64 / total as f64;
             if pct >= 1.0 {
-                print!("[{:.1}-{:.1}):{:.0}% ", i as f64 * 0.1, (i + 1) as f64 * 0.1, pct);
+                print!(
+                    "[{:.1}-{:.1}):{:.0}% ",
+                    i as f64 * 0.1,
+                    (i + 1) as f64 * 0.1,
+                    pct
+                );
             }
         }
         println!();
@@ -171,7 +176,12 @@ impl Demo12Diagnostics {
         for (i, &count) in self.proto_buckets.iter().enumerate() {
             let pct = 100.0 * count as f64 / total as f64;
             if pct >= 1.0 {
-                print!("[{:.1}-{:.1}):{:.0}% ", i as f64 * 0.1, (i + 1) as f64 * 0.1, pct);
+                print!(
+                    "[{:.1}-{:.1}):{:.0}% ",
+                    i as f64 * 0.1,
+                    (i + 1) as f64 * 0.1,
+                    pct
+                );
             }
         }
         println!();
@@ -184,7 +194,12 @@ impl Demo12Diagnostics {
         for (i, &count) in self.margin_buckets.iter().enumerate() {
             let pct = 100.0 * count as f64 / total as f64;
             if pct >= 1.0 {
-                print!("[{:.2}-{:.2}):{:.0}% ", i as f64 * 0.02, (i + 1) as f64 * 0.02, pct);
+                print!(
+                    "[{:.2}-{:.2}):{:.0}% ",
+                    i as f64 * 0.02,
+                    (i + 1) as f64 * 0.02,
+                    pct
+                );
             }
         }
         println!();

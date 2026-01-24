@@ -319,6 +319,34 @@ pub struct Config {
     pub perturb_noise_amp: f32,
 
     // =========================================================================
+    // Phase 2.0c-FIX: Perturb Trigger Reliability
+    // =========================================================================
+    /// Enable extra perturb triggers (gate fail, low margin, off-proto, value drop).
+    pub perturb_extra_triggers: bool,
+    /// Enable perturb floor (ensures minimum perturb rate).
+    pub perturb_floor_enabled: bool,
+    /// Minimum perturb rate target for floor (0.005 = 0.5%).
+    pub perturb_floor_min_rate: f32,
+    /// Window size for perturb floor rate calculation.
+    pub perturb_floor_window: usize,
+    /// Gate fail streak threshold to trigger perturb.
+    pub perturb_trig_fail_streak: u32,
+    /// Minimum margin threshold (below = "low margin").
+    pub perturb_trig_margin_min: f32,
+    /// Low margin streak threshold to trigger perturb.
+    pub perturb_trig_margin_streak: u32,
+    /// Minimum proto alignment threshold (below = "off-proto").
+    pub perturb_trig_proto_min: f32,
+    /// Off-proto streak threshold to trigger perturb.
+    pub perturb_trig_offproto_streak: u32,
+    /// Value drop threshold over rolling window.
+    pub perturb_trig_value_drop: f32,
+    /// Value drop streak threshold to trigger perturb.
+    pub perturb_trig_value_streak: u32,
+    /// Cooldown ticks after perturb before next trigger allowed.
+    pub perturb_cooldown_ticks: u32,
+
+    // =========================================================================
     // Phase 1.9b: CONSOLIDATION (Aggressive merge scanning + flicker elimination)
     // =========================================================================
     /// How often (in ticks) to scan for merge candidates (aggressive: 10).
@@ -557,10 +585,10 @@ impl Default for Config {
             // - proto_align mean ~0.126, so threshold 0.12 lets ~50% qualify
             // - margin mean ~0.11, so threshold 0.04 lets most qualify
             // - stable anchors ~0%, so disable stability requirement
-            exploit_proto_min: 0.12,       // Relaxed: ~50% of ticks have proto >= 0.12
-            exploit_margin_min: 0.04,      // Keep: most ticks have margin >= 0.04
+            exploit_proto_min: 0.12, // Relaxed: ~50% of ticks have proto >= 0.12
+            exploit_margin_min: 0.04, // Keep: most ticks have margin >= 0.04
             exploit_requires_stable: false, // Disabled: no anchors become stable
-            focus_bias_exploit: 0.0,       // No artificial bias; rely on mode->action mapping
+            focus_bias_exploit: 0.0, // No artificial bias; rely on mode->action mapping
 
             // Phase 2.0a: Mode Policy defaults
             enable_mode_policy: true,
@@ -583,6 +611,20 @@ impl Default for Config {
             scan_margin_scale: 0.80,
             focus_margin_scale: 1.30,
             perturb_noise_amp: 0.02,
+
+            // Phase 2.0c-FIX: Perturb Trigger Reliability defaults
+            perturb_extra_triggers: true, // Enable extra triggers by default
+            perturb_floor_enabled: true,  // Enable perturb floor
+            perturb_floor_min_rate: 0.005, // Target minimum 0.5%
+            perturb_floor_window: 2000,   // Rolling window for floor calculation
+            perturb_trig_fail_streak: 5,  // Gate fail streak threshold
+            perturb_trig_margin_min: 0.02, // Below this = "low margin"
+            perturb_trig_margin_streak: 20, // Low margin streak threshold
+            perturb_trig_proto_min: 0.10, // Below this = "off-proto"
+            perturb_trig_offproto_streak: 30, // Off-proto streak threshold
+            perturb_trig_value_drop: 0.08, // Value drop threshold
+            perturb_trig_value_streak: 8, // Value drop streak threshold
+            perturb_cooldown_ticks: 100,  // Cooldown after perturb
 
             // Phase 1.9e: CONSOLIDATION defaults (balanced merge + stable accumulation)
             merge_scan_period: 50, // Phase 1.9e: 40 -> 50 (less frequent for stable accumulation)
