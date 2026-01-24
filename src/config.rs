@@ -279,6 +279,26 @@ pub struct Config {
     pub rescue_bad_value: f32,
 
     // =========================================================================
+    // Phase 2.1d: Chronic Instability Clamp
+    // =========================================================================
+    /// Window size for chronic instability detection (ticks).
+    pub chronic_window_ticks: u32,
+    /// Bad state share threshold to trigger clamp.
+    pub chronic_bad_share_hi: f32,
+    /// Stable share threshold to trigger clamp (below this = clamp).
+    pub chronic_stable_share_lo: f32,
+    /// Max Explore rate during clamp (soft cap).
+    pub chronic_explore_cap: f32,
+    /// Minimum ticks to keep clamp active once triggered.
+    pub chronic_lock_ticks: u32,
+    /// Margin scale during chronic clamp.
+    pub chronic_exploit_margin_scale: f32,
+    /// Focus bias during chronic clamp.
+    pub chronic_focus_bias: f32,
+    /// Minimum ticks before enabling chronic detection.
+    pub chronic_min_ticks_before_enable: u32,
+
+    // =========================================================================
     // Phase 2.0e: Regret/Recovery Metrics Configuration
     // =========================================================================
     /// Margin threshold for "bad state" (topk_margin < margin_bad).
@@ -657,6 +677,16 @@ impl Default for Config {
             rescue_bad_proto: 0.12,          // Below this = bad proto (stricter)
             rescue_bad_margin: 0.03,         // Below this = bad margin (stricter)
             rescue_bad_value: 0.12,          // Below this = bad value (stricter)
+
+            // Phase 2.1d: Chronic Instability Clamp defaults
+            chronic_window_ticks: 1500,        // Shorter window for faster detection
+            chronic_bad_share_hi: 0.22,        // If bad_state > 22% in window -> clamp (stricter)
+            chronic_stable_share_lo: 0.60,     // If stable_share < 60% in window -> clamp (stricter)
+            chronic_explore_cap: 0.03,         // Max 3% Explore while clamped (very strict)
+            chronic_lock_ticks: 400,           // Once clamped, keep for 400 ticks (longer)
+            chronic_exploit_margin_scale: 1.40, // Much stricter margin during clamp
+            chronic_focus_bias: 5.0,           // Very strong Focus during clamp
+            chronic_min_ticks_before_enable: 5000, // Enable earlier
 
             // Phase 2.0e: Regret/Recovery Metrics defaults
             regret_margin_bad: 0.02,

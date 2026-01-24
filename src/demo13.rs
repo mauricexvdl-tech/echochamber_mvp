@@ -51,6 +51,8 @@ pub struct SeedDiagnostics {
     pub rescues_per_10k: f64,
     pub post_rescue_lock_share: f64,
     pub total_ticks: usize,
+    // Phase 2.1d: Chronic clamp metrics
+    pub chronic_lock_share: f64,
 }
 
 /// Phase 2.1b: Warmup stats collector for adaptive thresholds.
@@ -93,35 +95,34 @@ impl WarmupStats {
 /// Print per-seed diagnostics table.
 fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
     println!();
-    println!("Per-Seed Diagnostics (Phase 2.1c):");
+    println!("Per-Seed Diagnostics (Phase 2.1d):");
     println!(
-        "───────────────────────────────────────────────────────────────────────────────────────────────────"
+        "─────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
-    println!("  Seed       | explore% | exploit% | stable% | bad%  | rescues | resc/10k | lock%");
+    println!("  Seed       | explore% | exploit% | stable% | bad%  | rescues | chronic%");
     println!(
-        "───────────────────────────────────────────────────────────────────────────────────────────────────"
+        "─────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     for d in diagnostics {
-        let collapse_marker = if d.explore_rate > 0.80 || d.exploit_rate < 0.15 || d.rescue_count > 15 {
+        let collapse_marker = if d.explore_rate > 0.25 || d.stable_share < 0.55 || d.rescue_count > 15 {
             " ⚠"
         } else {
             ""
         };
         println!(
-            "  0x{:08X} | {:6.1}%  | {:6.1}%  | {:5.1}%  | {:4.1}% | {:7} | {:8.1} | {:5.1}%{}",
+            "  0x{:08X} | {:6.1}%  | {:6.1}%  | {:5.1}%  | {:4.1}% | {:7} | {:7.1}%{}",
             d.seed,
             d.explore_rate * 100.0,
             d.exploit_rate * 100.0,
             d.stable_share * 100.0,
             d.bad_state_share * 100.0,
             d.rescue_count,
-            d.rescues_per_10k,
-            d.post_rescue_lock_share * 100.0,
+            d.chronic_lock_share * 100.0,
             collapse_marker,
         );
     }
     println!(
-        "───────────────────────────────────────────────────────────────────────────────────────────────────"
+        "─────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 }
 
@@ -738,9 +739,11 @@ fn run_single_seed_full(
                 Mode::Reset => reset_count += 1,
             }
 
-            // Phase 2.1c: Action policy with post-rescue lock bias
-            let lock_active = mode_policy.is_post_rescue_lock_active();
-            let lock_focus_bias = mode_policy.get_lock_focus_bias();
+            // Phase 2.1c/d: Action policy with combined lock bias (post-rescue + chronic)
+            let post_rescue_active = mode_policy.is_post_rescue_lock_active();
+            let post_rescue_bias = mode_policy.get_lock_focus_bias();
+            let chronic_active = mode_policy.is_chronic_lock_active();
+            let chronic_bias = mode_policy.get_chronic_focus_bias();
 
             // First get base action with triggers
             let (mut action, trigger_reason) = action_policy.choose_action_with_triggers(
@@ -753,12 +756,14 @@ fn run_single_seed_full(
                 config,
             );
 
-            // Phase 2.1c: Override with lock bias if active (except for Perturb from triggers)
-            if lock_active && trigger_reason.is_none() {
-                action = action_policy.choose_action_with_lock(
+            // Phase 2.1d: Override with combined lock bias if active (except for Perturb from triggers)
+            if (post_rescue_active || chronic_active) && trigger_reason.is_none() {
+                action = action_policy.choose_action_with_combined_lock(
                     mode,
-                    lock_active,
-                    lock_focus_bias,
+                    post_rescue_active,
+                    post_rescue_bias,
+                    chronic_active,
+                    chronic_bias,
                     abs_td as f32,
                     config.mode_reset_td_min,
                 );
@@ -790,10 +795,14 @@ fn run_single_seed_full(
             let mut adjusted_gate_params = base_gate_params.clone();
             adjusted_gate_params.margin_mult *= action_overrides.margin_scale as f64;
 
-            // Phase 2.1c: Apply lock margin scale during post-rescue lock
-            if lock_active {
+            // Phase 2.1c/d: Apply lock margin scale during post-rescue or chronic lock
+            if post_rescue_active {
                 let lock_margin_scale = mode_policy.get_lock_margin_scale();
                 adjusted_gate_params.margin_mult *= lock_margin_scale as f64;
+            }
+            if chronic_active {
+                let chronic_margin_scale = mode_policy.get_chronic_margin_scale();
+                adjusted_gate_params.margin_mult *= chronic_margin_scale as f64;
             }
 
             let gate_passed = confidence.passes_gate_with_params(&adjusted_gate_params);
@@ -961,6 +970,13 @@ fn run_single_seed_full(
         0.0
     };
 
+    // Phase 2.1d: Compute chronic lock share
+    let chronic_lock_share = if total_ticks > 0 {
+        mode_stats.chronic_lock_total_ticks as f64 / total_ticks as f64
+    } else {
+        0.0
+    };
+
     let diag = SeedDiagnostics {
         seed,
         proto_align_mean: if !warmup_stats.proto_samples.is_empty() {
@@ -1009,6 +1025,8 @@ fn run_single_seed_full(
         rescues_per_10k,
         post_rescue_lock_share,
         total_ticks,
+        // Phase 2.1d: Chronic clamp metrics
+        chronic_lock_share,
     };
 
     (run, lift_stats, diag)

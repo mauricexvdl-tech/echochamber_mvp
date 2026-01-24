@@ -86,6 +86,24 @@ pub struct ModePolicyConfig {
     pub rescue_bad_margin: f64,
     /// Bad state value threshold.
     pub rescue_bad_value: f32,
+
+    // Phase 2.1d: Chronic Instability Clamp
+    /// Window size for chronic instability detection.
+    pub chronic_window_ticks: u32,
+    /// Bad state share threshold to trigger clamp.
+    pub chronic_bad_share_hi: f32,
+    /// Stable share threshold to trigger clamp.
+    pub chronic_stable_share_lo: f32,
+    /// Max Explore rate during clamp.
+    pub chronic_explore_cap: f32,
+    /// Minimum ticks to keep clamp active.
+    pub chronic_lock_ticks: u32,
+    /// Margin scale during chronic clamp.
+    pub chronic_exploit_margin_scale: f32,
+    /// Focus bias during chronic clamp.
+    pub chronic_focus_bias: f32,
+    /// Minimum ticks before enabling chronic detection.
+    pub chronic_min_ticks_before_enable: u32,
 }
 
 impl Default for ModePolicyConfig {
@@ -125,6 +143,16 @@ impl Default for ModePolicyConfig {
             rescue_bad_proto: 0.12,
             rescue_bad_margin: 0.03,
             rescue_bad_value: 0.10,
+
+            // Phase 2.1d: Chronic Instability Clamp
+            chronic_window_ticks: 2000,
+            chronic_bad_share_hi: 0.28,
+            chronic_stable_share_lo: 0.55,
+            chronic_explore_cap: 0.05,
+            chronic_lock_ticks: 300,
+            chronic_exploit_margin_scale: 1.25,
+            chronic_focus_bias: 3.0,
+            chronic_min_ticks_before_enable: 8000,
         }
     }
 }
@@ -165,6 +193,16 @@ impl ModePolicyConfig {
             rescue_bad_proto: config.rescue_bad_proto,
             rescue_bad_margin: config.rescue_bad_margin,
             rescue_bad_value: config.rescue_bad_value,
+
+            // Phase 2.1d: Chronic Instability Clamp
+            chronic_window_ticks: config.chronic_window_ticks,
+            chronic_bad_share_hi: config.chronic_bad_share_hi,
+            chronic_stable_share_lo: config.chronic_stable_share_lo,
+            chronic_explore_cap: config.chronic_explore_cap,
+            chronic_lock_ticks: config.chronic_lock_ticks,
+            chronic_exploit_margin_scale: config.chronic_exploit_margin_scale,
+            chronic_focus_bias: config.chronic_focus_bias,
+            chronic_min_ticks_before_enable: config.chronic_min_ticks_before_enable,
         }
     }
 }
@@ -319,6 +357,22 @@ pub struct ModePolicyState {
     pub post_rescue_lock_remaining: u32,
     /// Total ticks spent in post-rescue lock.
     pub post_rescue_lock_total_ticks: usize,
+
+    // Phase 2.1d: Chronic Instability Clamp state
+    /// Ticks remaining in chronic lock.
+    pub chronic_lock_remaining: u32,
+    /// Total ticks spent in chronic lock.
+    pub chronic_lock_total_ticks: usize,
+    /// Rolling bad_state count for chronic detection.
+    pub chronic_bad_count: u32,
+    /// Rolling stable_tick count for chronic detection.
+    pub chronic_stable_count: u32,
+    /// Rolling total count for window.
+    pub chronic_total_count: u32,
+    /// Rolling explore count for soft cap.
+    pub chronic_explore_count: u32,
+    /// Total ticks for global tracking.
+    pub global_tick_count: u64,
 }
 
 impl ModePolicyState {
@@ -361,6 +415,15 @@ impl ModePolicyState {
             // Phase 2.1c: Post-rescue lock state
             post_rescue_lock_remaining: 0,
             post_rescue_lock_total_ticks: 0,
+
+            // Phase 2.1d: Chronic Instability Clamp state
+            chronic_lock_remaining: 0,
+            chronic_lock_total_ticks: 0,
+            chronic_bad_count: 0,
+            chronic_stable_count: 0,
+            chronic_total_count: 0,
+            chronic_explore_count: 0,
+            global_tick_count: 0,
         }
     }
 }
@@ -475,6 +538,49 @@ impl ModePolicy {
         if self.state.post_rescue_lock_remaining > 0 {
             self.state.post_rescue_lock_remaining -= 1;
             self.state.post_rescue_lock_total_ticks += 1;
+        }
+
+        // Phase 2.1d: Decrement chronic lock
+        if self.state.chronic_lock_remaining > 0 {
+            self.state.chronic_lock_remaining -= 1;
+            self.state.chronic_lock_total_ticks += 1;
+        }
+
+        // Phase 2.1d: Track chronic metrics (rolling window approximation)
+        self.state.global_tick_count += 1;
+
+        // Determine if current tick is "bad state"
+        let is_bad_state = !gate_passed
+            || (topk_margin < self.config.rescue_bad_margin
+                && proto_align < self.config.rescue_bad_proto
+                && anchor_value < self.config.rescue_bad_value);
+
+        // Update rolling counters (with decay for window approximation)
+        let window = self.config.chronic_window_ticks as u64;
+        if self.state.chronic_total_count < self.config.chronic_window_ticks {
+            // Still filling window
+            self.state.chronic_total_count += 1;
+            if is_bad_state {
+                self.state.chronic_bad_count += 1;
+            }
+            if is_stable {
+                self.state.chronic_stable_count += 1;
+            }
+        } else {
+            // Window full: use decay approximation (subtract 1/window worth, add new)
+            // Decay old values
+            let decay_factor = 1.0 - 1.0 / window as f64;
+            self.state.chronic_bad_count =
+                ((self.state.chronic_bad_count as f64 * decay_factor) as u32).max(0);
+            self.state.chronic_stable_count =
+                ((self.state.chronic_stable_count as f64 * decay_factor) as u32).max(0);
+            // Add new observation
+            if is_bad_state {
+                self.state.chronic_bad_count += 1;
+            }
+            if is_stable {
+                self.state.chronic_stable_count += 1;
+            }
         }
 
         // Check reset effectiveness after 10 ticks
@@ -643,10 +749,31 @@ impl ModePolicy {
             return (Mode::Reset, true);
         }
 
+        // Phase 2.1d: Check and update chronic clamp
+        let chronic_enabled = self.state.global_tick_count >= self.config.chronic_min_ticks_before_enable as u64;
+        if chronic_enabled && self.state.chronic_lock_remaining == 0 {
+            // Check if chronic clamp should trigger
+            let window = self.config.chronic_window_ticks.max(1) as f32;
+            let total = self.state.chronic_total_count.max(1) as f32;
+            let effective_window = total.min(window);
+
+            let bad_share = self.state.chronic_bad_count as f32 / effective_window;
+            let stable_share = self.state.chronic_stable_count as f32 / effective_window;
+
+            if bad_share > self.config.chronic_bad_share_hi
+                || stable_share < self.config.chronic_stable_share_lo
+            {
+                // Trigger chronic clamp
+                self.state.chronic_lock_remaining = self.config.chronic_lock_ticks;
+                // Reset explore budget counter for soft cap
+                self.state.chronic_explore_count = 0;
+            }
+        }
+
         // Normal mode selection with reset check
         let should_reset = self.state.cooldown == 0 && self.check_reset_conditions();
 
-        let mode = if should_reset {
+        let mut mode = if should_reset {
             let pre_td_values = self.state.recent_abs_td.last_n(10);
             if !pre_td_values.is_empty() {
                 self.state.pre_reset_td_mean =
@@ -678,6 +805,19 @@ impl ModePolicy {
             }
         };
 
+        // Phase 2.1d: Apply chronic clamp - during chronic lock, ALWAYS force Exploit
+        // unless Reset is needed (handled above). This is more aggressive than soft cap.
+        if self.state.chronic_lock_remaining > 0 && mode == Mode::Explore {
+            // Compute actual explore rate from mode counters
+            let total_modes = (self.state.explore_count + self.state.exploit_count + self.state.reset_count).max(1);
+            let actual_explore_rate = self.state.explore_count as f32 / total_modes as f32;
+
+            // If actual explore rate is over cap, force Exploit
+            if actual_explore_rate >= self.config.chronic_explore_cap {
+                mode = Mode::Exploit;
+            }
+        }
+
         // Update streaks and counters
         match mode {
             Mode::Explore => {
@@ -686,6 +826,10 @@ impl ModePolicy {
                 self.state.exploit_streak = 0;
                 if self.state.explore_streak > self.state.explore_streak_max {
                     self.state.explore_streak_max = self.state.explore_streak;
+                }
+                // Phase 2.1d: Track explore for chronic soft cap
+                if self.state.chronic_lock_remaining > 0 {
+                    self.state.chronic_explore_count += 1;
                 }
             }
             Mode::Exploit => {
@@ -746,6 +890,34 @@ impl ModePolicy {
     /// Phase 2.1c: Get total ticks spent in post-rescue lock.
     pub fn post_rescue_lock_total_ticks(&self) -> usize {
         self.state.post_rescue_lock_total_ticks
+    }
+
+    /// Phase 2.1d: Check if chronic clamp is active.
+    pub fn is_chronic_lock_active(&self) -> bool {
+        self.state.chronic_lock_remaining > 0
+    }
+
+    /// Phase 2.1d: Get Focus bias during chronic clamp.
+    pub fn get_chronic_focus_bias(&self) -> f32 {
+        if self.state.chronic_lock_remaining > 0 {
+            self.config.chronic_focus_bias
+        } else {
+            0.0
+        }
+    }
+
+    /// Phase 2.1d: Get margin scale during chronic clamp.
+    pub fn get_chronic_margin_scale(&self) -> f32 {
+        if self.state.chronic_lock_remaining > 0 {
+            self.config.chronic_exploit_margin_scale
+        } else {
+            1.0
+        }
+    }
+
+    /// Phase 2.1d: Get total ticks spent in chronic lock.
+    pub fn chronic_lock_total_ticks(&self) -> usize {
+        self.state.chronic_lock_total_ticks
     }
 
     /// Check if reset conditions are met.
@@ -862,6 +1034,8 @@ impl ModePolicy {
             rescue_count: self.state.rescue_count,
             // Phase 2.1c: Post-rescue lock metrics
             post_rescue_lock_total_ticks: self.state.post_rescue_lock_total_ticks,
+            // Phase 2.1d: Chronic clamp metrics
+            chronic_lock_total_ticks: self.state.chronic_lock_total_ticks,
         }
     }
 }
@@ -886,6 +1060,8 @@ pub struct ModeStats {
     pub rescue_count: usize,
     // Phase 2.1c: Post-rescue lock metrics
     pub post_rescue_lock_total_ticks: usize,
+    // Phase 2.1d: Chronic clamp metrics
+    pub chronic_lock_total_ticks: usize,
 }
 
 // ============================================================================

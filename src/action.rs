@@ -774,6 +774,51 @@ impl ActionPolicy {
         base_action
     }
 
+    /// Phase 2.1d: Choose action with combined lock bias (post-rescue + chronic).
+    /// Combines both lock types for Focus bias.
+    pub fn choose_action_with_combined_lock(
+        &self,
+        mode: Mode,
+        post_rescue_active: bool,
+        post_rescue_bias: f32,
+        chronic_active: bool,
+        chronic_bias: f32,
+        abs_td: f32,
+        td_threshold: f32,
+    ) -> Action {
+        let base_action = Action::from_mode(mode);
+
+        // Combine lock states
+        let any_lock_active = post_rescue_active || chronic_active;
+        let combined_bias = if post_rescue_active && chronic_active {
+            post_rescue_bias.max(chronic_bias)
+        } else if post_rescue_active {
+            post_rescue_bias
+        } else if chronic_active {
+            chronic_bias
+        } else {
+            0.0
+        };
+
+        // If not in any lock or base action is already Perturb, return base
+        if !any_lock_active || base_action == Action::Perturb {
+            return base_action;
+        }
+
+        // During lock: check if TD spike warrants Perturb despite lock
+        if abs_td >= td_threshold {
+            return Action::Perturb;
+        }
+
+        // During lock: bias toward Focus
+        // If mode says Scan (Explore mode), override to Focus if bias is strong enough
+        if base_action == Action::Scan && combined_bias >= 1.0 {
+            return Action::Focus;
+        }
+
+        base_action
+    }
+
     /// Phase 2.1b: Check if min perturb guard should force a perturb action.
     /// Returns true if perturb should be forced due to low perturb rate + bad state.
     pub fn should_force_perturb_guard(
