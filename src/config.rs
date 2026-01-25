@@ -687,9 +687,9 @@ impl Default for Config {
             // Phase 2.1b: Seed-Robust Policy Stabilization defaults
             min_exploit_ticks_on: 20,
             explore_streak_rescue: 200, // Less aggressive - only rescue truly stuck states
-            fail_streak_rescue: 10,     // Less aggressive
-            rescue_cooldown: 80,        // Longer cooldown between rescues
-            post_reset_exploit_boost_ticks: 60,
+            fail_streak_rescue: 4,      // Rescue earlier on gate-fail cascades
+            rescue_cooldown: 350,       // Avoid rescue spam
+            post_reset_exploit_boost_ticks: 70,
             post_reset_exploit_margin_scale: 1.35, // Strong margin boost post-reset
             catastrophic_abs_td: 0.55,             // Moderate threshold
             catastrophic_value_drop: 0.10,
@@ -772,14 +772,14 @@ impl Default for Config {
             // - proto_align mean ~0.126, threshold 0.18 requires above-average quality
             // - margin mean ~0.11, threshold 0.06 requires good separation
             // - require stable anchors for reliable exploit
-            exploit_proto_min: 0.18, // Stricter: require above-average proto alignment
-            exploit_margin_min: 0.06, // Stricter: require good winner separation
+            exploit_proto_min: 0.11, // Tuned: make Exploit easier to reach
+            exploit_margin_min: 0.03, // Tuned: make Exploit easier to reach
             exploit_requires_stable: true, // Re-enabled: require anchor stability
             focus_bias_exploit: 0.0, // No artificial bias; rely on mode->action mapping
 
             // Phase 2.0a: Mode Policy defaults
             enable_mode_policy: true,
-            mode_explore_v_max: 0.42,
+            mode_explore_v_max: 0.18,
             mode_exploit_v_min: 0.55,
             mode_reset_td_min: 0.35, // TD threshold for reset (stable_avg ~0.27)
             mode_reset_value_drop: 1.0, // Disabled
@@ -787,7 +787,7 @@ impl Default for Config {
             mode_post_reset_cooldown: 12,
             mode_explore_margin_scale: 0.6,
             mode_exploit_margin_scale: 1.15,
-            mode_reset_dampen: 0.50, // 50% amplitude reduction on top-K nodes
+            mode_reset_dampen: 0.60, // 40% amplitude reduction on top-K nodes (stronger reset)
             mode_reset_dampen_top_k: 8,
             mode_window_size: 32,
 
