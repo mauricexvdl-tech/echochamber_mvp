@@ -700,6 +700,20 @@ pub struct ModePolicyState {
     pub last_soft_proto_update_tick: u64,
     /// Phase 2.1p: Ticks where soft exploit blocked proto updates due to high TD.
     pub soft_exploit_td_blocked: usize,
+
+    // Phase 2.1q: Adaptive soft proto period state
+    /// Remaining ticks in bad-mode hold.
+    pub soft_proto_bad_hold_remaining: u32,
+    /// Total ticks spent in bad-mode (for diagnostics).
+    pub soft_proto_bad_active_ticks: u32,
+    /// Sum of effective periods chosen (for avg calculation).
+    pub soft_proto_effective_period_sum: u64,
+    /// Ticks in clear candidate state (for early clear).
+    pub soft_proto_clear_candidate_ticks: u32,
+    /// Rolling window for rescue count (last N ticks).
+    pub soft_proto_rescue_window: Vec<bool>,
+    /// Current index in rescue window.
+    pub soft_proto_rescue_window_idx: usize,
 }
 
 impl ModePolicyState {
@@ -807,6 +821,14 @@ impl ModePolicyState {
             // Phase 2.1p: Cooldown tracking + TD gate
             last_soft_proto_update_tick: 0,
             soft_exploit_td_blocked: 0,
+
+            // Phase 2.1q: Adaptive soft proto period state
+            soft_proto_bad_hold_remaining: 0,
+            soft_proto_bad_active_ticks: 0,
+            soft_proto_effective_period_sum: 0,
+            soft_proto_clear_candidate_ticks: 0,
+            soft_proto_rescue_window: vec![false; 1000], // 1000-tick rolling window
+            soft_proto_rescue_window_idx: 0,
         }
     }
 }
@@ -987,6 +1009,16 @@ impl ModePolicy {
                 self.state.last_reset_tick = None;
             }
         }
+
+        // Phase 2.1q: Update rescue window (shift in false, will be marked true in choose_mode_with_guardrails if rescue fires)
+        let window_len = self.state.soft_proto_rescue_window.len();
+        if window_len > 0 {
+            // Advance window index (ring buffer)
+            self.state.soft_proto_rescue_window_idx =
+                (self.state.soft_proto_rescue_window_idx + 1) % window_len;
+            // Clear the new slot (will be set to true if rescue fires this tick)
+            self.state.soft_proto_rescue_window[self.state.soft_proto_rescue_window_idx] = false;
+        }
     }
 
     /// Choose the mode for this tick based on observed state.
@@ -1154,6 +1186,9 @@ impl ModePolicy {
         if rescue_needed {
             // Trigger rescue: force Reset mode
             self.state.rescue_count += 1;
+
+            // Phase 2.1q: Mark rescue in rolling window for adaptive period
+            self.mark_rescue_in_window();
 
             // Phase 2.1n: Rescue throttle - track recent rescues and extend cooldown if too many
             // Clean old rescues from window (keep only those within last 10k ticks)
@@ -1528,6 +1563,106 @@ impl ModePolicy {
         self.state.chronic_lock_total_ticks
     }
 
+    /// Phase 2.1q: Mark that a rescue was triggered this tick (for rescue window tracking).
+    pub fn mark_rescue_in_window(&mut self) {
+        if !self.state.soft_proto_rescue_window.is_empty() {
+            self.state.soft_proto_rescue_window[self.state.soft_proto_rescue_window_idx] = true;
+        }
+    }
+
+    /// Phase 2.1q: Get the count of rescues in the rolling window.
+    pub fn rescue_window_count(&self) -> usize {
+        self.state.soft_proto_rescue_window.iter().filter(|&&x| x).count()
+    }
+
+    /// Phase 2.1q: Update the adaptive soft-proto period state based on rolling stats.
+    /// Call this after observe_extended and after recording rescue in choose_mode_with_guardrails.
+    pub fn update_adaptive_soft_proto(&mut self, config: &crate::config::Config) {
+        if !config.soft_proto_adaptive_enabled {
+            return;
+        }
+
+        // Get rolling stats from chronic window (already computed)
+        let stable_share = self.state.chronic_stable_share_ema;
+        let bad_share = self.state.chronic_bad_share_ema;
+
+        // Compute explore rate from mode counts
+        let total_modes = self.state.explore_count + self.state.exploit_count + self.state.reset_count;
+        let explore_rate = if total_modes > 0 {
+            self.state.explore_count as f32 / total_modes as f32
+        } else {
+            0.0
+        };
+
+        // Compute rescues per tick from rolling window
+        let window_len = self.state.soft_proto_rescue_window.len();
+        let rescue_count = self.rescue_window_count();
+        let rescues_rate = if window_len > 0 {
+            rescue_count as f32 / window_len as f32
+        } else {
+            0.0
+        };
+
+        // Decrement hold counter if active
+        if self.state.soft_proto_bad_hold_remaining > 0 {
+            self.state.soft_proto_bad_hold_remaining -= 1;
+            self.state.soft_proto_bad_active_ticks += 1;
+
+            // Check for early clear conditions (both must be met)
+            let clear_stable_ok = stable_share >= config.soft_proto_bad_clear_stable;
+            let clear_bad_ok = bad_share <= config.soft_proto_bad_clear_bad;
+
+            if clear_stable_ok && clear_bad_ok {
+                self.state.soft_proto_clear_candidate_ticks += 1;
+                // Early clear after 50 consecutive ticks meeting clear conditions
+                if self.state.soft_proto_clear_candidate_ticks >= 50 {
+                    self.state.soft_proto_bad_hold_remaining = 0;
+                    self.state.soft_proto_clear_candidate_ticks = 0;
+                }
+            } else {
+                self.state.soft_proto_clear_candidate_ticks = 0;
+            }
+        } else {
+            // Not in bad mode - check if we should enter
+            // Enter bad mode if ANY condition is true (use chronic window being full as warmup)
+            let warmup_ok = self.state.chronic_window.is_full();
+
+            if warmup_ok {
+                let enter_by_stable = stable_share < config.soft_proto_bad_stable_lo;
+                let enter_by_bad = bad_share > config.soft_proto_bad_bad_hi;
+                let enter_by_explore = explore_rate > config.soft_proto_bad_explore_hi;
+                let enter_by_rescue = rescues_rate > config.soft_proto_bad_rescue_hi;
+
+                if enter_by_stable || enter_by_bad || enter_by_explore || enter_by_rescue {
+                    self.state.soft_proto_bad_hold_remaining = config.soft_proto_bad_hold_ticks;
+                    self.state.soft_proto_clear_candidate_ticks = 0;
+                }
+            }
+        }
+
+        // Track effective period for diagnostics
+        let effective_period = self.get_soft_proto_effective_period(config);
+        self.state.soft_proto_effective_period_sum += effective_period as u64;
+    }
+
+    /// Phase 2.1q: Get the effective soft-proto update period based on current regime.
+    pub fn get_soft_proto_effective_period(&self, config: &crate::config::Config) -> u32 {
+        if !config.soft_proto_adaptive_enabled {
+            return config.soft_proto_update_period;
+        }
+
+        if self.state.soft_proto_bad_hold_remaining > 0 {
+            config.soft_proto_period_bad
+        } else {
+            config.soft_proto_period_good
+        }
+    }
+
+    /// Phase 2.1q: Check if currently in bad regime for soft-proto updates.
+    pub fn is_soft_proto_bad_regime(&self) -> bool {
+        self.state.soft_proto_bad_hold_remaining > 0
+    }
+
     /// Phase 2.1o: Get write override based on current mode and exploit quality.
     /// During soft exploit (mode==Exploit but can_exploit==false), blocks memory writes
     /// to prevent consolidating low-quality signal.
@@ -1718,6 +1853,17 @@ impl ModePolicy {
             soft_exploit_merge_blocked: self.state.soft_exploit_merge_blocked,
             soft_exploit_proto_allowed: self.state.soft_exploit_proto_allowed,
             soft_exploit_td_blocked: self.state.soft_exploit_td_blocked,
+            // Phase 2.1q: Adaptive soft-proto period metrics
+            soft_proto_bad_active_ticks: self.state.soft_proto_bad_active_ticks,
+            soft_proto_avg_effective_period: {
+                let total = self.state.global_tick_count;
+                if total > 0 {
+                    self.state.soft_proto_effective_period_sum as f64 / total as f64
+                } else {
+                    0.0
+                }
+            },
+            soft_proto_in_bad_regime: self.state.soft_proto_bad_hold_remaining > 0,
         }
     }
 }
@@ -1783,6 +1929,13 @@ pub struct ModeStats {
     pub soft_exploit_proto_allowed: usize,
     /// Proto updates blocked due to high TD during soft exploit.
     pub soft_exploit_td_blocked: usize,
+    // Phase 2.1q: Adaptive soft-proto period metrics
+    /// Total ticks spent in bad regime (adaptive period).
+    pub soft_proto_bad_active_ticks: u32,
+    /// Average effective period used (sum / total_ticks).
+    pub soft_proto_avg_effective_period: f64,
+    /// Whether currently in bad regime.
+    pub soft_proto_in_bad_regime: bool,
 }
 
 // ============================================================================

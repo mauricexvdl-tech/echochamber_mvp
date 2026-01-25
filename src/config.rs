@@ -319,6 +319,30 @@ pub struct Config {
     pub soft_proto_update_td_max: f32,
 
     // =========================================================================
+    // Phase 2.1q: Adaptive soft proto update period (P0 ↔ P12)
+    // =========================================================================
+    /// Enable adaptive period switching based on bad-regime detection.
+    pub soft_proto_adaptive_enabled: bool,
+    /// Period to use in "good" regime (default P0 = 0).
+    pub soft_proto_period_good: u32,
+    /// Period to use in "bad" regime (default P12 = 12).
+    pub soft_proto_period_bad: u32,
+    /// Enter bad-mode if stable_share < this threshold.
+    pub soft_proto_bad_stable_lo: f32,
+    /// Enter bad-mode if bad_share > this threshold.
+    pub soft_proto_bad_bad_hi: f32,
+    /// Enter bad-mode if explore_rate > this threshold.
+    pub soft_proto_bad_explore_hi: f32,
+    /// Enter bad-mode if rescues_per_tick > this threshold.
+    pub soft_proto_bad_rescue_hi: f32,
+    /// Ticks to hold in bad-mode before allowing exit.
+    pub soft_proto_bad_hold_ticks: u32,
+    /// Clear bad-mode early if stable_share > this threshold.
+    pub soft_proto_bad_clear_stable: f32,
+    /// Clear bad-mode early if bad_share < this threshold.
+    pub soft_proto_bad_clear_bad: f32,
+
+    // =========================================================================
     // Phase 2.1h: Chronic Instability Clamp v5 (EMA smoothing + hysteresis)
     // =========================================================================
     /// Window size for chronic instability detection (ticks).
@@ -772,6 +796,18 @@ impl Default for Config {
             soft_proto_update_require_gate: true, // Require gate pass for proto update
             soft_proto_update_block_when_bad: true, // Block proto update when in bad state
             soft_proto_update_td_max: 0.27, // Max recent TD to allow proto update (instability gate)
+
+            // Phase 2.1q: Adaptive soft proto update period defaults
+            soft_proto_adaptive_enabled: true,
+            soft_proto_period_good: 0,      // P0 in good regime
+            soft_proto_period_bad: 12,      // P12 in bad regime
+            soft_proto_bad_stable_lo: 0.55, // Enter bad if stable < 55%
+            soft_proto_bad_bad_hi: 0.28,    // Enter bad if bad > 28%
+            soft_proto_bad_explore_hi: 0.25, // Enter bad if explore > 25%
+            soft_proto_bad_rescue_hi: 0.0009, // Enter bad if rescues/tick > 0.09%
+            soft_proto_bad_hold_ticks: 1200, // Hold bad mode for 1200 ticks
+            soft_proto_bad_clear_stable: 0.62, // Early clear if stable > 62%
+            soft_proto_bad_clear_bad: 0.24, // Early clear if bad < 24%
 
             // Phase 2.1h: Chronic Instability Clamp v5 defaults (EMA smoothing + hysteresis)
             chronic_window_ticks: 500,     // Sliding window for raw stats

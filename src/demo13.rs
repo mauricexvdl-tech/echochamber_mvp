@@ -89,6 +89,10 @@ pub struct SeedDiagnostics {
     pub soft_exploit_proto_allowed: usize,
     // Phase 2.1p: TD gate metrics
     pub soft_exploit_td_blocked: usize,
+    // Phase 2.1q: Adaptive soft-proto period metrics
+    pub soft_proto_bad_active_ticks: u32,
+    pub soft_proto_bad_active_share: f64,
+    pub soft_proto_avg_effective_period: f64,
 }
 
 /// Phase 2.1b: Warmup stats collector for adaptive thresholds.
@@ -269,6 +273,44 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
     }
     println!(
         "───────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+
+    // Phase 2.1q: Adaptive soft-proto period diagnostics
+    println!();
+    println!("Phase 2.1q: Adaptive Soft-Proto Period (P0↔P12)");
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────"
+    );
+    println!(
+        "  {:>10} | {:>12} | {:>12} | {:>16}",
+        "Seed", "Bad-Active%", "Avg Period", "Bad Ticks"
+    );
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────"
+    );
+    for d in diagnostics {
+        println!(
+            "  0x{:08X} | {:11.1}% | {:12.2} | {:16}",
+            d.seed,
+            d.soft_proto_bad_active_share,
+            d.soft_proto_avg_effective_period,
+            d.soft_proto_bad_active_ticks,
+        );
+    }
+    // Summary stats
+    let bad_shares: Vec<f64> = diagnostics.iter().map(|d| d.soft_proto_bad_active_share).collect();
+    let avg_periods: Vec<f64> = diagnostics.iter().map(|d| d.soft_proto_avg_effective_period).collect();
+    let mean_bad_share = bad_shares.iter().sum::<f64>() / bad_shares.len().max(1) as f64;
+    let mean_avg_period = avg_periods.iter().sum::<f64>() / avg_periods.len().max(1) as f64;
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────"
+    );
+    println!(
+        "  {:>10} | {:11.1}% | {:12.2} |",
+        "Mean", mean_bad_share, mean_avg_period,
+    );
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────"
     );
 }
 
@@ -1175,6 +1217,9 @@ fn run_single_seed_full(
                 mode_policy.choose_mode(global_tick)
             };
 
+            // Phase 2.1q: Update adaptive soft-proto period state
+            mode_policy.update_adaptive_soft_proto(config);
+
             match mode {
                 Mode::Explore => explore_count += 1,
                 Mode::Exploit => exploit_count += 1,
@@ -1324,10 +1369,11 @@ fn run_single_seed_full(
                 let is_soft_exploit = mode == Mode::Exploit && !mode_policy.last_can_exploit();
 
                 let allow_proto_update = if is_soft_exploit {
-                    // Phase 2.1p: Cooldown-based rate limiting in soft exploit
-                    let period_ok = config.soft_proto_update_period == 0
+                    // Phase 2.1q: Use adaptive period (P0 in good regime, P12 in bad regime)
+                    let effective_period = mode_policy.get_soft_proto_effective_period(config);
+                    let period_ok = effective_period == 0
                         || (global_tick - mode_policy.state.last_soft_proto_update_tick)
-                            >= config.soft_proto_update_period as u64;
+                            >= effective_period as u64;
                     let gate_ok = !config.soft_proto_update_require_gate || gate_passed;
                     let margin_ok = topk_margin >= config.soft_proto_update_min_margin as f64;
                     let is_bad_state = proto_align < config.rescue_bad_proto
@@ -1631,6 +1677,17 @@ fn run_single_seed_full(
         soft_exploit_proto_allowed: mode_stats.soft_exploit_proto_allowed,
         // Phase 2.1p: TD gate metrics
         soft_exploit_td_blocked: mode_stats.soft_exploit_td_blocked,
+        // Phase 2.1q: Adaptive soft-proto period metrics
+        soft_proto_bad_active_ticks: mode_stats.soft_proto_bad_active_ticks,
+        soft_proto_bad_active_share: {
+            let total_ticks = mode_stats.explore_count + mode_stats.exploit_count + mode_stats.reset_count;
+            if total_ticks > 0 {
+                mode_stats.soft_proto_bad_active_ticks as f64 / total_ticks as f64 * 100.0
+            } else {
+                0.0
+            }
+        },
+        soft_proto_avg_effective_period: mode_stats.soft_proto_avg_effective_period,
     };
 
     (run, lift_stats, diag)
