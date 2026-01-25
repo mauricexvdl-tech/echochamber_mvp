@@ -602,6 +602,193 @@ impl ActionTriggers {
     }
 }
 
+// =============================================================================
+// Phase 2.1s: Episodic Burst Effectiveness Tracking
+// =============================================================================
+
+/// Record for a single burst episode (Phase 2.1s).
+#[derive(Clone, Debug, Default)]
+pub struct BurstEpisodeRecord {
+    /// Tick when burst started.
+    pub start_tick: u64,
+    /// Tick when burst ended.
+    pub end_tick: u64,
+    /// Burst duration in ticks.
+    pub duration: u32,
+    /// Burst probability used.
+    pub prob_used: f32,
+    /// Pre-burst metrics
+    pub pre_abs_td_mean: f32,
+    pub pre_stable_share: f32,
+    pub pre_bad_share: f32,
+    /// Post-burst metrics
+    pub post_abs_td_mean: f32,
+    pub post_stable_share: f32,
+    pub post_bad_share: f32,
+    /// Whether this burst was successful.
+    pub success: bool,
+    /// Success reason (if any).
+    pub success_reason: Option<&'static str>,
+}
+
+/// Aggregate burst effectiveness statistics (Phase 2.1s).
+#[derive(Clone, Debug, Default)]
+pub struct BurstEffectivenessStats {
+    /// Total burst episodes completed (with post-window measured).
+    pub episodes_completed: u32,
+    /// Episodes that were successful.
+    pub episodes_success: u32,
+    /// Sum of TD improvements (pre - post) for all episodes.
+    pub td_improve_sum: f32,
+    /// Sum of bad share improvements (pre - post) for all episodes.
+    pub bad_improve_sum: f32,
+    /// Sum of stable share gains (post - pre) for all episodes.
+    pub stable_gain_sum: f32,
+    /// Count of successes by reason.
+    pub success_by_td: u32,
+    pub success_by_bad: u32,
+    pub success_by_stable: u32,
+}
+
+impl BurstEffectivenessStats {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Success rate as fraction.
+    pub fn success_rate(&self) -> f64 {
+        if self.episodes_completed > 0 {
+            self.episodes_success as f64 / self.episodes_completed as f64
+        } else {
+            0.0
+        }
+    }
+
+    /// Mean TD improvement as percentage.
+    pub fn mean_td_improve_pct(&self) -> f64 {
+        if self.episodes_completed > 0 {
+            self.td_improve_sum as f64 / self.episodes_completed as f64 * 100.0
+        } else {
+            0.0
+        }
+    }
+
+    /// Mean bad share improvement (absolute).
+    pub fn mean_bad_improve(&self) -> f64 {
+        if self.episodes_completed > 0 {
+            self.bad_improve_sum as f64 / self.episodes_completed as f64
+        } else {
+            0.0
+        }
+    }
+
+    /// Mean stable share gain (absolute).
+    pub fn mean_stable_gain(&self) -> f64 {
+        if self.episodes_completed > 0 {
+            self.stable_gain_sum as f64 / self.episodes_completed as f64
+        } else {
+            0.0
+        }
+    }
+
+    /// Record a completed episode.
+    pub fn record_episode(&mut self, record: &BurstEpisodeRecord, config: &crate::config::Config) {
+        self.episodes_completed += 1;
+
+        // Compute improvements
+        let td_improve = record.pre_abs_td_mean - record.post_abs_td_mean;
+        let bad_improve = record.pre_bad_share - record.post_bad_share;
+        let stable_gain = record.post_stable_share - record.pre_stable_share;
+
+        self.td_improve_sum += td_improve;
+        self.bad_improve_sum += bad_improve;
+        self.stable_gain_sum += stable_gain;
+
+        // Check success criteria
+        let td_success =
+            record.post_abs_td_mean <= record.pre_abs_td_mean * config.burst_td_success_ratio;
+        let bad_success = bad_improve >= config.burst_bad_improve_abs;
+        let stable_success = stable_gain >= config.burst_stable_gain_abs;
+
+        if td_success || bad_success || stable_success {
+            self.episodes_success += 1;
+            if td_success {
+                self.success_by_td += 1;
+            }
+            if bad_success {
+                self.success_by_bad += 1;
+            }
+            if stable_success {
+                self.success_by_stable += 1;
+            }
+        }
+    }
+}
+
+/// Rolling metric buffer for pre/post burst measurement (Phase 2.1s).
+#[derive(Clone, Debug)]
+pub struct BurstMetricBuffer {
+    /// Circular buffer for abs_td samples.
+    pub abs_td_buffer: Vec<f32>,
+    /// Circular buffer for stable_share samples.
+    pub stable_share_buffer: Vec<f32>,
+    /// Circular buffer for bad_share samples.
+    pub bad_share_buffer: Vec<f32>,
+    /// Write index.
+    pub idx: usize,
+    /// Count of samples written.
+    pub count: usize,
+    /// Buffer capacity.
+    pub capacity: usize,
+}
+
+impl BurstMetricBuffer {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            abs_td_buffer: vec![0.0; capacity],
+            stable_share_buffer: vec![0.0; capacity],
+            bad_share_buffer: vec![0.0; capacity],
+            idx: 0,
+            count: 0,
+            capacity,
+        }
+    }
+
+    /// Push a sample into the buffer.
+    pub fn push(&mut self, abs_td: f32, stable_share: f32, bad_share: f32) {
+        self.abs_td_buffer[self.idx] = abs_td;
+        self.stable_share_buffer[self.idx] = stable_share;
+        self.bad_share_buffer[self.idx] = bad_share;
+        self.idx = (self.idx + 1) % self.capacity;
+        if self.count < self.capacity {
+            self.count += 1;
+        }
+    }
+
+    /// Compute mean of most recent N samples.
+    pub fn mean_last_n(&self, n: usize) -> (f32, f32, f32) {
+        if self.count == 0 {
+            return (0.0, 0.0, 0.0);
+        }
+        let n = n.min(self.count);
+        let mut td_sum = 0.0f32;
+        let mut stable_sum = 0.0f32;
+        let mut bad_sum = 0.0f32;
+        for i in 0..n {
+            let pos = (self.idx + self.capacity - 1 - i) % self.capacity;
+            td_sum += self.abs_td_buffer[pos];
+            stable_sum += self.stable_share_buffer[pos];
+            bad_sum += self.bad_share_buffer[pos];
+        }
+        (td_sum / n as f32, stable_sum / n as f32, bad_sum / n as f32)
+    }
+
+    /// Get count of samples.
+    pub fn len(&self) -> usize {
+        self.count
+    }
+}
+
 /// The action policy controller.
 #[derive(Clone, Debug)]
 pub struct ActionPolicy {
@@ -628,6 +815,28 @@ pub struct ActionPolicy {
     pub repair_burst_total_ticks: u32,
     /// RNG state for burst probability (seeded).
     pub repair_rng_state: u64,
+
+    // Phase 2.1s: Episodic burst state
+    /// Tick when last burst ended (for gap enforcement).
+    pub burst_last_end_tick: u64,
+    /// Current burst probability (can escalate).
+    pub burst_current_prob: f32,
+    /// Current burst duration (can escalate).
+    pub burst_current_ticks: u32,
+    /// Consecutive failed bursts (for escalation).
+    pub burst_consecutive_failures: u32,
+    /// Pre-burst metrics snapshot.
+    pub burst_pre_metrics: Option<(f32, f32, f32)>,
+    /// Tick when current burst started.
+    pub burst_start_tick: u64,
+    /// Rolling metric buffer for measurements.
+    pub burst_metric_buffer: BurstMetricBuffer,
+    /// Ticks since burst ended (for post-window measurement).
+    pub burst_post_window_remaining: u32,
+    /// Burst episode records (for analysis).
+    pub burst_episodes: Vec<BurstEpisodeRecord>,
+    /// Aggregate effectiveness stats.
+    pub burst_effectiveness: BurstEffectivenessStats,
 }
 
 impl ActionPolicy {
@@ -647,6 +856,17 @@ impl ActionPolicy {
             repair_burst_trigger_count: 0,
             repair_burst_total_ticks: 0,
             repair_rng_state: 0x12345678,
+            // Phase 2.1s: Episodic burst state
+            burst_last_end_tick: 0,
+            burst_current_prob: 0.40,
+            burst_current_ticks: 30,
+            burst_consecutive_failures: 0,
+            burst_pre_metrics: None,
+            burst_start_tick: 0,
+            burst_metric_buffer: BurstMetricBuffer::new(500),
+            burst_post_window_remaining: 0,
+            burst_episodes: Vec::new(),
+            burst_effectiveness: BurstEffectivenessStats::new(),
         }
     }
 
@@ -667,6 +887,17 @@ impl ActionPolicy {
             repair_burst_trigger_count: 0,
             repair_burst_total_ticks: 0,
             repair_rng_state: 0x12345678,
+            // Phase 2.1s: Episodic burst state
+            burst_last_end_tick: 0,
+            burst_current_prob: 0.40,
+            burst_current_ticks: 30,
+            burst_consecutive_failures: 0,
+            burst_pre_metrics: None,
+            burst_start_tick: 0,
+            burst_metric_buffer: BurstMetricBuffer::new(500),
+            burst_post_window_remaining: 0,
+            burst_episodes: Vec::new(),
+            burst_effectiveness: BurstEffectivenessStats::new(),
         }
     }
 
@@ -693,6 +924,17 @@ impl ActionPolicy {
             repair_burst_trigger_count: 0,
             repair_burst_total_ticks: 0,
             repair_rng_state: 0x12345678,
+            // Phase 2.1s: Episodic burst state
+            burst_last_end_tick: 0,
+            burst_current_prob: 0.40,
+            burst_current_ticks: 30,
+            burst_consecutive_failures: 0,
+            burst_pre_metrics: None,
+            burst_start_tick: 0,
+            burst_metric_buffer: BurstMetricBuffer::new(500),
+            burst_post_window_remaining: 0,
+            burst_episodes: Vec::new(),
+            burst_effectiveness: BurstEffectivenessStats::new(),
         }
     }
 
@@ -990,7 +1232,7 @@ impl ActionPolicy {
     }
 
     // =========================================================================
-    // Phase 2.1r: Bad-Regime Quality Repair (Targeted Perturb Burst)
+    // Phase 2.1r/2.1s: Bad-Regime Quality Repair (Episodic Perturb Burst)
     // =========================================================================
 
     /// Set the repair RNG seed for deterministic burst probability.
@@ -998,37 +1240,76 @@ impl ActionPolicy {
         self.repair_rng_state = seed;
     }
 
+    /// Initialize burst parameters from config (call at start of run).
+    pub fn init_burst_params(&mut self, config: &crate::config::Config) {
+        self.burst_current_prob = config.burst_base_prob;
+        self.burst_current_ticks = config.burst_base_ticks;
+        self.burst_consecutive_failures = 0;
+    }
+
     /// Simple LCG RNG for burst probability (deterministic).
     fn repair_rng_next(&mut self) -> f32 {
         // LCG: state = (a * state + c) mod m
-        self.repair_rng_state = self.repair_rng_state.wrapping_mul(6364136223846793005)
+        self.repair_rng_state = self
+            .repair_rng_state
+            .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
         // Return value in [0, 1)
         (self.repair_rng_state >> 33) as f32 / (1u64 << 31) as f32
     }
 
+    /// Push metrics into the rolling buffer for pre/post measurement.
+    pub fn push_burst_metrics(&mut self, abs_td: f32, stable_share: f32, bad_share: f32) {
+        self.burst_metric_buffer
+            .push(abs_td, stable_share, bad_share);
+    }
+
     /// Update the repair burst state based on rolling stats.
     /// Call this every tick with current rolling stats from ModePolicy.
+    /// Phase 2.1s: Adds episodic logic with gap enforcement, max per run, and escalation.
     pub fn update_repair_burst(
         &mut self,
         stable_share: f32,
         bad_share: f32,
         rescue_rate: f32, // rescues per tick in rolling window
+        global_tick: u64,
         config: &crate::config::Config,
     ) {
         if !config.repair_enabled {
             return;
         }
 
+        // Push current metrics to buffer
+        // Note: abs_td is pushed separately via push_burst_metrics() with actual TD value
+        // Here we just track stable/bad shares
+        // The abs_td gets pushed by the caller with the real value
+
         // Decrement cooldown
         if self.repair_burst_cooldown > 0 {
             self.repair_burst_cooldown -= 1;
         }
 
-        // Decrement burst remaining
+        // Phase 2.1s: Handle post-burst window measurement
+        if self.burst_post_window_remaining > 0 {
+            self.burst_post_window_remaining -= 1;
+
+            // When post-window completes, finalize the episode
+            if self.burst_post_window_remaining == 0 {
+                self.finalize_burst_episode(config);
+            }
+        }
+
+        // Decrement burst remaining and detect burst end
         if self.repair_burst_remaining > 0 {
             self.repair_burst_remaining -= 1;
             self.repair_burst_total_ticks += 1;
+
+            // Burst just ended
+            if self.repair_burst_remaining == 0 {
+                self.burst_last_end_tick = global_tick;
+                // Start post-window measurement
+                self.burst_post_window_remaining = config.burst_post_window;
+            }
         }
 
         // Check bad regime conditions (OR logic: any condition can trigger)
@@ -1038,8 +1319,8 @@ impl ActionPolicy {
         let in_bad_regime = stable_bad || bad_high || rescue_high;
 
         // Check clear conditions
-        let clear_ok = stable_share > config.repair_clear_stable_hi
-            && bad_share < config.repair_clear_bad_lo;
+        let clear_ok =
+            stable_share > config.repair_clear_stable_hi && bad_share < config.repair_clear_bad_lo;
 
         // Update hold counters
         if in_bad_regime {
@@ -1057,18 +1338,97 @@ impl ActionPolicy {
             // Keep bad_hold - don't reset unless clear conditions met
         }
 
-        // Trigger burst if:
-        // - bad_hold exceeded threshold
-        // - not currently in burst
-        // - cooldown expired
+        // Phase 2.1s: Check if we can trigger a new burst
+        // Conditions:
+        // 1. bad_hold exceeded threshold
+        // 2. not currently in burst
+        // 3. cooldown expired
+        // 4. gap since last burst exceeded (NEW in 2.1s)
+        // 5. haven't hit max bursts per run (NEW in 2.1s)
+        let gap_ok = global_tick >= self.burst_last_end_tick + config.burst_min_gap_ticks as u64;
+        let under_max = self.repair_burst_trigger_count < config.burst_max_per_run;
+
         if self.repair_bad_hold >= config.repair_bad_hold_ticks
             && self.repair_burst_remaining == 0
             && self.repair_burst_cooldown == 0
+            && gap_ok
+            && under_max
         {
-            self.repair_burst_remaining = config.repair_burst_ticks;
+            // Snapshot pre-burst metrics from rolling buffer
+            let (pre_td, pre_stable, pre_bad) = self
+                .burst_metric_buffer
+                .mean_last_n(config.burst_pre_window as usize);
+            self.burst_pre_metrics = Some((pre_td, pre_stable, pre_bad));
+            self.burst_start_tick = global_tick;
+
+            // Start burst with current (possibly escalated) parameters
+            self.repair_burst_remaining = self.burst_current_ticks;
             self.repair_burst_cooldown = config.repair_burst_cooldown;
             self.repair_burst_trigger_count += 1;
             self.repair_bad_hold = 0; // Reset hold after triggering
+        }
+    }
+
+    /// Finalize a burst episode after post-window measurement completes.
+    fn finalize_burst_episode(&mut self, config: &crate::config::Config) {
+        // Get post-burst metrics
+        let (post_td, post_stable, post_bad) = self
+            .burst_metric_buffer
+            .mean_last_n(config.burst_post_window as usize);
+
+        // Get pre-burst metrics (should have been captured at burst start)
+        if let Some((pre_td, pre_stable, pre_bad)) = self.burst_pre_metrics.take() {
+            // Determine success
+            let td_success = post_td <= pre_td * config.burst_td_success_ratio;
+            let bad_success = (pre_bad - post_bad) >= config.burst_bad_improve_abs;
+            let stable_success = (post_stable - pre_stable) >= config.burst_stable_gain_abs;
+            let is_success = td_success || bad_success || stable_success;
+
+            let success_reason = if td_success {
+                Some("td")
+            } else if bad_success {
+                Some("bad")
+            } else if stable_success {
+                Some("stable")
+            } else {
+                None
+            };
+
+            // Create episode record
+            let record = BurstEpisodeRecord {
+                start_tick: self.burst_start_tick,
+                end_tick: self.burst_last_end_tick,
+                duration: self.burst_current_ticks,
+                prob_used: self.burst_current_prob,
+                pre_abs_td_mean: pre_td,
+                pre_stable_share: pre_stable,
+                pre_bad_share: pre_bad,
+                post_abs_td_mean: post_td,
+                post_stable_share: post_stable,
+                post_bad_share: post_bad,
+                success: is_success,
+                success_reason,
+            };
+
+            // Update effectiveness stats
+            self.burst_effectiveness.record_episode(&record, config);
+            self.burst_episodes.push(record);
+
+            // Phase 2.1s: Escalation logic
+            if is_success {
+                // Reset to base parameters on success
+                self.burst_current_prob = config.burst_base_prob;
+                self.burst_current_ticks = config.burst_base_ticks;
+                self.burst_consecutive_failures = 0;
+            } else {
+                // Escalate on failure
+                self.burst_consecutive_failures += 1;
+                self.burst_current_prob = (self.burst_current_prob + config.burst_prob_escalation)
+                    .min(config.burst_max_prob);
+                self.burst_current_ticks = (self.burst_current_ticks
+                    + config.burst_ticks_escalation)
+                    .min(config.burst_max_ticks);
+            }
         }
     }
 
@@ -1079,6 +1439,7 @@ impl ActionPolicy {
 
     /// Apply burst override to action selection.
     /// Returns Some(Action::Perturb) if burst should override, None otherwise.
+    /// Phase 2.1s: Uses current escalated probability.
     pub fn apply_repair_burst_override(
         &mut self,
         is_soft_exploit: bool,
@@ -1101,9 +1462,9 @@ impl ActionPolicy {
             }
         }
 
-        // Apply burst probability
+        // Apply burst probability (using current escalated value)
         let rand_val = self.repair_rng_next();
-        if rand_val < config.repair_burst_prob {
+        if rand_val < self.burst_current_prob {
             Some(Action::Perturb)
         } else {
             None
@@ -1127,5 +1488,15 @@ impl ActionPolicy {
             self.repair_burst_remaining,
             self.repair_burst_cooldown,
         )
+    }
+
+    /// Get burst effectiveness stats (Phase 2.1s).
+    pub fn burst_effectiveness_stats(&self) -> &BurstEffectivenessStats {
+        &self.burst_effectiveness
+    }
+
+    /// Get number of burst episodes recorded.
+    pub fn burst_episode_count(&self) -> usize {
+        self.burst_episodes.len()
     }
 }

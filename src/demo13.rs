@@ -97,6 +97,15 @@ pub struct SeedDiagnostics {
     pub repair_burst_triggers: u32,
     pub repair_burst_total_ticks: u32,
     pub repair_burst_active_share: f64,
+    // Phase 2.1s: Burst effectiveness metrics
+    pub burst_episodes_completed: u32,
+    pub burst_success_rate: f64,
+    pub burst_mean_td_improve_pct: f64,
+    pub burst_mean_bad_improve: f64,
+    pub burst_mean_stable_gain: f64,
+    pub burst_success_by_td: u32,
+    pub burst_success_by_bad: u32,
+    pub burst_success_by_stable: u32,
 }
 
 /// Phase 2.1b: Warmup stats collector for adaptive thresholds.
@@ -302,8 +311,14 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
         );
     }
     // Summary stats
-    let bad_shares: Vec<f64> = diagnostics.iter().map(|d| d.soft_proto_bad_active_share).collect();
-    let avg_periods: Vec<f64> = diagnostics.iter().map(|d| d.soft_proto_avg_effective_period).collect();
+    let bad_shares: Vec<f64> = diagnostics
+        .iter()
+        .map(|d| d.soft_proto_bad_active_share)
+        .collect();
+    let avg_periods: Vec<f64> = diagnostics
+        .iter()
+        .map(|d| d.soft_proto_avg_effective_period)
+        .collect();
     let mean_bad_share = bad_shares.iter().sum::<f64>() / bad_shares.len().max(1) as f64;
     let mean_avg_period = avg_periods.iter().sum::<f64>() / avg_periods.len().max(1) as f64;
     println!(
@@ -342,10 +357,17 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
         );
     }
     // Summary stats
-    let burst_triggers: Vec<u32> = diagnostics.iter().map(|d| d.repair_burst_triggers).collect();
-    let burst_shares: Vec<f64> = diagnostics.iter().map(|d| d.repair_burst_active_share).collect();
+    let burst_triggers: Vec<u32> = diagnostics
+        .iter()
+        .map(|d| d.repair_burst_triggers)
+        .collect();
+    let burst_shares: Vec<f64> = diagnostics
+        .iter()
+        .map(|d| d.repair_burst_active_share)
+        .collect();
     let rescues: Vec<usize> = diagnostics.iter().map(|d| d.rescue_count).collect();
-    let mean_triggers = burst_triggers.iter().sum::<u32>() as f64 / burst_triggers.len().max(1) as f64;
+    let mean_triggers =
+        burst_triggers.iter().sum::<u32>() as f64 / burst_triggers.len().max(1) as f64;
     let mean_burst_share = burst_shares.iter().sum::<f64>() / burst_shares.len().max(1) as f64;
     let mean_rescues = rescues.iter().sum::<usize>() as f64 / rescues.len().max(1) as f64;
     println!(
@@ -357,6 +379,115 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
     );
     println!(
         "─────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+
+    // Phase 2.1s: Burst effectiveness diagnostics
+    println!();
+    println!("PHASE 2.1s BURST EFFECTIVENESS:");
+    println!(
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+    println!(
+        "  {:>10} | {:>10} | {:>11} | {:>12} | {:>12} | {:>12} | {:>8} | {:>8} | {:>8}",
+        "Seed",
+        "Episodes",
+        "Success%",
+        "TD Improve%",
+        "Bad Improve",
+        "Stable Gain",
+        "by_td",
+        "by_bad",
+        "by_stab"
+    );
+    println!(
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+    for d in diagnostics {
+        let success_marker = if d.burst_success_rate >= 0.55 {
+            "✓"
+        } else {
+            "✗"
+        };
+        println!(
+            "  0x{:08X} | {:10} | {:10.1}% {} | {:11.1}% | {:12.3} | {:12.3} | {:8} | {:8} | {:8}",
+            d.seed,
+            d.burst_episodes_completed,
+            d.burst_success_rate * 100.0,
+            success_marker,
+            d.burst_mean_td_improve_pct,
+            d.burst_mean_bad_improve,
+            d.burst_mean_stable_gain,
+            d.burst_success_by_td,
+            d.burst_success_by_bad,
+            d.burst_success_by_stable,
+        );
+    }
+    // Summary stats
+    let episodes_completed: Vec<u32> = diagnostics
+        .iter()
+        .map(|d| d.burst_episodes_completed)
+        .collect();
+    let success_rates: Vec<f64> = diagnostics.iter().map(|d| d.burst_success_rate).collect();
+    let td_improves: Vec<f64> = diagnostics
+        .iter()
+        .map(|d| d.burst_mean_td_improve_pct)
+        .collect();
+    let bad_improves: Vec<f64> = diagnostics
+        .iter()
+        .map(|d| d.burst_mean_bad_improve)
+        .collect();
+    let stable_gains: Vec<f64> = diagnostics
+        .iter()
+        .map(|d| d.burst_mean_stable_gain)
+        .collect();
+    let mean_episodes =
+        episodes_completed.iter().sum::<u32>() as f64 / episodes_completed.len().max(1) as f64;
+    let mean_success_rate = success_rates.iter().sum::<f64>() / success_rates.len().max(1) as f64;
+    let mean_td_improve = td_improves.iter().sum::<f64>() / td_improves.len().max(1) as f64;
+    let mean_bad_improve = bad_improves.iter().sum::<f64>() / bad_improves.len().max(1) as f64;
+    let mean_stable_gain = stable_gains.iter().sum::<f64>() / stable_gains.len().max(1) as f64;
+    println!(
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+    let overall_success_marker = if mean_success_rate >= 0.55 {
+        "✓"
+    } else {
+        "✗"
+    };
+    println!(
+        "  {:>10} | {:10.1} | {:10.1}% {} | {:11.1}% | {:12.3} | {:12.3} |",
+        "Mean",
+        mean_episodes,
+        mean_success_rate * 100.0,
+        overall_success_marker,
+        mean_td_improve,
+        mean_bad_improve,
+        mean_stable_gain,
+    );
+    println!(
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+
+    // Acceptance check for burst effectiveness
+    println!();
+    println!("Phase 2.1s Acceptance (Burst Episodic + Effectiveness):");
+    let triggers_ok = mean_triggers <= 30.0;
+    let success_rate_ok = mean_success_rate >= 0.55;
+    let td_improve_ok = mean_td_improve >= 5.0;
+    println!(
+        "  [{}] bursts_triggered_mean <= 30: {:.1}",
+        if triggers_ok { "✓" } else { "✗" },
+        mean_triggers,
+    );
+    println!(
+        "  [{}] burst_success_rate >= 55%: {:.1}%",
+        if success_rate_ok { "✓" } else { "✗" },
+        mean_success_rate * 100.0,
+    );
+    println!(
+        "  [{}] mean_td_improve >= 5%: {:.1}%",
+        if td_improve_ok { "✓" } else { "✗" },
+        mean_td_improve,
     );
 }
 
@@ -1071,6 +1202,8 @@ fn run_single_seed_full(
     );
     // Phase 2.1r: Set repair RNG seed for deterministic burst probability
     action_policy.set_repair_seed(seed.wrapping_add(0x2E2E_2E2E));
+    // Phase 2.1s: Initialize burst parameters from config
+    action_policy.init_burst_params(config);
 
     let mut rng = Rng::new(seed.wrapping_add(0x7A7A_7A7A));
     let mut chamber = EchoChamber::random_graph(config.clone(), &mut rng);
@@ -1268,16 +1401,21 @@ fn run_single_seed_full(
             // Phase 2.1q: Update adaptive soft-proto period state
             mode_policy.update_adaptive_soft_proto(config);
 
-            // Phase 2.1r: Update repair burst state with rolling stats
+            // Phase 2.1r/2.1s: Update repair burst state with rolling stats
             // Use RAW chronic window shares (not EMA) for more responsive detection
             let repair_stable_share = mode_policy.state.chronic_window.stable_share();
             let repair_bad_share = mode_policy.state.chronic_window.bad_share();
             let repair_rescue_rate = mode_policy.rescue_window_count() as f32
                 / mode_policy.state.soft_proto_rescue_window.len().max(1) as f32;
+
+            // Phase 2.1s: Push metrics into burst buffer for pre/post measurement
+            action_policy.push_burst_metrics(abs_td as f32, repair_stable_share, repair_bad_share);
+
             action_policy.update_repair_burst(
                 repair_stable_share,
                 repair_bad_share,
                 repair_rescue_rate,
+                global_tick,
                 config,
             );
 
@@ -1760,7 +1898,8 @@ fn run_single_seed_full(
         // Phase 2.1q: Adaptive soft-proto period metrics
         soft_proto_bad_active_ticks: mode_stats.soft_proto_bad_active_ticks,
         soft_proto_bad_active_share: {
-            let total_ticks = mode_stats.explore_count + mode_stats.exploit_count + mode_stats.reset_count;
+            let total_ticks =
+                mode_stats.explore_count + mode_stats.exploit_count + mode_stats.reset_count;
             if total_ticks > 0 {
                 mode_stats.soft_proto_bad_active_ticks as f64 / total_ticks as f64 * 100.0
             } else {
@@ -1772,13 +1911,23 @@ fn run_single_seed_full(
         repair_burst_triggers: action_policy.repair_burst_trigger_count,
         repair_burst_total_ticks: action_policy.repair_burst_total_ticks,
         repair_burst_active_share: {
-            let total_ticks = mode_stats.explore_count + mode_stats.exploit_count + mode_stats.reset_count;
+            let total_ticks =
+                mode_stats.explore_count + mode_stats.exploit_count + mode_stats.reset_count;
             if total_ticks > 0 {
                 action_policy.repair_burst_total_ticks as f64 / total_ticks as f64 * 100.0
             } else {
                 0.0
             }
         },
+        // Phase 2.1s: Burst effectiveness metrics
+        burst_episodes_completed: action_policy.burst_effectiveness.episodes_completed,
+        burst_success_rate: action_policy.burst_effectiveness.success_rate(),
+        burst_mean_td_improve_pct: action_policy.burst_effectiveness.mean_td_improve_pct(),
+        burst_mean_bad_improve: action_policy.burst_effectiveness.mean_bad_improve(),
+        burst_mean_stable_gain: action_policy.burst_effectiveness.mean_stable_gain(),
+        burst_success_by_td: action_policy.burst_effectiveness.success_by_td,
+        burst_success_by_bad: action_policy.burst_effectiveness.success_by_bad,
+        burst_success_by_stable: action_policy.burst_effectiveness.success_by_stable,
     };
 
     (run, lift_stats, diag)

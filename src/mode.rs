@@ -1572,7 +1572,11 @@ impl ModePolicy {
 
     /// Phase 2.1q: Get the count of rescues in the rolling window.
     pub fn rescue_window_count(&self) -> usize {
-        self.state.soft_proto_rescue_window.iter().filter(|&&x| x).count()
+        self.state
+            .soft_proto_rescue_window
+            .iter()
+            .filter(|&&x| x)
+            .count()
     }
 
     /// Phase 2.1q: Update the adaptive soft-proto period state based on rolling stats.
@@ -1587,7 +1591,8 @@ impl ModePolicy {
         let bad_share = self.state.chronic_bad_share_ema;
 
         // Compute explore rate from mode counts
-        let total_modes = self.state.explore_count + self.state.exploit_count + self.state.reset_count;
+        let total_modes =
+            self.state.explore_count + self.state.exploit_count + self.state.reset_count;
         let explore_rate = if total_modes > 0 {
             self.state.explore_count as f32 / total_modes as f32
         } else {

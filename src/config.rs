@@ -344,6 +344,7 @@ pub struct Config {
 
     // =========================================================================
     // Phase 2.1r: Bad-Regime Quality Repair (Targeted Perturb Burst)
+    // Phase 2.1s: Episodic Perturb Bursts + Effectiveness Scoring
     // =========================================================================
     /// Enable bad-regime perturb burst repair mechanism.
     pub repair_enabled: bool,
@@ -369,6 +370,34 @@ pub struct Config {
     pub repair_burst_cooldown: u32,
     /// Maximum allowed perturb rate mean (safety cap).
     pub repair_perturb_cap_mean: f32,
+
+    // Phase 2.1s: Episodic Burst Configuration
+    /// Minimum gap between burst triggers (prevents rapid re-trigger).
+    pub burst_min_gap_ticks: u32,
+    /// Maximum bursts per run (cap).
+    pub burst_max_per_run: u32,
+    /// Base burst probability (starting value).
+    pub burst_base_prob: f32,
+    /// Maximum burst probability (after escalation).
+    pub burst_max_prob: f32,
+    /// Base burst duration in ticks.
+    pub burst_base_ticks: u32,
+    /// Maximum burst duration in ticks (after escalation).
+    pub burst_max_ticks: u32,
+    /// Pre-burst measurement window (ticks before burst start).
+    pub burst_pre_window: u32,
+    /// Post-burst measurement window (ticks after burst end).
+    pub burst_post_window: u32,
+    /// TD reduction ratio threshold for success (post <= pre * ratio).
+    pub burst_td_success_ratio: f32,
+    /// Bad share absolute improvement threshold for success.
+    pub burst_bad_improve_abs: f32,
+    /// Stable share absolute gain threshold for success.
+    pub burst_stable_gain_abs: f32,
+    /// Probability increment per failed burst (escalation).
+    pub burst_prob_escalation: f32,
+    /// Duration increment per failed burst (escalation).
+    pub burst_ticks_escalation: u32,
 
     // =========================================================================
     // Phase 2.1h: Chronic Instability Clamp v5 (EMA smoothing + hysteresis)
@@ -827,29 +856,44 @@ impl Default for Config {
 
             // Phase 2.1q: Adaptive soft proto update period defaults
             soft_proto_adaptive_enabled: true,
-            soft_proto_period_good: 0,      // P0 in good regime
-            soft_proto_period_bad: 12,      // P12 in bad regime
-            soft_proto_bad_stable_lo: 0.55, // Enter bad if stable < 55%
-            soft_proto_bad_bad_hi: 0.28,    // Enter bad if bad > 28%
-            soft_proto_bad_explore_hi: 0.25, // Enter bad if explore > 25%
-            soft_proto_bad_rescue_hi: 0.0009, // Enter bad if rescues/tick > 0.09%
-            soft_proto_bad_hold_ticks: 1200, // Hold bad mode for 1200 ticks
+            soft_proto_period_good: 0,         // P0 in good regime
+            soft_proto_period_bad: 12,         // P12 in bad regime
+            soft_proto_bad_stable_lo: 0.55,    // Enter bad if stable < 55%
+            soft_proto_bad_bad_hi: 0.28,       // Enter bad if bad > 28%
+            soft_proto_bad_explore_hi: 0.25,   // Enter bad if explore > 25%
+            soft_proto_bad_rescue_hi: 0.0009,  // Enter bad if rescues/tick > 0.09%
+            soft_proto_bad_hold_ticks: 1200,   // Hold bad mode for 1200 ticks
             soft_proto_bad_clear_stable: 0.62, // Early clear if stable > 62%
-            soft_proto_bad_clear_bad: 0.24, // Early clear if bad < 24%
+            soft_proto_bad_clear_bad: 0.24,    // Early clear if bad < 24%
 
-            // Phase 2.1r: Bad-Regime Quality Repair defaults (gentle tuning)
+            // Phase 2.1r/2.1s: Bad-Regime Quality Repair defaults (episodic bursts)
             repair_enabled: true,
-            repair_bad_stable_lo: 0.52,      // Enter if stable < 52% (tighter threshold)
-            repair_bad_share_hi: 0.27,       // Enter if bad > 27%
-            repair_clear_stable_hi: 0.58,    // Clear if stable > 58%
-            repair_clear_bad_lo: 0.22,       // Clear if bad < 22%
-            repair_bad_hold_ticks: 500,      // Hold condition for 500 ticks (more sustained)
-            repair_clear_hold_ticks: 200,    // Hold clear condition for 200 ticks
-            repair_rescue_rate_hi: 0.025,    // Enter if >25 rescues per 1000 ticks (higher threshold)
-            repair_burst_ticks: 30,          // Short burst duration
-            repair_burst_prob: 0.40,         // 40% chance of Perturb during burst (gentler)
-            repair_burst_cooldown: 1000,     // Longer cooldown between bursts
-            repair_perturb_cap_mean: 0.03,   // Max 3% perturb rate (stricter cap)
+            repair_bad_stable_lo: 0.52, // Enter if stable < 52% (tighter threshold)
+            repair_bad_share_hi: 0.27,  // Enter if bad > 27%
+            repair_clear_stable_hi: 0.58, // Clear if stable > 58%
+            repair_clear_bad_lo: 0.22,  // Clear if bad < 22%
+            repair_bad_hold_ticks: 1500, // Phase 2.1s: Increased from 500 to 1500 (more sustained bad state)
+            repair_clear_hold_ticks: 200, // Hold clear condition for 200 ticks
+            repair_rescue_rate_hi: 0.025, // Enter if >25 rescues per 1000 ticks (higher threshold)
+            repair_burst_ticks: 30,      // Base burst duration (Phase 2.1s: can escalate)
+            repair_burst_prob: 0.40,     // Base 40% chance (Phase 2.1s: can escalate)
+            repair_burst_cooldown: 1000, // Cooldown between bursts
+            repair_perturb_cap_mean: 0.03, // Max 3% perturb rate (stricter cap)
+
+            // Phase 2.1s: Episodic burst parameters
+            burst_min_gap_ticks: 4000, // Minimum gap between bursts (prevents rapid re-trigger)
+            burst_max_per_run: 30,     // Maximum bursts per run
+            burst_base_prob: 0.40,     // Base burst probability
+            burst_max_prob: 0.55,      // Maximum burst probability after escalation
+            burst_base_ticks: 30,      // Base burst duration
+            burst_max_ticks: 60,       // Maximum burst duration after escalation
+            burst_pre_window: 200,     // Pre-burst measurement window (ticks)
+            burst_post_window: 400,    // Post-burst measurement window (ticks)
+            burst_td_success_ratio: 0.93, // Success if post_td <= pre_td * 0.93 (7% reduction)
+            burst_bad_improve_abs: 0.03, // Success if bad_share improved by >= 3%
+            burst_stable_gain_abs: 0.03, // Success if stable_share gained >= 3%
+            burst_prob_escalation: 0.05, // Probability increment per failed burst
+            burst_ticks_escalation: 10, // Duration increment per failed burst
 
             // Phase 2.1h: Chronic Instability Clamp v5 defaults (EMA smoothing + hysteresis)
             chronic_window_ticks: 500,     // Sliding window for raw stats
