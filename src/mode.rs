@@ -584,6 +584,12 @@ pub struct ModePolicyState {
     pub bad_in_exploit_count: usize,
     /// Bad state ticks while in Reset mode.
     pub bad_in_reset_count: usize,
+
+    // Phase 2.1l: Quality-gated lock tracking
+    /// Ticks where lock tried to force Exploit but can_exploit was false.
+    pub exploit_forced_while_not_ready: usize,
+    /// Count of times exploit lock was dropped due to can_exploit==false.
+    pub exploit_lock_dropped: usize,
 }
 
 impl ModePolicyState {
@@ -658,6 +664,10 @@ impl ModePolicyState {
             bad_in_explore_count: 0,
             bad_in_exploit_count: 0,
             bad_in_reset_count: 0,
+
+            // Phase 2.1l: Quality-gated lock tracking
+            exploit_forced_while_not_ready: 0,
+            exploit_lock_dropped: 0,
         }
     }
 }
@@ -913,30 +923,62 @@ impl ModePolicy {
         let catastrophic = recent_td >= self.config.catastrophic_abs_td
             || value_drop >= self.config.catastrophic_value_drop;
 
+        // Phase 2.1l: Compute can_exploit EARLY for quality-gated locks
+        let stable_ok = !self.config.exploit_requires_stable || self.state.last_is_stable;
+        let proto_ok = self.state.last_proto_align >= self.config.exploit_proto_min;
+        let margin_ok = self.state.last_topk_margin >= self.config.exploit_margin_min;
+        let gate_ok = self.state.last_gate_passed;
+        let can_exploit = gate_ok && stable_ok && proto_ok && margin_ok;
+
         // Phase 2.1c: Check post-rescue lock (takes priority over exploit lock)
+        // Phase 2.1l: Only force Exploit if can_exploit is true (quality-gated lock)
         if self.state.post_rescue_lock_remaining > 0 && !catastrophic {
-            // Forced to stay in Exploit mode during post-rescue lock
-            self.state.exploit_count += 1;
-            self.state.exploit_streak += 1;
-            if self.state.exploit_streak > self.state.exploit_streak_max {
-                self.state.exploit_streak_max = self.state.exploit_streak;
+            if can_exploit {
+                // Quality conditions met - force Exploit
+                self.state.exploit_count += 1;
+                self.state.exploit_streak += 1;
+                if self.state.exploit_streak > self.state.exploit_streak_max {
+                    self.state.exploit_streak_max = self.state.exploit_streak;
+                }
+                self.state.explore_streak = 0;
+                self.state.last_mode = Mode::Exploit;
+                // Track as hard exploit
+                self.state.exploit_hard_count += 1;
+                if self.state.last_is_bad_state {
+                    self.state.bad_in_exploit_count += 1;
+                }
+                return (Mode::Exploit, false);
+            } else {
+                // Quality conditions NOT met - track and fall through to normal selection
+                self.state.exploit_forced_while_not_ready += 1;
+                // Don't return early - let normal mode selection proceed
             }
-            self.state.explore_streak = 0;
-            self.state.last_mode = Mode::Exploit;
-            return (Mode::Exploit, false);
         }
 
         // Check if we're in exploit lock
+        // Phase 2.1l: Only force Exploit if can_exploit is true (quality-gated lock)
         if self.state.exploit_lock_remaining > 0 && !catastrophic {
-            // Forced to stay in Exploit mode
-            self.state.exploit_count += 1;
-            self.state.exploit_streak += 1;
-            if self.state.exploit_streak > self.state.exploit_streak_max {
-                self.state.exploit_streak_max = self.state.exploit_streak;
+            if can_exploit {
+                // Quality conditions met - force Exploit
+                self.state.exploit_count += 1;
+                self.state.exploit_streak += 1;
+                if self.state.exploit_streak > self.state.exploit_streak_max {
+                    self.state.exploit_streak_max = self.state.exploit_streak;
+                }
+                self.state.explore_streak = 0;
+                self.state.last_mode = Mode::Exploit;
+                // Track as hard exploit
+                self.state.exploit_hard_count += 1;
+                if self.state.last_is_bad_state {
+                    self.state.bad_in_exploit_count += 1;
+                }
+                return (Mode::Exploit, false);
+            } else {
+                // Quality conditions NOT met - drop the lock and track
+                self.state.exploit_lock_dropped += 1;
+                self.state.exploit_lock_remaining = 0;
+                // Fall through to normal mode selection
             }
-            self.state.explore_streak = 0;
-            self.state.last_mode = Mode::Exploit;
-            return (Mode::Exploit, false);
         }
 
         // Phase 2.1c: Check for bad_state condition for stricter rescue
@@ -1123,19 +1165,16 @@ impl ModePolicy {
             Mode::Reset
         } else {
             // Natural Exploit emergence
-            let stable_ok = !self.config.exploit_requires_stable || self.state.last_is_stable;
-            let proto_ok = self.state.last_proto_align >= self.config.exploit_proto_min;
-            let margin_ok = self.state.last_topk_margin >= self.config.exploit_margin_min;
-            let gate_ok = self.state.last_gate_passed;
-            let can_exploit = gate_ok && stable_ok && proto_ok && margin_ok;
-
+            // Note: can_exploit, proto_ok, margin_ok already computed early for quality-gated locks
             let recent_v = self.state.recent_values.mean();
 
             if can_exploit {
                 Mode::Exploit
             } else if recent_v < self.config.explore_v_max {
                 Mode::Explore
-            } else if recent_v >= self.config.exploit_v_min {
+            } else if recent_v >= self.config.exploit_v_min && (proto_ok && margin_ok) {
+                // Phase 2.1l: Soft exploit fallback requires proto_ok && margin_ok
+                // This prevents low-quality exploit from V alone
                 Mode::Exploit
             } else {
                 Mode::Explore
@@ -1163,14 +1202,7 @@ impl ModePolicy {
             }
         }
 
-        // Phase 2.1k: Recompute can_exploit for instrumentation (must match logic above)
-        let can_exploit_for_tracking = {
-            let stable_ok = !self.config.exploit_requires_stable || self.state.last_is_stable;
-            let proto_ok = self.state.last_proto_align >= self.config.exploit_proto_min;
-            let margin_ok = self.state.last_topk_margin >= self.config.exploit_margin_min;
-            let gate_ok = self.state.last_gate_passed;
-            gate_ok && stable_ok && proto_ok && margin_ok
-        };
+        // Phase 2.1l: can_exploit already computed early, use it for tracking
 
         // Update streaks and counters
         match mode {
@@ -1202,7 +1234,7 @@ impl ModePolicy {
                     self.state.exploit_lock_remaining = self.config.min_exploit_ticks_on;
                 }
                 // Phase 2.1k: Track hard vs soft exploit
-                if can_exploit_for_tracking {
+                if can_exploit {
                     self.state.exploit_hard_count += 1;
                 } else {
                     self.state.exploit_soft_count += 1;
@@ -1440,6 +1472,9 @@ impl ModePolicy {
             bad_in_explore_count: self.state.bad_in_explore_count,
             bad_in_exploit_count: self.state.bad_in_exploit_count,
             bad_in_reset_count: self.state.bad_in_reset_count,
+            // Phase 2.1l: Quality-gated lock metrics
+            exploit_forced_while_not_ready: self.state.exploit_forced_while_not_ready,
+            exploit_lock_dropped: self.state.exploit_lock_dropped,
         }
     }
 }
@@ -1481,6 +1516,9 @@ pub struct ModeStats {
     pub bad_in_explore_count: usize,
     pub bad_in_exploit_count: usize,
     pub bad_in_reset_count: usize,
+    // Phase 2.1l: Quality-gated lock metrics
+    pub exploit_forced_while_not_ready: usize,
+    pub exploit_lock_dropped: usize,
 }
 
 // ============================================================================

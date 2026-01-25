@@ -70,6 +70,9 @@ pub struct SeedDiagnostics {
     pub exploit_soft_share: f64,
     pub bad_in_explore_share: f64,
     pub bad_in_exploit_share: f64,
+    // Phase 2.1l: Quality-gated lock metrics
+    pub exploit_forced_while_not_ready: usize,
+    pub exploit_lock_dropped: usize,
 }
 
 /// Phase 2.1b: Warmup stats collector for adaptive thresholds.
@@ -160,31 +163,31 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
         "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 
-    // Phase 2.1k: Print exploit quality metrics table
+    // Phase 2.1l: Print exploit quality metrics table (updated)
     println!();
-    println!("Exploit Quality Metrics (Phase 2.1k):");
+    println!("Exploit Quality Metrics (Phase 2.1l):");
     println!(
-        "────────────────────────────────────────────────────────────────────────────────────────────"
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     println!(
-        "  Seed       | hard_exploit | soft_exploit | soft_share | bad_in_expl% | bad_in_exp%"
+        "  Seed       | hard_expl | soft_expl | soft_share | forced_not_rdy | lock_dropped"
     );
     println!(
-        "────────────────────────────────────────────────────────────────────────────────────────────"
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     for d in diagnostics {
         println!(
-            "  0x{:08X} | {:12} | {:12} | {:9.1}% | {:11.1}% | {:10.1}%",
+            "  0x{:08X} | {:9} | {:9} | {:9.1}% | {:14} | {:12}",
             d.seed,
             d.exploit_hard_count,
             d.exploit_soft_count,
             d.exploit_soft_share * 100.0,
-            d.bad_in_exploit_share * 100.0,
-            d.bad_in_explore_share * 100.0,
+            d.exploit_forced_while_not_ready,
+            d.exploit_lock_dropped,
         );
     }
     println!(
-        "────────────────────────────────────────────────────────────────────────────────────────────"
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 }
 
@@ -1174,6 +1177,9 @@ fn run_single_seed_full(
         } else {
             0.0
         },
+        // Phase 2.1l: Quality-gated lock metrics
+        exploit_forced_while_not_ready: mode_stats.exploit_forced_while_not_ready,
+        exploit_lock_dropped: mode_stats.exploit_lock_dropped,
     };
 
     (run, lift_stats, diag)

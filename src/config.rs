@@ -772,8 +772,8 @@ impl Default for Config {
             // - proto_align mean ~0.126, threshold 0.18 requires above-average quality
             // - margin mean ~0.11, threshold 0.06 requires good separation
             // - require stable anchors for reliable exploit
-            exploit_proto_min: 0.15, // Phase 2.1k: stricter for exploit quality
-            exploit_margin_min: 0.055, // Phase 2.1k: stricter for exploit quality
+            exploit_proto_min: 0.11, // Phase 2.1l: reverted for more hard exploit
+            exploit_margin_min: 0.03, // Phase 2.1l: reverted for more hard exploit
             exploit_requires_stable: true, // Re-enabled: require anchor stability
             focus_bias_exploit: 0.0, // No artificial bias; rely on mode->action mapping
 
