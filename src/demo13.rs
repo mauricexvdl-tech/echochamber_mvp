@@ -584,7 +584,7 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
 pub struct Demo13Options {
     /// Custom seeds (overrides config.demo13_num_seeds).
     pub seeds: Option<Vec<u64>>,
-    /// Quick mode: reduced tick budgets.
+    /// Quick mode: DISABLED (field kept for backwards compatibility, always ignored).
     pub quick: bool,
     /// Output path for JSON results.
     pub out_path: Option<String>,
@@ -597,14 +597,9 @@ pub fn run(config: &Config) {
 
 /// Run Demo 13 with options.
 pub fn run_with_options(config: &Config, options: Demo13Options) {
-    // Apply quick mode overrides
-    let mut config = config.clone();
-    if options.quick {
-        // Reduce tick budgets for faster CI runs while keeping metrics meaningful
-        config.competitive_episodes = 200; // Was 400 (50% reduction)
-        config.competitive_episode_ticks = 300; // Was 500 (40% reduction)
-                                                // Total ticks: 200*300 = 60,000 (vs 200,000 normally) - 70% faster
-    }
+    // Quick mode is permanently disabled - always use full tick budgets
+    // The options.quick field is ignored for backwards compatibility
+    let config = config.clone();
     println!();
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
     println!("DEMO 13: Phase 2.1 - MULTI-SEED EVALUATION + LIFT METRICS");
@@ -636,9 +631,7 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
     println!("  seeds: {:?}", seeds);
     println!("  episodes_per_seed: {}", config.competitive_episodes);
     println!("  ticks_per_episode: {}", config.competitive_episode_ticks);
-    if options.quick {
-        println!("  mode: QUICK (reduced ticks for CI)");
-    }
+    println!("  mode: FULL (quick mode disabled)");
     println!();
 
     let lift_config = LiftConfig {

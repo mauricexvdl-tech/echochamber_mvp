@@ -50,14 +50,12 @@ fn main() {
         println!("║  ECHO CHAMBER MVP - Phase 2.2a: Release Harness               ║");
         println!("╚════════════════════════════════════════════════════════════════╝");
         println!();
+        println!("Quick-Mode: disabled (full runs only)");
         println!("Config hash: {}", config.config_hash());
         println!("Base seed: 0x{:08X}", config.seed);
-        if args.quick {
-            println!("Mode: QUICK (reduced ticks for CI)");
-        }
         println!();
 
-        let result = release::run_release_suite(&config, args.quick);
+        let result = release::run_release_suite(&config);
         release::print_release_table(&result);
 
         let exit_code = if result.pass { 0 } else { 1 };
@@ -137,9 +135,10 @@ fn run_single_demo(config: &Config, args: &CliArgs, demo_num: usize) {
         }
         13 => {
             if config.run_demo_13 {
+                println!("Quick-Mode: disabled (full runs only)");
                 let options = Demo13Options {
                     seeds: args.seeds.clone(),
-                    quick: args.quick,
+                    quick: false, // Quick mode permanently disabled
                     out_path: args.out.clone(),
                 };
                 demo13::run_with_options(config, options);
@@ -155,6 +154,8 @@ fn run_single_demo(config: &Config, args: &CliArgs, demo_num: usize) {
 
 /// Run the full demo suite.
 fn run_full_suite(config: &Config) {
+    println!("Quick-Mode: disabled (full runs only)");
+    println!();
     demo_lie_triangle(config);
     println!();
     demo_latent_causes(config);

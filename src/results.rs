@@ -21,7 +21,7 @@ pub struct ResultMeta {
     pub demo_id: usize,
     /// Seeds used (for multi-seed demos).
     pub seeds: Option<Vec<u64>>,
-    /// Whether quick mode was enabled.
+    /// Whether quick mode was enabled (always false - quick mode permanently disabled).
     pub quick_mode: bool,
 }
 

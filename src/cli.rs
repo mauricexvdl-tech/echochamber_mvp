@@ -15,7 +15,7 @@ pub struct CliArgs {
     pub out: Option<String>,
     /// Config override file path (reserved for future use).
     pub config_path: Option<String>,
-    /// Quick mode: reduced tick budgets for CI smoke tests.
+    /// Quick mode: DISABLED (always runs full evaluation).
     pub quick: bool,
     /// Show help and exit.
     pub help: bool,
@@ -87,7 +87,9 @@ impl CliArgs {
                     }
                 }
                 "--quick" => {
-                    result.quick = true;
+                    // Quick mode is permanently disabled - always use full runs
+                    // Flag is accepted but ignored for backwards compatibility
+                    result.quick = false;
                 }
                 "--release" => {
                     result.release = true;
@@ -117,8 +119,10 @@ impl CliArgs {
         println!("    --seeds <list>    Seeds for demo 13 (e.g. \"1,2,3,4,5\")");
         println!("    --out <path>      Write JSON results to path");
         println!("    --config <path>   Load config overrides (reserved)");
-        println!("    --quick           Quick mode: reduced ticks for CI");
-        println!("    --release         Run release harness (Demos 9, 11, 13) with PASS/FAIL summary");
+        println!("    --quick           [DISABLED] Quick mode no longer available");
+        println!(
+            "    --release         Run release harness (Demos 9, 11, 13) with PASS/FAIL summary"
+        );
         println!("    --help, -h        Show this help");
         println!();
         println!("EXAMPLES:");
@@ -128,11 +132,8 @@ impl CliArgs {
         println!("    cargo run --release -- --release");
         println!("        Run release harness (MVP-critical demos) with exit code");
         println!();
-        println!("    cargo run --release -- --release --quick");
-        println!("        Quick release harness for CI (reduced ticks)");
-        println!();
-        println!("    cargo run --release -- --demo 13 --seeds 1,2,3 --quick --out results/demo13_quick.json");
-        println!("        Quick CI smoke test for demo 13");
+        println!("    cargo run --release -- --demo 13 --seeds 1,2,3 --out results/demo13.json");
+        println!("        Run demo 13 with custom seeds and JSON output");
         println!();
         println!("    cargo run --release -- --demo 9 --out results/demo9.json");
         println!("        Run demo 9 with JSON output");

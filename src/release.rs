@@ -10,13 +10,7 @@ use crate::multiseed::{self, SeedRun};
 use serde::{Deserialize, Serialize};
 
 /// Fixed seeds for deterministic release harness (matches Demo 13 spec).
-pub const RELEASE_SEEDS: [u64; 5] = [
-    0xDEADBEEF,
-    0xEEADBEEF,
-    0xFEADBEEF,
-    0x10EADBEEF,
-    0x11EADBEEF,
-];
+pub const RELEASE_SEEDS: [u64; 5] = [0xDEADBEEF, 0xEEADBEEF, 0xFEADBEEF, 0x10EADBEEF, 0x11EADBEEF];
 
 /// Per-demo row in the release table.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -77,7 +71,8 @@ pub struct Demo13Metrics {
 
 /// Run the release suite: Demo 9, Demo 11, Demo 13.
 /// Returns ReleaseResult with per-demo outcomes and overall pass/fail.
-pub fn run_release_suite(config: &Config, quick: bool) -> ReleaseResult {
+/// Note: Quick mode is permanently disabled - always runs full evaluation.
+pub fn run_release_suite(config: &Config) -> ReleaseResult {
     let mut rows = Vec::new();
 
     // ==========================================================================
@@ -133,7 +128,7 @@ pub fn run_release_suite(config: &Config, quick: bool) -> ReleaseResult {
     println!("RELEASE HARNESS: Running Demo 13 (Multi-seed + lift)...");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    let demo13 = run_demo13_metrics(config, quick);
+    let demo13 = run_demo13_metrics(config);
     let mut notes_parts = Vec::new();
     if demo13.coverage_pos_mean < 0.70 {
         notes_parts.push("cov_mean<70%".to_string());
@@ -499,8 +494,11 @@ fn run_demo9_metrics(config: &Config) -> Demo9Metrics {
                 let is_negative = rng.next_f64() < config.competitive_p_neg;
 
                 if is_negative {
-                    let neg_sig_mask =
-                        flip_bits_simple(sig_mask, config.competitive_neg_flip_bits, rng.next_u64());
+                    let neg_sig_mask = flip_bits_simple(
+                        sig_mask,
+                        config.competitive_neg_flip_bits,
+                        rng.next_u64(),
+                    );
                     let (neg_anchor_id, _, _) = anchor_bank.resolve(neg_sig_mask, global_tick);
                     let neg_key = MemoryKey::new(neg_anchor_id, learned_mask);
                     let decision = keyed_memory.recall(neg_key);
@@ -862,8 +860,11 @@ fn run_demo11_metrics(config: &Config) -> Demo11Metrics {
                 let is_negative = rng.next_f64() < config.competitive_p_neg;
 
                 if is_negative {
-                    let neg_sig_mask =
-                        flip_bits_simple(sig_mask, config.competitive_neg_flip_bits, rng.next_u64());
+                    let neg_sig_mask = flip_bits_simple(
+                        sig_mask,
+                        config.competitive_neg_flip_bits,
+                        rng.next_u64(),
+                    );
                     let (neg_anchor_id, _, _) = anchor_bank.resolve(neg_sig_mask, global_tick);
                     let neg_key = MemoryKey::new(neg_anchor_id, learned_mask);
                     let decision = keyed_memory.recall(neg_key);
@@ -1149,8 +1150,11 @@ fn run_demo11_metrics(config: &Config) -> Demo11Metrics {
                 let is_negative = rng2.next_f64() < config.competitive_p_neg;
 
                 if is_negative {
-                    let neg_sig_mask =
-                        flip_bits_simple(sig_mask, config.competitive_neg_flip_bits, rng2.next_u64());
+                    let neg_sig_mask = flip_bits_simple(
+                        sig_mask,
+                        config.competitive_neg_flip_bits,
+                        rng2.next_u64(),
+                    );
                     let (neg_anchor_id, _, _) = anchor_bank2.resolve(neg_sig_mask, global_tick2);
                     let neg_key = MemoryKey::new(neg_anchor_id, learned_mask);
                     let decision = keyed_memory2.recall(neg_key);
@@ -1250,7 +1254,7 @@ fn run_demo11_metrics(config: &Config) -> Demo11Metrics {
 // Demo 13 Metrics Runner
 // =============================================================================
 
-fn run_demo13_metrics(config: &Config, quick: bool) -> Demo13Metrics {
+fn run_demo13_metrics(config: &Config) -> Demo13Metrics {
     use crate::demo13;
 
     if !config.enable_mode_policy || !config.enable_action_policy {
@@ -1268,12 +1272,8 @@ fn run_demo13_metrics(config: &Config, quick: bool) -> Demo13Metrics {
         };
     }
 
-    // Apply quick mode overrides
-    let mut config = config.clone();
-    if quick {
-        config.competitive_episodes = 200;
-        config.competitive_episode_ticks = 300;
-    }
+    // Quick mode is permanently disabled - always use full tick budgets
+    let config = config.clone();
 
     let seeds: Vec<u64> = RELEASE_SEEDS.to_vec();
     let num_seeds = seeds.len();
@@ -1399,9 +1399,7 @@ fn compute_reward(delta_power: f64, margin: f64, proto_align: f32, config: &Conf
     let margin_term = (margin as f32 / config.margin_norm).clamp(0.0, 1.0);
     let proto_term = proto_align.clamp(0.0, 1.0);
 
-    config.r_w_power * power_term
-        + config.r_w_margin * margin_term
-        + config.r_w_proto * proto_term
+    config.r_w_power * power_term + config.r_w_margin * margin_term + config.r_w_proto * proto_term
 }
 
 /// Flip bits for negative query generation.
