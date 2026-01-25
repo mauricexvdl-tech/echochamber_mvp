@@ -19,6 +19,8 @@ pub struct CliArgs {
     pub quick: bool,
     /// Show help and exit.
     pub help: bool,
+    /// Run release harness (Phase 2.2a): Demos 9, 11, 13 with pass/fail summary.
+    pub release: bool,
 }
 
 impl Default for CliArgs {
@@ -30,6 +32,7 @@ impl Default for CliArgs {
             config_path: None,
             quick: false,
             help: false,
+            release: false,
         }
     }
 }
@@ -86,6 +89,9 @@ impl CliArgs {
                 "--quick" => {
                     result.quick = true;
                 }
+                "--release" => {
+                    result.release = true;
+                }
                 "--help" | "-h" => {
                     result.help = true;
                 }
@@ -101,7 +107,7 @@ impl CliArgs {
 
     /// Print usage help.
     pub fn print_help() {
-        println!("Echo Chamber MVP - Phase 2.2");
+        println!("Echo Chamber MVP - Phase 2.2a");
         println!();
         println!("USAGE:");
         println!("    cargo run --release [-- OPTIONS]");
@@ -112,11 +118,18 @@ impl CliArgs {
         println!("    --out <path>      Write JSON results to path");
         println!("    --config <path>   Load config overrides (reserved)");
         println!("    --quick           Quick mode: reduced ticks for CI");
+        println!("    --release         Run release harness (Demos 9, 11, 13) with PASS/FAIL summary");
         println!("    --help, -h        Show this help");
         println!();
         println!("EXAMPLES:");
         println!("    cargo run --release");
         println!("        Run full demo suite (1-13)");
+        println!();
+        println!("    cargo run --release -- --release");
+        println!("        Run release harness (MVP-critical demos) with exit code");
+        println!();
+        println!("    cargo run --release -- --release --quick");
+        println!("        Quick release harness for CI (reduced ticks)");
         println!();
         println!("    cargo run --release -- --demo 13 --seeds 1,2,3 --quick --out results/demo13_quick.json");
         println!("        Quick CI smoke test for demo 13");

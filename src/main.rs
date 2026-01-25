@@ -19,6 +19,7 @@ mod memory;
 mod mode;
 mod multiseed;
 mod regret;
+mod release;
 mod results;
 mod rng;
 
@@ -42,6 +43,28 @@ fn main() {
     }
 
     let config = Config::default();
+
+    // Handle --release (release harness mode)
+    if args.release {
+        println!("╔════════════════════════════════════════════════════════════════╗");
+        println!("║  ECHO CHAMBER MVP - Phase 2.2a: Release Harness               ║");
+        println!("╚════════════════════════════════════════════════════════════════╝");
+        println!();
+        println!("Config hash: {}", config.config_hash());
+        println!("Base seed: 0x{:08X}", config.seed);
+        if args.quick {
+            println!("Mode: QUICK (reduced ticks for CI)");
+        }
+        println!();
+
+        let result = release::run_release_suite(&config, args.quick);
+        release::print_release_table(&result);
+
+        let exit_code = if result.pass { 0 } else { 1 };
+        println!();
+        println!("Exit code: {}", exit_code);
+        std::process::exit(exit_code);
+    }
 
     // Print header
     println!("╔════════════════════════════════════════════════════════════════╗");

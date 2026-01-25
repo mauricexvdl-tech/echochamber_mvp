@@ -1266,7 +1266,7 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
 }
 
 /// Run a single seed with FULL policy (Phase 2.1b with guardrails).
-fn run_single_seed_full(
+pub fn run_single_seed_full(
     config: &Config,
     lift_config: &LiftConfig,
     seed: u64,
@@ -2027,7 +2027,7 @@ fn run_single_seed_full(
 }
 
 /// Run a single seed with RANDOM_BUDGETED policy.
-fn run_single_seed_budgeted(
+pub fn run_single_seed_budgeted(
     config: &Config,
     lift_config: &LiftConfig,
     seed: u64,
