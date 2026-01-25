@@ -612,6 +612,22 @@ pub struct ActionPolicy {
     pub floor: Option<PerturbFloor>,
     /// Phase 2.1e: Perturb budget cap.
     pub budget: Option<PerturbBudget>,
+
+    // Phase 2.1r: Bad-Regime Quality Repair state
+    /// Ticks that bad-regime condition has been held.
+    pub repair_bad_hold: u32,
+    /// Ticks that clear condition has been held.
+    pub repair_clear_hold: u32,
+    /// Remaining ticks in current burst.
+    pub repair_burst_remaining: u32,
+    /// Cooldown remaining after burst.
+    pub repair_burst_cooldown: u32,
+    /// Total bursts triggered.
+    pub repair_burst_trigger_count: u32,
+    /// Total ticks spent in burst mode.
+    pub repair_burst_total_ticks: u32,
+    /// RNG state for burst probability (seeded).
+    pub repair_rng_state: u64,
 }
 
 impl ActionPolicy {
@@ -623,6 +639,14 @@ impl ActionPolicy {
             trigger_stats: PerturbTriggerStats::new(),
             floor: None,
             budget: None,
+            // Phase 2.1r: Repair burst state
+            repair_bad_hold: 0,
+            repair_clear_hold: 0,
+            repair_burst_remaining: 0,
+            repair_burst_cooldown: 0,
+            repair_burst_trigger_count: 0,
+            repair_burst_total_ticks: 0,
+            repair_rng_state: 0x12345678,
         }
     }
 
@@ -635,6 +659,14 @@ impl ActionPolicy {
             trigger_stats: PerturbTriggerStats::new(),
             floor: Some(PerturbFloor::new(floor_window, floor_min_rate)),
             budget: None,
+            // Phase 2.1r: Repair burst state
+            repair_bad_hold: 0,
+            repair_clear_hold: 0,
+            repair_burst_remaining: 0,
+            repair_burst_cooldown: 0,
+            repair_burst_trigger_count: 0,
+            repair_burst_total_ticks: 0,
+            repair_rng_state: 0x12345678,
         }
     }
 
@@ -653,6 +685,14 @@ impl ActionPolicy {
             trigger_stats: PerturbTriggerStats::new(),
             floor: Some(PerturbFloor::new(floor_window, floor_min_rate)),
             budget: Some(PerturbBudget::new(budget_window, budget_max_rate)),
+            // Phase 2.1r: Repair burst state
+            repair_bad_hold: 0,
+            repair_clear_hold: 0,
+            repair_burst_remaining: 0,
+            repair_burst_cooldown: 0,
+            repair_burst_trigger_count: 0,
+            repair_burst_total_ticks: 0,
+            repair_rng_state: 0x12345678,
         }
     }
 
@@ -947,5 +987,145 @@ impl ActionPolicy {
         }
 
         false
+    }
+
+    // =========================================================================
+    // Phase 2.1r: Bad-Regime Quality Repair (Targeted Perturb Burst)
+    // =========================================================================
+
+    /// Set the repair RNG seed for deterministic burst probability.
+    pub fn set_repair_seed(&mut self, seed: u64) {
+        self.repair_rng_state = seed;
+    }
+
+    /// Simple LCG RNG for burst probability (deterministic).
+    fn repair_rng_next(&mut self) -> f32 {
+        // LCG: state = (a * state + c) mod m
+        self.repair_rng_state = self.repair_rng_state.wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        // Return value in [0, 1)
+        (self.repair_rng_state >> 33) as f32 / (1u64 << 31) as f32
+    }
+
+    /// Update the repair burst state based on rolling stats.
+    /// Call this every tick with current rolling stats from ModePolicy.
+    pub fn update_repair_burst(
+        &mut self,
+        stable_share: f32,
+        bad_share: f32,
+        rescue_rate: f32, // rescues per tick in rolling window
+        config: &crate::config::Config,
+    ) {
+        if !config.repair_enabled {
+            return;
+        }
+
+        // Decrement cooldown
+        if self.repair_burst_cooldown > 0 {
+            self.repair_burst_cooldown -= 1;
+        }
+
+        // Decrement burst remaining
+        if self.repair_burst_remaining > 0 {
+            self.repair_burst_remaining -= 1;
+            self.repair_burst_total_ticks += 1;
+        }
+
+        // Check bad regime conditions (OR logic: any condition can trigger)
+        let stable_bad = stable_share < config.repair_bad_stable_lo;
+        let bad_high = bad_share > config.repair_bad_share_hi;
+        let rescue_high = rescue_rate > config.repair_rescue_rate_hi;
+        let in_bad_regime = stable_bad || bad_high || rescue_high;
+
+        // Check clear conditions
+        let clear_ok = stable_share > config.repair_clear_stable_hi
+            && bad_share < config.repair_clear_bad_lo;
+
+        // Update hold counters
+        if in_bad_regime {
+            self.repair_bad_hold += 1;
+            self.repair_clear_hold = 0;
+        } else if clear_ok {
+            self.repair_clear_hold += 1;
+            // Only reset bad hold after sustained clear
+            if self.repair_clear_hold >= config.repair_clear_hold_ticks {
+                self.repair_bad_hold = 0;
+            }
+        } else {
+            // Neither bad nor clear - decay holds slowly
+            self.repair_clear_hold = 0;
+            // Keep bad_hold - don't reset unless clear conditions met
+        }
+
+        // Trigger burst if:
+        // - bad_hold exceeded threshold
+        // - not currently in burst
+        // - cooldown expired
+        if self.repair_bad_hold >= config.repair_bad_hold_ticks
+            && self.repair_burst_remaining == 0
+            && self.repair_burst_cooldown == 0
+        {
+            self.repair_burst_remaining = config.repair_burst_ticks;
+            self.repair_burst_cooldown = config.repair_burst_cooldown;
+            self.repair_burst_trigger_count += 1;
+            self.repair_bad_hold = 0; // Reset hold after triggering
+        }
+    }
+
+    /// Check if burst is currently active.
+    pub fn is_repair_burst_active(&self) -> bool {
+        self.repair_burst_remaining > 0
+    }
+
+    /// Apply burst override to action selection.
+    /// Returns Some(Action::Perturb) if burst should override, None otherwise.
+    pub fn apply_repair_burst_override(
+        &mut self,
+        is_soft_exploit: bool,
+        is_bad_state: bool,
+        config: &crate::config::Config,
+    ) -> Option<Action> {
+        if !config.repair_enabled || self.repair_burst_remaining == 0 {
+            return None;
+        }
+
+        // Only override during soft exploit OR when in bad state
+        if !is_soft_exploit && !is_bad_state {
+            return None;
+        }
+
+        // Check budget cap - don't burst if already over perturb cap
+        if let Some(ref budget) = self.budget {
+            if budget.perturb_rate() >= config.repair_perturb_cap_mean {
+                return None;
+            }
+        }
+
+        // Apply burst probability
+        let rand_val = self.repair_rng_next();
+        if rand_val < config.repair_burst_prob {
+            Some(Action::Perturb)
+        } else {
+            None
+        }
+    }
+
+    /// Get repair burst statistics.
+    pub fn repair_burst_stats(&self) -> (u32, u32, u32) {
+        (
+            self.repair_burst_trigger_count,
+            self.repair_burst_total_ticks,
+            self.repair_burst_remaining,
+        )
+    }
+
+    /// Get current repair state for diagnostics.
+    pub fn repair_state(&self) -> (u32, u32, u32, u32) {
+        (
+            self.repair_bad_hold,
+            self.repair_clear_hold,
+            self.repair_burst_remaining,
+            self.repair_burst_cooldown,
+        )
     }
 }

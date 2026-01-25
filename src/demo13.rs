@@ -93,6 +93,10 @@ pub struct SeedDiagnostics {
     pub soft_proto_bad_active_ticks: u32,
     pub soft_proto_bad_active_share: f64,
     pub soft_proto_avg_effective_period: f64,
+    // Phase 2.1r: Repair burst metrics
+    pub repair_burst_triggers: u32,
+    pub repair_burst_total_ticks: u32,
+    pub repair_burst_active_share: f64,
 }
 
 /// Phase 2.1b: Warmup stats collector for adaptive thresholds.
@@ -311,6 +315,48 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
     );
     println!(
         "─────────────────────────────────────────────────────────────────────────────────────"
+    );
+
+    // Phase 2.1r: Repair burst diagnostics
+    println!();
+    println!("Phase 2.1r: Bad-Regime Quality Repair (Perturb Burst)");
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+    println!(
+        "  {:>10} | {:>10} | {:>12} | {:>12} | {:>10} | {:>10}",
+        "Seed", "Triggers", "Burst Ticks", "Burst%", "Rescues", "Perturb%"
+    );
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+    for d in diagnostics {
+        println!(
+            "  0x{:08X} | {:10} | {:12} | {:11.2}% | {:10} | {:9.2}%",
+            d.seed,
+            d.repair_burst_triggers,
+            d.repair_burst_total_ticks,
+            d.repair_burst_active_share,
+            d.rescue_count,
+            d.perturb_rate * 100.0,
+        );
+    }
+    // Summary stats
+    let burst_triggers: Vec<u32> = diagnostics.iter().map(|d| d.repair_burst_triggers).collect();
+    let burst_shares: Vec<f64> = diagnostics.iter().map(|d| d.repair_burst_active_share).collect();
+    let rescues: Vec<usize> = diagnostics.iter().map(|d| d.rescue_count).collect();
+    let mean_triggers = burst_triggers.iter().sum::<u32>() as f64 / burst_triggers.len().max(1) as f64;
+    let mean_burst_share = burst_shares.iter().sum::<f64>() / burst_shares.len().max(1) as f64;
+    let mean_rescues = rescues.iter().sum::<usize>() as f64 / rescues.len().max(1) as f64;
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+    println!(
+        "  {:>10} | {:10.1} | {:>12} | {:11.2}% | {:10.1} |",
+        "Mean", mean_triggers, "-", mean_burst_share, mean_rescues,
+    );
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────────────"
     );
 }
 
@@ -1023,6 +1069,8 @@ fn run_single_seed_full(
         config.perturb_budget_window,
         config.perturb_cap,
     );
+    // Phase 2.1r: Set repair RNG seed for deterministic burst probability
+    action_policy.set_repair_seed(seed.wrapping_add(0x2E2E_2E2E));
 
     let mut rng = Rng::new(seed.wrapping_add(0x7A7A_7A7A));
     let mut chamber = EchoChamber::random_graph(config.clone(), &mut rng);
@@ -1220,6 +1268,19 @@ fn run_single_seed_full(
             // Phase 2.1q: Update adaptive soft-proto period state
             mode_policy.update_adaptive_soft_proto(config);
 
+            // Phase 2.1r: Update repair burst state with rolling stats
+            // Use RAW chronic window shares (not EMA) for more responsive detection
+            let repair_stable_share = mode_policy.state.chronic_window.stable_share();
+            let repair_bad_share = mode_policy.state.chronic_window.bad_share();
+            let repair_rescue_rate = mode_policy.rescue_window_count() as f32
+                / mode_policy.state.soft_proto_rescue_window.len().max(1) as f32;
+            action_policy.update_repair_burst(
+                repair_stable_share,
+                repair_bad_share,
+                repair_rescue_rate,
+                config,
+            );
+
             match mode {
                 Mode::Explore => explore_count += 1,
                 Mode::Exploit => exploit_count += 1,
@@ -1268,6 +1329,25 @@ fn run_single_seed_full(
                     if rng_val < config.soft_exploit_scan_prob {
                         action = Action::Scan;
                     }
+                }
+            }
+
+            // Phase 2.1r: Apply repair burst override
+            // During burst, force Perturb with high probability when in soft exploit or bad state
+            if action != Action::Perturb && trigger_reason.is_none() {
+                let is_soft_exploit = mode == Mode::Exploit && !mode_policy.last_can_exploit();
+                let is_bad_state = proto_align < config.rescue_bad_proto
+                    && topk_margin < config.rescue_bad_margin
+                    && anchor_value < config.rescue_bad_value;
+
+                if let Some(burst_action) =
+                    action_policy.apply_repair_burst_override(is_soft_exploit, is_bad_state, config)
+                {
+                    action = burst_action;
+                    action_policy
+                        .triggers
+                        .on_perturb(config.perturb_cooldown_ticks);
+                    // Note: We don't add to trigger_stats since this is burst-driven
                 }
             }
 
@@ -1688,6 +1768,17 @@ fn run_single_seed_full(
             }
         },
         soft_proto_avg_effective_period: mode_stats.soft_proto_avg_effective_period,
+        // Phase 2.1r: Repair burst metrics
+        repair_burst_triggers: action_policy.repair_burst_trigger_count,
+        repair_burst_total_ticks: action_policy.repair_burst_total_ticks,
+        repair_burst_active_share: {
+            let total_ticks = mode_stats.explore_count + mode_stats.exploit_count + mode_stats.reset_count;
+            if total_ticks > 0 {
+                action_policy.repair_burst_total_ticks as f64 / total_ticks as f64 * 100.0
+            } else {
+                0.0
+            }
+        },
     };
 
     (run, lift_stats, diag)

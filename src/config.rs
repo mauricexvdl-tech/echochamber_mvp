@@ -343,6 +343,34 @@ pub struct Config {
     pub soft_proto_bad_clear_bad: f32,
 
     // =========================================================================
+    // Phase 2.1r: Bad-Regime Quality Repair (Targeted Perturb Burst)
+    // =========================================================================
+    /// Enable bad-regime perturb burst repair mechanism.
+    pub repair_enabled: bool,
+    /// Enter bad-regime if stable_share < this threshold.
+    pub repair_bad_stable_lo: f32,
+    /// Enter bad-regime if bad_share > this threshold.
+    pub repair_bad_share_hi: f32,
+    /// Clear bad-regime if stable_share > this threshold.
+    pub repair_clear_stable_hi: f32,
+    /// Clear bad-regime if bad_share < this threshold.
+    pub repair_clear_bad_lo: f32,
+    /// Ticks condition must hold before entering bad-regime.
+    pub repair_bad_hold_ticks: u32,
+    /// Ticks clear conditions must hold before exiting bad-regime.
+    pub repair_clear_hold_ticks: u32,
+    /// Enter bad-regime if rescue rate exceeds this (per tick in 1000-tick window).
+    pub repair_rescue_rate_hi: f32,
+    /// Duration of perturb burst in ticks.
+    pub repair_burst_ticks: u32,
+    /// Probability of choosing Perturb during burst (when eligible).
+    pub repair_burst_prob: f32,
+    /// Cooldown after burst before another can trigger.
+    pub repair_burst_cooldown: u32,
+    /// Maximum allowed perturb rate mean (safety cap).
+    pub repair_perturb_cap_mean: f32,
+
+    // =========================================================================
     // Phase 2.1h: Chronic Instability Clamp v5 (EMA smoothing + hysteresis)
     // =========================================================================
     /// Window size for chronic instability detection (ticks).
@@ -808,6 +836,20 @@ impl Default for Config {
             soft_proto_bad_hold_ticks: 1200, // Hold bad mode for 1200 ticks
             soft_proto_bad_clear_stable: 0.62, // Early clear if stable > 62%
             soft_proto_bad_clear_bad: 0.24, // Early clear if bad < 24%
+
+            // Phase 2.1r: Bad-Regime Quality Repair defaults (gentle tuning)
+            repair_enabled: true,
+            repair_bad_stable_lo: 0.52,      // Enter if stable < 52% (tighter threshold)
+            repair_bad_share_hi: 0.27,       // Enter if bad > 27%
+            repair_clear_stable_hi: 0.58,    // Clear if stable > 58%
+            repair_clear_bad_lo: 0.22,       // Clear if bad < 22%
+            repair_bad_hold_ticks: 500,      // Hold condition for 500 ticks (more sustained)
+            repair_clear_hold_ticks: 200,    // Hold clear condition for 200 ticks
+            repair_rescue_rate_hi: 0.025,    // Enter if >25 rescues per 1000 ticks (higher threshold)
+            repair_burst_ticks: 30,          // Short burst duration
+            repair_burst_prob: 0.40,         // 40% chance of Perturb during burst (gentler)
+            repair_burst_cooldown: 1000,     // Longer cooldown between bursts
+            repair_perturb_cap_mean: 0.03,   // Max 3% perturb rate (stricter cap)
 
             // Phase 2.1h: Chronic Instability Clamp v5 defaults (EMA smoothing + hysteresis)
             chronic_window_ticks: 500,     // Sliding window for raw stats
