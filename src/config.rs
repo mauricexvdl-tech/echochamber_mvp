@@ -716,7 +716,7 @@ impl Default for Config {
             chronic_window_ticks: 500,     // Sliding window for raw stats
             chronic_share_ema_alpha: 0.05, // EMA smoothing (slower response)
             chronic_bad_share_hi: 0.35,    // ENTER if bad_ema > 35%
-            chronic_stable_share_lo: 0.46, // ENTER if stable_ema < 46%
+            chronic_stable_share_lo: 0.50, // ENTER if stable_ema < 50%
             chronic_enter_hold_ticks: 200, // Enter-hold window
             chronic_enter_hold_tolerance: 0.05, // Require 95% pass-rate
             chronic_exit_bad_max: 0.25,    // EXIT if bad_ema < 25% AND stable_ema > 55%
@@ -724,11 +724,11 @@ impl Default for Config {
             chronic_exit_hold_ticks: 150,  // Hold exit conditions
             chronic_exit_hold_tolerance: 0.10, // Allow 10% failures
             chronic_explore_cap: 0.10,     // Max 10% Explore while clamped
-            chronic_lock_ticks: 260,       // Minimum lock duration
+            chronic_lock_ticks: 190,       // Minimum lock duration
             chronic_exploit_margin_scale: 1.20, // Slightly stricter margin during clamp
             chronic_focus_bias: 2.5,       // Focus bias during clamp
-            chronic_min_ticks_before_enable: 5000, // Wait before enabling
-            chronic_rearm_cooldown: 900,   // Cooldown after expiry (longer to reduce re-entry)
+            chronic_min_ticks_before_enable: 20000, // Wait before enabling (reduce early flapping)
+            chronic_rearm_cooldown: 1500,  // Cooldown after expiry (longer to reduce re-entry)
             chronic_max_share: 0.50,       // Watchdog: max 50% chronic time
             chronic_release_cooldown: 200, // Cooldown after watchdog release
             chronic_escape_after: 1000,    // Escape pulse after 1000 continuous ticks
