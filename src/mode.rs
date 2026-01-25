@@ -253,6 +253,12 @@ pub struct ModePolicyConfig {
     pub lock_fail_drop_streak: u32,
     /// Minimum proto alignment for soft exploit fallback.
     pub proto_soft_min: f32,
+
+    // Phase 2.1n: Quality-aware actions + rescue throttle
+    /// Max rescues per 10k ticks before throttle kicks in.
+    pub rescue_max_per_10k: u32,
+    /// Extended cooldown when rescue throttle is active.
+    pub rescue_throttle_cooldown: u32,
 }
 
 impl Default for ModePolicyConfig {
@@ -318,6 +324,10 @@ impl Default for ModePolicyConfig {
             // Phase 2.1m: Lock hysteresis + soft exploit relaxation
             lock_fail_drop_streak: 12,
             proto_soft_min: 0.08,
+
+            // Phase 2.1n: Quality-aware actions + rescue throttle
+            rescue_max_per_10k: 15,
+            rescue_throttle_cooldown: 500,
         }
     }
 }
@@ -384,6 +394,10 @@ impl ModePolicyConfig {
             // Phase 2.1m: Lock hysteresis + soft exploit relaxation
             lock_fail_drop_streak: config.lock_fail_drop_streak,
             proto_soft_min: config.proto_soft_min,
+
+            // Phase 2.1n: Quality-aware actions + rescue throttle
+            rescue_max_per_10k: config.rescue_max_per_10k,
+            rescue_throttle_cooldown: config.rescue_throttle_cooldown,
         }
     }
 }
@@ -612,6 +626,30 @@ pub struct ModePolicyState {
     pub lock_force_success: usize,
     /// Ticks where grace period was used (can_exploit==false but within streak limit).
     pub lock_force_grace_used: usize,
+
+    // Phase 2.1n: Quality-aware action state
+    /// Last computed can_exploit flag (exposed for ActionPolicy).
+    pub last_can_exploit: bool,
+    /// Scan action count during hard exploit.
+    pub hard_exploit_scan_count: usize,
+    /// Focus action count during hard exploit.
+    pub hard_exploit_focus_count: usize,
+    /// Perturb action count during hard exploit.
+    pub hard_exploit_perturb_count: usize,
+    /// Scan action count during soft exploit.
+    pub soft_exploit_scan_count: usize,
+    /// Focus action count during soft exploit.
+    pub soft_exploit_focus_count: usize,
+    /// Perturb action count during soft exploit.
+    pub soft_exploit_perturb_count: usize,
+
+    // Phase 2.1n: Rescue throttle state
+    /// Ring buffer tracking rescue ticks in last 10k window.
+    pub rescue_tick_window: Vec<u64>,
+    /// Current index in rescue tick window.
+    pub rescue_tick_window_idx: usize,
+    /// Whether rescue throttle is currently active.
+    pub rescue_throttle_active: bool,
 }
 
 impl ModePolicyState {
@@ -696,6 +734,20 @@ impl ModePolicyState {
             can_exploit_fail_streak_max: 0,
             lock_force_success: 0,
             lock_force_grace_used: 0,
+
+            // Phase 2.1n: Quality-aware action state
+            last_can_exploit: false,
+            hard_exploit_scan_count: 0,
+            hard_exploit_focus_count: 0,
+            hard_exploit_perturb_count: 0,
+            soft_exploit_scan_count: 0,
+            soft_exploit_focus_count: 0,
+            soft_exploit_perturb_count: 0,
+
+            // Phase 2.1n: Rescue throttle state
+            rescue_tick_window: Vec::with_capacity(50), // max rescues we track
+            rescue_tick_window_idx: 0,
+            rescue_throttle_active: false,
         }
     }
 }
@@ -958,6 +1010,9 @@ impl ModePolicy {
         let gate_ok = self.state.last_gate_passed;
         let can_exploit = gate_ok && stable_ok && proto_ok && margin_ok;
 
+        // Phase 2.1n: Expose can_exploit for ActionPolicy quality-aware mapping
+        self.state.last_can_exploit = can_exploit;
+
         // Phase 2.1m: Lock handling with hysteresis (applies to both post_rescue_lock and exploit_lock)
         let in_any_lock = (self.state.post_rescue_lock_remaining > 0
             || self.state.exploit_lock_remaining > 0)
@@ -1040,7 +1095,27 @@ impl ModePolicy {
         if rescue_needed {
             // Trigger rescue: force Reset mode
             self.state.rescue_count += 1;
-            self.state.rescue_cooldown = self.config.rescue_cooldown;
+
+            // Phase 2.1n: Rescue throttle - track recent rescues and extend cooldown if too many
+            // Clean old rescues from window (keep only those within last 10k ticks)
+            let window_start = current_tick.saturating_sub(10000);
+            self.state
+                .rescue_tick_window
+                .retain(|&t| t >= window_start);
+
+            // Add current rescue
+            self.state.rescue_tick_window.push(current_tick);
+
+            // Check if throttle should be active
+            let rescues_in_window = self.state.rescue_tick_window.len() as u32;
+            self.state.rescue_throttle_active = rescues_in_window > self.config.rescue_max_per_10k;
+
+            // Apply appropriate cooldown
+            self.state.rescue_cooldown = if self.state.rescue_throttle_active {
+                self.config.rescue_throttle_cooldown
+            } else {
+                self.config.rescue_cooldown
+            };
             self.state.explore_streak = 0;
             self.state.exploit_streak = 0;
             self.state.gate_fail_streak = 0;
@@ -1368,6 +1443,29 @@ impl ModePolicy {
         self.state.chronic_escape_remaining > 0
     }
 
+    /// Phase 2.1n: Get last computed can_exploit flag for quality-aware action mapping.
+    pub fn last_can_exploit(&self) -> bool {
+        self.state.last_can_exploit
+    }
+
+    /// Phase 2.1n: Record action taken during Exploit mode for instrumentation.
+    pub fn record_exploit_action(&mut self, action: crate::action::Action, can_exploit: bool) {
+        use crate::action::Action;
+        if can_exploit {
+            match action {
+                Action::Scan => self.state.hard_exploit_scan_count += 1,
+                Action::Focus => self.state.hard_exploit_focus_count += 1,
+                Action::Perturb => self.state.hard_exploit_perturb_count += 1,
+            }
+        } else {
+            match action {
+                Action::Scan => self.state.soft_exploit_scan_count += 1,
+                Action::Focus => self.state.soft_exploit_focus_count += 1,
+                Action::Perturb => self.state.soft_exploit_perturb_count += 1,
+            }
+        }
+    }
+
     /// Phase 2.1d: Get total ticks spent in chronic lock.
     pub fn chronic_lock_total_ticks(&self) -> usize {
         self.state.chronic_lock_total_ticks
@@ -1518,6 +1616,14 @@ impl ModePolicy {
             can_exploit_fail_streak_max: self.state.can_exploit_fail_streak_max,
             lock_force_success: self.state.lock_force_success,
             lock_force_grace_used: self.state.lock_force_grace_used,
+            // Phase 2.1n: Quality-aware action splits
+            hard_exploit_scan_count: self.state.hard_exploit_scan_count,
+            hard_exploit_focus_count: self.state.hard_exploit_focus_count,
+            hard_exploit_perturb_count: self.state.hard_exploit_perturb_count,
+            soft_exploit_scan_count: self.state.soft_exploit_scan_count,
+            soft_exploit_focus_count: self.state.soft_exploit_focus_count,
+            soft_exploit_perturb_count: self.state.soft_exploit_perturb_count,
+            rescue_throttle_was_active: self.state.rescue_throttle_active,
         }
     }
 }
@@ -1566,6 +1672,15 @@ pub struct ModeStats {
     pub can_exploit_fail_streak_max: u32,
     pub lock_force_success: usize,
     pub lock_force_grace_used: usize,
+    // Phase 2.1n: Quality-aware action splits
+    pub hard_exploit_scan_count: usize,
+    pub hard_exploit_focus_count: usize,
+    pub hard_exploit_perturb_count: usize,
+    pub soft_exploit_scan_count: usize,
+    pub soft_exploit_focus_count: usize,
+    pub soft_exploit_perturb_count: usize,
+    /// Whether rescue throttle was ever active.
+    pub rescue_throttle_was_active: bool,
 }
 
 // ============================================================================

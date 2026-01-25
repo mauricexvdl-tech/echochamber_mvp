@@ -287,6 +287,16 @@ pub struct Config {
     pub proto_soft_min: f32,
 
     // =========================================================================
+    // Phase 2.1n: Quality-aware actions + rescue throttle
+    // =========================================================================
+    /// Probability of Scan during soft exploit (0.0=always Focus, 1.0=always Scan).
+    pub soft_exploit_scan_prob: f32,
+    /// Max rescues per 10k ticks before throttle kicks in.
+    pub rescue_max_per_10k: u32,
+    /// Extended cooldown when rescue throttle is active.
+    pub rescue_throttle_cooldown: u32,
+
+    // =========================================================================
     // Phase 2.1h: Chronic Instability Clamp v5 (EMA smoothing + hysteresis)
     // =========================================================================
     /// Window size for chronic instability detection (ticks).
@@ -723,6 +733,11 @@ impl Default for Config {
             // Phase 2.1m: Lock hysteresis + soft exploit relaxation defaults
             lock_fail_drop_streak: 12,   // Grace period before dropping lock
             proto_soft_min: 0.08,        // Relaxed proto threshold for soft exploit
+
+            // Phase 2.1n: Quality-aware action defaults
+            soft_exploit_scan_prob: 0.0, // Disabled: soft exploit uses Focus (same as hard)
+            rescue_max_per_10k: 15,       // Max rescues per 10k ticks before throttle
+            rescue_throttle_cooldown: 500, // Extended cooldown when throttle active
 
             // Phase 2.1h: Chronic Instability Clamp v5 defaults (EMA smoothing + hysteresis)
             chronic_window_ticks: 500,     // Sliding window for raw stats

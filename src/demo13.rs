@@ -77,6 +77,12 @@ pub struct SeedDiagnostics {
     pub can_exploit_fail_streak_max: u32,
     pub lock_force_success: usize,
     pub lock_force_grace_used: usize,
+    // Phase 2.1n: Quality-aware action splits
+    pub hard_exploit_scan_share: f64,
+    pub hard_exploit_focus_share: f64,
+    pub soft_exploit_scan_share: f64,
+    pub soft_exploit_focus_share: f64,
+    pub rescue_throttle_was_active: bool,
 }
 
 /// Phase 2.1b: Warmup stats collector for adaptive thresholds.
@@ -194,6 +200,38 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
     }
     println!(
         "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+
+    // Phase 2.1n: Print quality-aware action split metrics
+    println!();
+    println!("Quality-Aware Action Splits (Phase 2.1n):");
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+    println!(
+        "  Seed       | hard_scan% | hard_focus% | soft_scan% | soft_focus% | throttle"
+    );
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+    for d in diagnostics {
+        let throttle_mark = if d.rescue_throttle_was_active {
+            "⚠"
+        } else {
+            ""
+        };
+        println!(
+            "  0x{:08X} | {:9.1}% | {:10.1}% | {:9.1}% | {:10.1}% | {:>8}",
+            d.seed,
+            d.hard_exploit_scan_share * 100.0,
+            d.hard_exploit_focus_share * 100.0,
+            d.soft_exploit_scan_share * 100.0,
+            d.soft_exploit_focus_share * 100.0,
+            throttle_mark,
+        );
+    }
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 }
 
@@ -883,6 +921,21 @@ fn run_single_seed_full(
                 );
             }
 
+            // Phase 2.1n: Quality-aware action mapping in soft exploit
+            // If mode==Exploit but can_exploit==false (soft exploit), prefer Scan over Focus
+            // to rebuild signal quality instead of consolidating poor signal
+            if mode == Mode::Exploit && action == Action::Focus {
+                let can_exploit = mode_policy.last_can_exploit();
+                if !can_exploit {
+                    // Soft exploit: probabilistically choose Scan to repair signal
+                    // Use deterministic hash of tick for reproducibility
+                    let rng_val = ((global_tick * 2654435761) % 1000) as f32 / 1000.0;
+                    if rng_val < config.soft_exploit_scan_prob {
+                        action = Action::Scan;
+                    }
+                }
+            }
+
             // Phase 2.1e: Enforce perturb budget cap (BEFORE min perturb guard)
             // If over budget and action is Perturb (not from Reset mode), downgrade to Focus
             if action == Action::Perturb && mode != Mode::Reset {
@@ -920,6 +973,11 @@ fn run_single_seed_full(
 
             action_policy.record_trigger(trigger_reason);
             action_policy.record_action_for_floor(action);
+
+            // Phase 2.1n: Record action during Exploit for quality-aware instrumentation
+            if mode == Mode::Exploit {
+                mode_policy.record_exploit_action(action, mode_policy.last_can_exploit());
+            }
 
             let action_overrides = action_policy.get_overrides(action);
 
@@ -1190,6 +1248,48 @@ fn run_single_seed_full(
         can_exploit_fail_streak_max: mode_stats.can_exploit_fail_streak_max,
         lock_force_success: mode_stats.lock_force_success,
         lock_force_grace_used: mode_stats.lock_force_grace_used,
+        // Phase 2.1n: Quality-aware action splits
+        hard_exploit_scan_share: {
+            let total_hard = mode_stats.hard_exploit_scan_count
+                + mode_stats.hard_exploit_focus_count
+                + mode_stats.hard_exploit_perturb_count;
+            if total_hard > 0 {
+                mode_stats.hard_exploit_scan_count as f64 / total_hard as f64
+            } else {
+                0.0
+            }
+        },
+        hard_exploit_focus_share: {
+            let total_hard = mode_stats.hard_exploit_scan_count
+                + mode_stats.hard_exploit_focus_count
+                + mode_stats.hard_exploit_perturb_count;
+            if total_hard > 0 {
+                mode_stats.hard_exploit_focus_count as f64 / total_hard as f64
+            } else {
+                0.0
+            }
+        },
+        soft_exploit_scan_share: {
+            let total_soft = mode_stats.soft_exploit_scan_count
+                + mode_stats.soft_exploit_focus_count
+                + mode_stats.soft_exploit_perturb_count;
+            if total_soft > 0 {
+                mode_stats.soft_exploit_scan_count as f64 / total_soft as f64
+            } else {
+                0.0
+            }
+        },
+        soft_exploit_focus_share: {
+            let total_soft = mode_stats.soft_exploit_scan_count
+                + mode_stats.soft_exploit_focus_count
+                + mode_stats.soft_exploit_perturb_count;
+            if total_soft > 0 {
+                mode_stats.soft_exploit_focus_count as f64 / total_soft as f64
+            } else {
+                0.0
+            }
+        },
+        rescue_throttle_was_active: mode_stats.rescue_throttle_was_active,
     };
 
     (run, lift_stats, diag)
