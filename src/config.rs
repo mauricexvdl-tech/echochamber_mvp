@@ -716,9 +716,9 @@ impl Default for Config {
             chronic_window_ticks: 500,     // Sliding window for raw stats
             chronic_share_ema_alpha: 0.05, // EMA smoothing (slower response)
             chronic_bad_share_hi: 0.35,    // ENTER if bad_ema > 35%
-            chronic_stable_share_lo: 0.44, // ENTER if stable_ema < 44%
-            chronic_enter_hold_ticks: 200, // Enter-hold window
-            chronic_enter_hold_tolerance: 0.05, // Require 95% pass-rate
+            chronic_stable_share_lo: 0.50, // ENTER if stable_ema < 50%
+            chronic_enter_hold_ticks: 400, // Enter-hold window (longer)
+            chronic_enter_hold_tolerance: 0.02, // Require 98% pass-rate
             chronic_exit_bad_max: 0.25,    // EXIT if bad_ema < 25% AND stable_ema > 55%
             chronic_exit_stable_min: 0.55, // EXIT requires BOTH
             chronic_exit_hold_ticks: 150,  // Hold exit conditions
