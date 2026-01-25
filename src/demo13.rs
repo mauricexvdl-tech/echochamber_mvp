@@ -1,8 +1,10 @@
 //! Demo 13: Phase 2.1 - Multi-seed evaluation + lift metrics
 //! Phase 2.1b: Adds seed-robust policy stabilization with guardrails.
+//! Phase 2.1t: Adds repair burst tuning sweep with effectiveness metrics.
 //!
 //! Runs experiments across multiple seeds with aggregated reporting.
 //! Compares FULL policy against RANDOM_BUDGETED baseline.
+//! Phase 2.1t adds sweep mode for tuning repair burst parameters.
 
 use crate::action::{Action, ActionConfig, ActionPolicy};
 use crate::anchor::{
@@ -21,6 +23,92 @@ use crate::results::{
     SeedRunResult, VariantResult,
 };
 use crate::rng::Rng;
+use serde::{Deserialize, Serialize};
+use std::fs;
+
+// =============================================================================
+// Phase 2.1t: BASELINE REFERENCE VALUES (Phase 2.1q recorded)
+// =============================================================================
+// These are the baseline worst-seed metrics from Phase 2.1q for comparison.
+// Worst seed is typically 0x10EADBEEF based on prior runs.
+const BASELINE_WORST_COV: f64 = 0.62; // Phase 2.1q worst-seed coverage
+const BASELINE_WORST_SEL: f64 = 0.78; // Phase 2.1q worst-seed selective accuracy
+const BASELINE_MEAN_COV: f64 = 0.73; // Phase 2.1q mean coverage
+const BASELINE_MEAN_SEL: f64 = 0.84; // Phase 2.1q mean selective accuracy
+
+// =============================================================================
+// Phase 2.1t: FIXED SEEDS (deterministic, matching spec)
+// =============================================================================
+const SWEEP_SEEDS: [u64; 5] = [0xDEADBEEF, 0xEEADBEEF, 0xFEADBEEF, 0x10EADBEEF, 0x11EADBEEF];
+
+// =============================================================================
+// Phase 2.1t: SWEEP CONFIGURATION TYPES
+// =============================================================================
+
+/// Threshold configuration for Phase 2.1t sweep.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ThresholdConfig {
+    pub stable_lo: f32,
+    pub bad_hi: f32,
+    pub rescue_rate_hi: f32,
+}
+
+/// Dose configuration for Phase 2.1t sweep.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DoseConfig {
+    pub hold_ticks: u32,
+    pub burst_len: u32,
+    pub burst_prob: f32,
+    pub cooldown: u32,
+}
+
+/// Combined sweep configuration (threshold + dose).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SweepConfig {
+    pub id: usize,
+    pub threshold: ThresholdConfig,
+    pub dose: DoseConfig,
+}
+
+/// Per-config sweep results for Phase 2.1t.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SweepConfigResult {
+    pub config: SweepConfig,
+    pub mean_cov: f64,
+    pub mean_sel: f64,
+    pub fp_mean: f64,
+    pub worst_cov: f64,
+    pub worst_sel: f64,
+    pub worst_seed: u64,
+    pub burst_triggers_worst: u32,
+    pub burst_success_rate_worst: f64,
+    pub td_improve_mean_worst: f64,
+    pub burst_active_share_worst: f64,
+    pub quality_improve_mean_worst: f64,
+    pub score: f64,
+    pub meets_acceptance: bool,
+}
+
+/// Phase 2.1t sweep result for JSON export.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SweepResult2_1t {
+    pub phase: String,
+    pub baseline: BaselineReference,
+    pub configs: Vec<SweepConfigResult>,
+    pub best_config_id: usize,
+    pub best_config: Option<SweepConfigResult>,
+    pub acceptance_passed: bool,
+}
+
+/// Baseline reference for comparison.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BaselineReference {
+    pub phase: String,
+    pub worst_cov: f64,
+    pub worst_sel: f64,
+    pub mean_cov: f64,
+    pub mean_sel: f64,
+}
 
 /// Phase 2.1b/c: Per-seed diagnostics for collapse detection.
 #[derive(Clone, Debug, Default)]
@@ -1170,6 +1258,11 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
             Err(e) => eprintln!("\nError writing JSON: {}", e),
         }
     }
+
+    // ==========================================================================
+    // Phase 2.1t: REPAIR BURST TUNING SWEEP
+    // ==========================================================================
+    run_sweep_2_1t(&config);
 }
 
 /// Run a single seed with FULL policy (Phase 2.1b with guardrails).
@@ -2312,4 +2405,611 @@ fn flip_bits_simple(mask: u64, num_flips: u32, rand_val: u64) -> u64 {
         r = r.wrapping_mul(6364136223846793005).wrapping_add(1);
     }
     result
+}
+
+// =============================================================================
+// PHASE 2.1t: REPAIR BURST TUNING SWEEP
+// =============================================================================
+
+/// Generate sweep configurations for Phase 2.1t.
+/// 2 threshold combos × 6 dose combos = 12 total configurations.
+fn generate_sweep_configs() -> Vec<SweepConfig> {
+    let threshold_combos = vec![
+        ThresholdConfig {
+            stable_lo: 0.50,
+            bad_hi: 0.27,
+            rescue_rate_hi: 0.020,
+        },
+        ThresholdConfig {
+            stable_lo: 0.52,
+            bad_hi: 0.29,
+            rescue_rate_hi: 0.025,
+        },
+    ];
+
+    let dose_combos = vec![
+        DoseConfig {
+            hold_ticks: 300,
+            burst_len: 20,
+            burst_prob: 0.30,
+            cooldown: 800,
+        },
+        DoseConfig {
+            hold_ticks: 300,
+            burst_len: 30,
+            burst_prob: 0.40,
+            cooldown: 1000,
+        },
+        DoseConfig {
+            hold_ticks: 500,
+            burst_len: 20,
+            burst_prob: 0.30,
+            cooldown: 1000,
+        },
+        DoseConfig {
+            hold_ticks: 500,
+            burst_len: 30,
+            burst_prob: 0.40,
+            cooldown: 800,
+        },
+        DoseConfig {
+            hold_ticks: 300,
+            burst_len: 30,
+            burst_prob: 0.30,
+            cooldown: 800,
+        },
+        DoseConfig {
+            hold_ticks: 500,
+            burst_len: 20,
+            burst_prob: 0.40,
+            cooldown: 1000,
+        },
+    ];
+
+    let mut configs = Vec::new();
+    let mut id = 0;
+    for threshold in &threshold_combos {
+        for dose in &dose_combos {
+            configs.push(SweepConfig {
+                id,
+                threshold: threshold.clone(),
+                dose: dose.clone(),
+            });
+            id += 1;
+        }
+    }
+    configs
+}
+
+/// Compute Phase 2.1t scoring for a config result.
+/// Higher is better.
+fn compute_sweep_score(
+    mean_cov: f64,
+    mean_sel: f64,
+    fp_mean: f64,
+    worst_cov: f64,
+    worst_sel: f64,
+    burst_triggers_worst: u32,
+    burst_success_rate_worst: f64,
+    td_improve_mean_worst: f64,
+) -> f64 {
+    // Score formula from spec:
+    // + 4.0 * worst_cov + 3.0 * worst_sel
+    // + 1.5 * mean_cov + 1.0 * mean_sel
+    // + 0.5 * burst_success_rate_worst
+    // + 0.5 * clamp(td_improve_mean_worst / 0.01, -1, +1)
+    // - 0.25 * (burst_triggers_worst / 50.0)
+    // - 5.0 * FP_mean
+    let td_component = (td_improve_mean_worst / 0.01).clamp(-1.0, 1.0);
+    let trigger_penalty = burst_triggers_worst as f64 / 50.0;
+
+    4.0 * worst_cov
+        + 3.0 * worst_sel
+        + 1.5 * mean_cov
+        + 1.0 * mean_sel
+        + 0.5 * burst_success_rate_worst
+        + 0.5 * td_component
+        - 0.25 * trigger_penalty
+        - 5.0 * fp_mean
+}
+
+/// Check Phase 2.1t acceptance criteria for a config result.
+fn check_acceptance_2_1t(result: &SweepConfigResult) -> bool {
+    // Regression guard
+    let regression_ok =
+        result.mean_cov >= 0.70 && result.mean_sel >= 0.80 && result.fp_mean < 0.001;
+
+    // Worst-seed floor improvement
+    let worst_cov_improved = result.worst_cov >= BASELINE_WORST_COV + 0.05;
+    let worst_sel_improved = result.worst_sel >= BASELINE_WORST_SEL + 0.03;
+
+    // Burst sanity
+    let burst_triggers_ok = result.burst_triggers_worst <= 30;
+    let burst_active_ok = result.burst_active_share_worst <= 0.03;
+
+    // Burst effectiveness
+    let burst_success_ok = result.burst_success_rate_worst >= 0.55;
+    let td_improve_ok = result.td_improve_mean_worst >= 0.005;
+
+    regression_ok
+        && worst_cov_improved
+        && worst_sel_improved
+        && burst_triggers_ok
+        && burst_active_ok
+        && burst_success_ok
+        && td_improve_ok
+}
+
+/// Run Phase 2.1t sweep: Repair Burst Tuning.
+pub fn run_sweep_2_1t(config: &Config) {
+    println!();
+    println!("═══════════════════════════════════════════════════════════════════════════════════════════════════════");
+    println!("PHASE 2.1t: REPAIR BURST TUNING SWEEP");
+    println!("═══════════════════════════════════════════════════════════════════════════════════════════════════════");
+    println!();
+
+    // Print baseline reference
+    println!("BASELINE (Phase 2.1q) reference:");
+    println!("  worst_cov: {:.1}%", BASELINE_WORST_COV * 100.0);
+    println!("  worst_sel: {:.1}%", BASELINE_WORST_SEL * 100.0);
+    println!("  mean_cov:  {:.1}%", BASELINE_MEAN_COV * 100.0);
+    println!("  mean_sel:  {:.1}%", BASELINE_MEAN_SEL * 100.0);
+    println!();
+
+    // Fixed seeds from spec
+    let seeds: Vec<u64> = SWEEP_SEEDS.to_vec();
+    println!(
+        "Seeds: {:?}",
+        seeds
+            .iter()
+            .map(|s| format!("0x{:08X}", s))
+            .collect::<Vec<_>>()
+    );
+    println!();
+
+    let lift_config = LiftConfig {
+        bad_margin: config.lift_bad_margin,
+        bad_proto: config.lift_bad_proto,
+        bad_value: config.lift_bad_value,
+        recovery_window: 10,
+    };
+
+    let sweep_configs = generate_sweep_configs();
+    println!("Running {} configurations...", sweep_configs.len());
+    println!();
+
+    let mut results: Vec<SweepConfigResult> = Vec::new();
+
+    for (cfg_idx, sweep_cfg) in sweep_configs.iter().enumerate() {
+        print!(
+            "Config {:2}/{}: stable_lo={:.2}, bad_hi={:.2}, rescue_hi={:.3}, hold={}, burst={}, prob={:.2}, cool={}... ",
+            cfg_idx + 1,
+            sweep_configs.len(),
+            sweep_cfg.threshold.stable_lo,
+            sweep_cfg.threshold.bad_hi,
+            sweep_cfg.threshold.rescue_rate_hi,
+            sweep_cfg.dose.hold_ticks,
+            sweep_cfg.dose.burst_len,
+            sweep_cfg.dose.burst_prob,
+            sweep_cfg.dose.cooldown,
+        );
+
+        // Apply sweep config to base config
+        let mut cfg = config.clone();
+        cfg.repair_bad_stable_lo = sweep_cfg.threshold.stable_lo;
+        cfg.repair_bad_share_hi = sweep_cfg.threshold.bad_hi;
+        cfg.repair_rescue_rate_hi = sweep_cfg.threshold.rescue_rate_hi;
+        cfg.repair_bad_hold_ticks = sweep_cfg.dose.hold_ticks;
+        cfg.repair_burst_ticks = sweep_cfg.dose.burst_len;
+        cfg.repair_burst_prob = sweep_cfg.dose.burst_prob;
+        cfg.repair_burst_cooldown = sweep_cfg.dose.cooldown;
+        // Fixed max_perturb_cap = 0.03 (3%)
+        cfg.repair_perturb_cap_mean = 0.03;
+
+        // Run all seeds
+        let mut seed_runs: Vec<SeedRun> = Vec::new();
+        let mut seed_diags: Vec<SeedDiagnostics> = Vec::new();
+
+        for &seed in &seeds {
+            let (run, _, diag) = run_single_seed_full(&cfg, &lift_config, seed);
+            seed_runs.push(run);
+            seed_diags.push(diag);
+        }
+
+        // Aggregate
+        let mean_cov = seed_runs.iter().map(|r| r.coverage_pos).sum::<f64>() / seeds.len() as f64;
+        let mean_sel =
+            seed_runs.iter().map(|r| r.selective_accuracy).sum::<f64>() / seeds.len() as f64;
+        let fp_mean = seed_runs.iter().map(|r| r.false_positive).sum::<f64>() / seeds.len() as f64;
+
+        // Find worst seed (by coverage)
+        let mut worst_idx = 0;
+        let mut worst_cov = f64::MAX;
+        for (i, run) in seed_runs.iter().enumerate() {
+            if run.coverage_pos < worst_cov {
+                worst_cov = run.coverage_pos;
+                worst_idx = i;
+            }
+        }
+        let worst_sel = seed_runs[worst_idx].selective_accuracy;
+        let worst_seed = seed_runs[worst_idx].seed;
+
+        // Worst-seed burst metrics
+        let worst_diag = &seed_diags[worst_idx];
+        let burst_triggers_worst = worst_diag.repair_burst_triggers;
+        let burst_success_rate_worst = worst_diag.burst_success_rate;
+        let td_improve_mean_worst = worst_diag.burst_mean_td_improve_pct / 100.0; // Convert from % to ratio
+        let burst_active_share_worst = worst_diag.repair_burst_active_share / 100.0; // Convert from % to ratio
+        let quality_improve_mean_worst =
+            worst_diag.burst_mean_stable_gain - worst_diag.burst_mean_bad_improve;
+
+        let score = compute_sweep_score(
+            mean_cov,
+            mean_sel,
+            fp_mean,
+            worst_cov,
+            worst_sel,
+            burst_triggers_worst,
+            burst_success_rate_worst,
+            td_improve_mean_worst,
+        );
+
+        let result = SweepConfigResult {
+            config: sweep_cfg.clone(),
+            mean_cov,
+            mean_sel,
+            fp_mean,
+            worst_cov,
+            worst_sel,
+            worst_seed,
+            burst_triggers_worst,
+            burst_success_rate_worst,
+            td_improve_mean_worst,
+            burst_active_share_worst,
+            quality_improve_mean_worst,
+            score,
+            meets_acceptance: false, // Set later
+        };
+
+        println!(
+            "cov={:.1}% sel={:.1}% worst_cov={:.1}% score={:.3}",
+            mean_cov * 100.0,
+            mean_sel * 100.0,
+            worst_cov * 100.0,
+            score
+        );
+
+        results.push(result);
+    }
+
+    // Check acceptance and sort by score
+    for result in &mut results {
+        result.meets_acceptance = check_acceptance_2_1t(result);
+    }
+    results.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Print sweep table (ranked by score)
+    println!();
+    println!("═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════");
+    println!("PHASE 2.1t SWEEP TABLE (ranked by score):");
+    println!("═══════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════");
+    println!();
+    println!(
+        "  {:>3} | {:>7} | {:>7} | {:>8} | {:>8} | {:>8} | {:>10} | {:>10} | {:>8} | {:>6} | {:>5}",
+        "ID",
+        "mean_cov",
+        "mean_sel",
+        "worst_cov",
+        "worst_sel",
+        "triggers",
+        "success%",
+        "td_impr%",
+        "score",
+        "accept",
+        "rank"
+    );
+    println!(
+        "  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+    for (rank, result) in results.iter().enumerate() {
+        let accept_mark = if result.meets_acceptance {
+            "✓"
+        } else {
+            "✗"
+        };
+        println!(
+            "  {:3} | {:6.1}% | {:6.1}% | {:7.1}% | {:7.1}% | {:8} | {:9.1}% | {:7.2}% | {:8.3} | {:>6} | {:5}",
+            result.config.id,
+            result.mean_cov * 100.0,
+            result.mean_sel * 100.0,
+            result.worst_cov * 100.0,
+            result.worst_sel * 100.0,
+            result.burst_triggers_worst,
+            result.burst_success_rate_worst * 100.0,
+            result.td_improve_mean_worst * 100.0,
+            result.score,
+            accept_mark,
+            rank + 1,
+        );
+    }
+    println!(
+        "  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+
+    // Find best passing config
+    let best_passing = results.iter().find(|r| r.meets_acceptance);
+
+    println!();
+    println!("═══════════════════════════════════════════════════════════════════════════════════════════════════════");
+    println!("BEST CONFIG DETAILS:");
+    println!("═══════════════════════════════════════════════════════════════════════════════════════════════════════");
+    println!();
+
+    if let Some(best) = best_passing {
+        println!("✓ BEST PASSING CONFIG: ID={}", best.config.id);
+        println!();
+        println!("  Threshold:");
+        println!("    stable_lo:      {:.2}", best.config.threshold.stable_lo);
+        println!("    bad_hi:         {:.2}", best.config.threshold.bad_hi);
+        println!(
+            "    rescue_rate_hi: {:.3}",
+            best.config.threshold.rescue_rate_hi
+        );
+        println!();
+        println!("  Dose:");
+        println!("    hold_ticks:  {}", best.config.dose.hold_ticks);
+        println!("    burst_len:   {}", best.config.dose.burst_len);
+        println!("    burst_prob:  {:.2}", best.config.dose.burst_prob);
+        println!("    cooldown:    {}", best.config.dose.cooldown);
+        println!();
+        println!("  Metrics:");
+        println!("    mean_cov:  {:.1}%", best.mean_cov * 100.0);
+        println!("    mean_sel:  {:.1}%", best.mean_sel * 100.0);
+        println!("    FP_mean:   {:.2}%", best.fp_mean * 100.0);
+        println!("    worst_cov: {:.1}%", best.worst_cov * 100.0);
+        println!("    worst_sel: {:.1}%", best.worst_sel * 100.0);
+        println!("    worst_seed: 0x{:08X}", best.worst_seed);
+        println!();
+        println!("  Burst Stats (worst seed):");
+        println!("    triggers:        {}", best.burst_triggers_worst);
+        println!(
+            "    success_rate:    {:.1}%",
+            best.burst_success_rate_worst * 100.0
+        );
+        println!(
+            "    td_improve_mean: {:.2}%",
+            best.td_improve_mean_worst * 100.0
+        );
+        println!(
+            "    active_share:    {:.2}%",
+            best.burst_active_share_worst * 100.0
+        );
+        println!();
+        println!("  Score: {:.3}", best.score);
+    } else {
+        println!("✗ NO CONFIG MEETS ACCEPTANCE CRITERIA");
+        println!();
+        println!(
+            "  Best overall (not passing) is ID={}",
+            results[0].config.id
+        );
+        println!("  Score: {:.3}", results[0].score);
+    }
+
+    // Print acceptance checks
+    println!();
+    println!("═══════════════════════════════════════════════════════════════════════════════════════════════════════");
+    println!("PHASE 2.1t ACCEPTANCE CRITERIA:");
+    println!("═══════════════════════════════════════════════════════════════════════════════════════════════════════");
+    println!();
+
+    if let Some(best) = best_passing {
+        let regression_ok = best.mean_cov >= 0.70 && best.mean_sel >= 0.80 && best.fp_mean < 0.001;
+        let worst_cov_ok = best.worst_cov >= BASELINE_WORST_COV + 0.05;
+        let worst_sel_ok = best.worst_sel >= BASELINE_WORST_SEL + 0.03;
+        let burst_triggers_ok = best.burst_triggers_worst <= 30;
+        let burst_active_ok = best.burst_active_share_worst <= 0.03;
+        let burst_success_ok = best.burst_success_rate_worst >= 0.55;
+        let td_improve_ok = best.td_improve_mean_worst >= 0.005;
+
+        println!("  REGRESSION GUARD:");
+        println!(
+            "    [{}] mean_cov >= 70%: {:.1}%",
+            if best.mean_cov >= 0.70 { "✓" } else { "✗" },
+            best.mean_cov * 100.0
+        );
+        println!(
+            "    [{}] mean_sel >= 80%: {:.1}%",
+            if best.mean_sel >= 0.80 { "✓" } else { "✗" },
+            best.mean_sel * 100.0
+        );
+        println!(
+            "    [{}] FP_mean == 0%: {:.2}%",
+            if best.fp_mean < 0.001 { "✓" } else { "✗" },
+            best.fp_mean * 100.0
+        );
+        println!(
+            "    → Regression guard: {}",
+            if regression_ok { "PASS" } else { "FAIL" }
+        );
+        println!();
+
+        println!("  WORST-SEED IMPROVEMENT (vs baseline):");
+        println!(
+            "    [{}] worst_cov >= {:.1}% (+5%): {:.1}% (Δ={:+.1}%)",
+            if worst_cov_ok { "✓" } else { "✗" },
+            (BASELINE_WORST_COV + 0.05) * 100.0,
+            best.worst_cov * 100.0,
+            (best.worst_cov - BASELINE_WORST_COV) * 100.0,
+        );
+        println!(
+            "    [{}] worst_sel >= {:.1}% (+3%): {:.1}% (Δ={:+.1}%)",
+            if worst_sel_ok { "✓" } else { "✗" },
+            (BASELINE_WORST_SEL + 0.03) * 100.0,
+            best.worst_sel * 100.0,
+            (best.worst_sel - BASELINE_WORST_SEL) * 100.0,
+        );
+        println!(
+            "    → Worst-seed improvement: {}",
+            if worst_cov_ok && worst_sel_ok {
+                "PASS"
+            } else {
+                "FAIL"
+            }
+        );
+        println!();
+
+        println!("  BURST SANITY:");
+        println!(
+            "    [{}] burst_triggers_worst <= 30: {}",
+            if burst_triggers_ok { "✓" } else { "✗" },
+            best.burst_triggers_worst
+        );
+        println!(
+            "    [{}] burst_active_share <= 3%: {:.2}%",
+            if burst_active_ok { "✓" } else { "✗" },
+            best.burst_active_share_worst * 100.0
+        );
+        println!(
+            "    → Burst sanity: {}",
+            if burst_triggers_ok && burst_active_ok {
+                "PASS"
+            } else {
+                "FAIL"
+            }
+        );
+        println!();
+
+        println!("  BURST EFFECTIVENESS:");
+        println!(
+            "    [{}] burst_success_rate >= 55%: {:.1}%",
+            if burst_success_ok { "✓" } else { "✗" },
+            best.burst_success_rate_worst * 100.0
+        );
+        println!(
+            "    [{}] td_improve_mean >= 0.5%: {:.2}%",
+            if td_improve_ok { "✓" } else { "✗" },
+            best.td_improve_mean_worst * 100.0
+        );
+        println!(
+            "    → Burst effectiveness: {}",
+            if burst_success_ok && td_improve_ok {
+                "PASS"
+            } else {
+                "FAIL"
+            }
+        );
+        println!();
+
+        let all_pass = regression_ok
+            && worst_cov_ok
+            && worst_sel_ok
+            && burst_triggers_ok
+            && burst_active_ok
+            && burst_success_ok
+            && td_improve_ok;
+
+        if all_pass {
+            println!("  → Phase 2.1t: ALL ACCEPTANCE CRITERIA MET!");
+        } else {
+            println!("  → Phase 2.1t: FAILED (see above)");
+        }
+    } else {
+        println!("  → Phase 2.1t: NO PASSING CONFIG FOUND");
+        println!();
+        // Show why top config fails
+        let top = &results[0];
+        println!("  Top config (ID={}) failure analysis:", top.config.id);
+        if top.mean_cov < 0.70 {
+            println!("    ✗ mean_cov {:.1}% < 70%", top.mean_cov * 100.0);
+        }
+        if top.mean_sel < 0.80 {
+            println!("    ✗ mean_sel {:.1}% < 80%", top.mean_sel * 100.0);
+        }
+        if top.fp_mean >= 0.001 {
+            println!("    ✗ FP_mean {:.2}% != 0%", top.fp_mean * 100.0);
+        }
+        if top.worst_cov < BASELINE_WORST_COV + 0.05 {
+            println!(
+                "    ✗ worst_cov {:.1}% < {:.1}% (baseline+5%)",
+                top.worst_cov * 100.0,
+                (BASELINE_WORST_COV + 0.05) * 100.0
+            );
+        }
+        if top.worst_sel < BASELINE_WORST_SEL + 0.03 {
+            println!(
+                "    ✗ worst_sel {:.1}% < {:.1}% (baseline+3%)",
+                top.worst_sel * 100.0,
+                (BASELINE_WORST_SEL + 0.03) * 100.0
+            );
+        }
+        if top.burst_triggers_worst > 30 {
+            println!("    ✗ burst_triggers {} > 30", top.burst_triggers_worst);
+        }
+        if top.burst_active_share_worst > 0.03 {
+            println!(
+                "    ✗ burst_active_share {:.2}% > 3%",
+                top.burst_active_share_worst * 100.0
+            );
+        }
+        if top.burst_success_rate_worst < 0.55 {
+            println!(
+                "    ✗ burst_success_rate {:.1}% < 55%",
+                top.burst_success_rate_worst * 100.0
+            );
+        }
+        if top.td_improve_mean_worst < 0.005 {
+            println!(
+                "    ✗ td_improve_mean {:.2}% < 0.5%",
+                top.td_improve_mean_worst * 100.0
+            );
+        }
+    }
+
+    // Write JSON artifact
+    let artifacts_dir = "./artifacts";
+    let json_path = format!("{}/demo13_sweep_2_1t.json", artifacts_dir);
+
+    let best_config_id = best_passing
+        .map(|b| b.config.id)
+        .unwrap_or(results[0].config.id);
+
+    let sweep_result = SweepResult2_1t {
+        phase: "2.1t".to_string(),
+        baseline: BaselineReference {
+            phase: "2.1q".to_string(),
+            worst_cov: BASELINE_WORST_COV,
+            worst_sel: BASELINE_WORST_SEL,
+            mean_cov: BASELINE_MEAN_COV,
+            mean_sel: BASELINE_MEAN_SEL,
+        },
+        configs: results.clone(),
+        best_config_id,
+        best_config: best_passing.cloned(),
+        acceptance_passed: best_passing.is_some(),
+    };
+
+    // Create artifacts directory if needed
+    if let Err(e) = fs::create_dir_all(artifacts_dir) {
+        eprintln!("Warning: Failed to create artifacts directory: {}", e);
+    }
+
+    // Write JSON
+    match serde_json::to_string_pretty(&sweep_result) {
+        Ok(json_str) => {
+            if let Err(e) = fs::write(&json_path, json_str) {
+                eprintln!("Warning: Failed to write JSON artifact: {}", e);
+            } else {
+                println!();
+                println!("JSON artifact written to: {}", json_path);
+            }
+        }
+        Err(e) => {
+            eprintln!("Warning: Failed to serialize JSON: {}", e);
+        }
+    }
 }
