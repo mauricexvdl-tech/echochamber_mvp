@@ -686,10 +686,10 @@ impl Default for Config {
 
             // Phase 2.1b: Seed-Robust Policy Stabilization defaults
             min_exploit_ticks_on: 80,   // Phase 2.1i: 4x stickier exploit
-            explore_streak_rescue: 18,  // Phase 2.1i: rescue earlier on explore streaks
+            explore_streak_rescue: 80,  // Phase 2.1j: stop rescue spam
             fail_streak_rescue: 4,      // Rescue earlier on gate-fail cascades
-            rescue_cooldown: 220,       // Phase 2.1i: allow more rescues, still not spammy
-            post_reset_exploit_boost_ticks: 120, // Phase 2.1i: longer post-reset stabilization
+            rescue_cooldown: 320,       // Phase 2.1j: stop rescue spam
+            post_reset_exploit_boost_ticks: 80, // Phase 2.1j: reduced stickiness
             post_reset_exploit_margin_scale: 1.35, // Strong margin boost post-reset
             catastrophic_abs_td: 0.55,             // Moderate threshold
             catastrophic_value_drop: 0.10,
@@ -710,7 +710,7 @@ impl Default for Config {
             rescue_requires_bad_state: true, // Require bad state for rescue
             rescue_bad_proto: 0.12,      // Below this = bad proto (stricter)
             rescue_bad_margin: 0.03,     // Below this = bad margin (stricter)
-            rescue_bad_value: 0.12,      // Below this = bad value (stricter)
+            rescue_bad_value: -0.20,     // Phase 2.1j: correct scale (V often negative)
 
             // Phase 2.1h: Chronic Instability Clamp v5 defaults (EMA smoothing + hysteresis)
             chronic_window_ticks: 500,     // Sliding window for raw stats
@@ -787,7 +787,7 @@ impl Default for Config {
             mode_post_reset_cooldown: 12,
             mode_explore_margin_scale: 0.6,
             mode_exploit_margin_scale: 1.15,
-            mode_reset_dampen: 0.45, // Phase 2.1i: 55% amplitude reduction (stronger reset)
+            mode_reset_dampen: 0.52, // Phase 2.1j: less destructive reset
             mode_reset_dampen_top_k: 8,
             mode_window_size: 32,
 
