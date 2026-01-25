@@ -694,6 +694,8 @@ pub struct ModePolicyState {
     pub soft_exploit_proto_blocked: usize,
     /// Ticks where soft exploit blocked merge candidates.
     pub soft_exploit_merge_blocked: usize,
+    /// Ticks where soft exploit allowed proto updates (rate-limited).
+    pub soft_exploit_proto_allowed: usize,
 }
 
 impl ModePolicyState {
@@ -797,6 +799,7 @@ impl ModePolicyState {
             soft_exploit_store_blocked: 0,
             soft_exploit_proto_blocked: 0,
             soft_exploit_merge_blocked: 0,
+            soft_exploit_proto_allowed: 0,
         }
     }
 }
@@ -1708,6 +1711,7 @@ impl ModePolicy {
             soft_exploit_store_blocked: self.state.soft_exploit_store_blocked,
             soft_exploit_proto_blocked: self.state.soft_exploit_proto_blocked,
             soft_exploit_merge_blocked: self.state.soft_exploit_merge_blocked,
+            soft_exploit_proto_allowed: self.state.soft_exploit_proto_allowed,
         }
     }
 }
@@ -1769,6 +1773,8 @@ pub struct ModeStats {
     pub soft_exploit_store_blocked: usize,
     pub soft_exploit_proto_blocked: usize,
     pub soft_exploit_merge_blocked: usize,
+    /// Proto updates allowed during soft exploit (rate-limited).
+    pub soft_exploit_proto_allowed: usize,
 }
 
 // ============================================================================

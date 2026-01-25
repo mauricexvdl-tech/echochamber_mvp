@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::echo::EchoChamber;
 use crate::lift::{self, LiftConfig, LiftStats};
 use crate::memory::RollingWindow;
-use crate::mode::{Mode, ModePolicy, ModePolicyConfig, WriteOverride};
+use crate::mode::{Mode, ModePolicy, ModePolicyConfig};
 use crate::multiseed::{self, SeedRun};
 use crate::results::{
     write_json, AcceptanceResult, AggregateResult, Demo13Result, LiftResult, ResultMeta,
@@ -86,6 +86,7 @@ pub struct SeedDiagnostics {
     // Phase 2.1o: Soft-exploit quarantine metrics
     pub soft_exploit_store_blocked: usize,
     pub soft_exploit_proto_blocked: usize,
+    pub soft_exploit_proto_allowed: usize,
 }
 
 /// Phase 2.1b: Warmup stats collector for adaptive thresholds.
@@ -237,29 +238,36 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
         "─────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 
-    // Phase 2.1o: Print soft-exploit quarantine metrics
+    // Phase 2.1o-fix: Print soft-exploit quarantine metrics with rate limiting
     println!();
-    println!("Soft-Exploit Quarantine (Phase 2.1o):");
+    println!("Soft-Exploit Proto Updates (Phase 2.1o-fix):");
     println!(
-        "──────────────────────────────────────────────────────────────────────────"
+        "─────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     println!(
-        "  Seed       | store_blocked | proto_blocked | soft_expl_ticks"
+        "  Seed       | soft_expl_ticks | proto_allowed | proto_blocked | allow_rate%"
     );
     println!(
-        "──────────────────────────────────────────────────────────────────────────"
+        "─────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     for d in diagnostics {
+        let total_proto_decisions = d.soft_exploit_proto_allowed + d.soft_exploit_proto_blocked;
+        let allow_rate = if total_proto_decisions > 0 {
+            d.soft_exploit_proto_allowed as f64 / total_proto_decisions as f64 * 100.0
+        } else {
+            0.0
+        };
         println!(
-            "  0x{:08X} | {:13} | {:13} | {:15}",
+            "  0x{:08X} | {:15} | {:13} | {:13} | {:10.1}%",
             d.seed,
-            d.soft_exploit_store_blocked,
-            d.soft_exploit_proto_blocked,
             d.exploit_soft_count,
+            d.soft_exploit_proto_allowed,
+            d.soft_exploit_proto_blocked,
+            allow_rate,
         );
     }
     println!(
-        "──────────────────────────────────────────────────────────────────────────"
+        "─────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 }
 
@@ -1057,11 +1065,36 @@ fn run_single_seed_full(
             let partition_mask = current_sig.ctx_hat.unwrap_or(0) as u64;
             anchor_bank.update_anchor_partition(anchor_id, partition_mask, ctx_hat);
 
-            // Update prototype (Phase 2.1o: gated by write_override)
+            // Update prototype (Phase 2.1o-fix: rate-limited during soft exploit)
             if gate_passed && anchor_id != 0xFFFF {
-                if write_override.allow_proto_update {
-                    anchor_bank.update_anchor_proto(anchor_id, &base_topk, config);
+                let is_soft_exploit = mode == Mode::Exploit && !mode_policy.last_can_exploit();
+
+                let allow_proto_update = if is_soft_exploit {
+                    // Rate-limited proto updates in soft exploit
+                    let period_ok = config.soft_proto_update_period == 0
+                        || (global_tick % config.soft_proto_update_period as u64 == 0);
+                    let gate_ok =
+                        !config.soft_proto_update_require_gate || gate_passed;
+                    let margin_ok =
+                        topk_margin >= config.soft_proto_update_min_margin as f64;
+                    let is_bad_state = proto_align < config.rescue_bad_proto
+                        && topk_margin < config.rescue_bad_margin
+                        && anchor_value < config.rescue_bad_value;
+                    let bad_ok =
+                        !config.soft_proto_update_block_when_bad || !is_bad_state;
+
+                    period_ok && gate_ok && margin_ok && bad_ok
                 } else {
+                    // Hard exploit, explore, or reset: use write_override
+                    write_override.allow_proto_update
+                };
+
+                if allow_proto_update {
+                    anchor_bank.update_anchor_proto(anchor_id, &base_topk, config);
+                    if is_soft_exploit {
+                        mode_policy.state.soft_exploit_proto_allowed += 1;
+                    }
+                } else if is_soft_exploit {
                     mode_policy.record_blocked_write(false, true, false);
                 }
             }
@@ -1333,6 +1366,7 @@ fn run_single_seed_full(
         // Phase 2.1o: Soft-exploit quarantine metrics
         soft_exploit_store_blocked: mode_stats.soft_exploit_store_blocked,
         soft_exploit_proto_blocked: mode_stats.soft_exploit_proto_blocked,
+        soft_exploit_proto_allowed: mode_stats.soft_exploit_proto_allowed,
     };
 
     (run, lift_stats, diag)

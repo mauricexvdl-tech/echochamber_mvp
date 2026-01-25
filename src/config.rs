@@ -306,6 +306,16 @@ pub struct Config {
     /// Block merge candidate enqueuing during soft exploit.
     pub soft_exploit_block_merge: bool,
 
+    // Phase 2.1o-fix: Rate-limited proto updates in soft exploit
+    /// Allow proto update every N ticks in soft exploit (0 = every tick).
+    pub soft_proto_update_period: u32,
+    /// Minimum margin required for proto update in soft exploit.
+    pub soft_proto_update_min_margin: f32,
+    /// Require gate pass for proto update in soft exploit.
+    pub soft_proto_update_require_gate: bool,
+    /// Block proto update when in bad state during soft exploit.
+    pub soft_proto_update_block_when_bad: bool,
+
     // =========================================================================
     // Phase 2.1h: Chronic Instability Clamp v5 (EMA smoothing + hysteresis)
     // =========================================================================
@@ -753,6 +763,12 @@ impl Default for Config {
             soft_exploit_block_store: false,       // Block memory store during soft exploit
             soft_exploit_block_proto_update: false, // Block prototype updates during soft exploit
             soft_exploit_block_merge: false,       // Block merge candidates during soft exploit
+
+            // Phase 2.1o-fix: Rate-limited proto updates in soft exploit
+            soft_proto_update_period: 0,           // 0 = no rate limit, only quality gates
+            soft_proto_update_min_margin: 0.03,    // Minimum margin to allow proto update
+            soft_proto_update_require_gate: true,  // Require gate pass for proto update
+            soft_proto_update_block_when_bad: true, // Block proto update when in bad state
 
             // Phase 2.1h: Chronic Instability Clamp v5 defaults (EMA smoothing + hysteresis)
             chronic_window_ticks: 500,     // Sliding window for raw stats
