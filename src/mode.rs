@@ -247,6 +247,12 @@ pub struct ModePolicyConfig {
     pub chronic_escape_ticks: u32,
     /// Disallow Perturb during chronic (except Reset).
     pub chronic_disallow_perturb: bool,
+
+    // Phase 2.1m: Lock hysteresis + soft exploit relaxation
+    /// Consecutive can_exploit failures before dropping exploit lock.
+    pub lock_fail_drop_streak: u32,
+    /// Minimum proto alignment for soft exploit fallback.
+    pub proto_soft_min: f32,
 }
 
 impl Default for ModePolicyConfig {
@@ -309,6 +315,9 @@ impl Default for ModePolicyConfig {
             chronic_escape_after: 1000,
             chronic_escape_ticks: 50,
             chronic_disallow_perturb: true,
+            // Phase 2.1m: Lock hysteresis + soft exploit relaxation
+            lock_fail_drop_streak: 12,
+            proto_soft_min: 0.08,
         }
     }
 }
@@ -372,6 +381,9 @@ impl ModePolicyConfig {
             chronic_escape_after: config.chronic_escape_after,
             chronic_escape_ticks: config.chronic_escape_ticks,
             chronic_disallow_perturb: config.chronic_disallow_perturb,
+            // Phase 2.1m: Lock hysteresis + soft exploit relaxation
+            lock_fail_drop_streak: config.lock_fail_drop_streak,
+            proto_soft_min: config.proto_soft_min,
         }
     }
 }
@@ -590,6 +602,16 @@ pub struct ModePolicyState {
     pub exploit_forced_while_not_ready: usize,
     /// Count of times exploit lock was dropped due to can_exploit==false.
     pub exploit_lock_dropped: usize,
+
+    // Phase 2.1m: Lock hysteresis state
+    /// Consecutive ticks where can_exploit was false during a lock.
+    pub can_exploit_fail_streak: u32,
+    /// Maximum can_exploit_fail_streak observed.
+    pub can_exploit_fail_streak_max: u32,
+    /// Ticks where lock forcing succeeded (can_exploit==true).
+    pub lock_force_success: usize,
+    /// Ticks where grace period was used (can_exploit==false but within streak limit).
+    pub lock_force_grace_used: usize,
 }
 
 impl ModePolicyState {
@@ -668,6 +690,12 @@ impl ModePolicyState {
             // Phase 2.1l: Quality-gated lock tracking
             exploit_forced_while_not_ready: 0,
             exploit_lock_dropped: 0,
+
+            // Phase 2.1m: Lock hysteresis state
+            can_exploit_fail_streak: 0,
+            can_exploit_fail_streak_max: 0,
+            lock_force_success: 0,
+            lock_force_grace_used: 0,
         }
     }
 }
@@ -930,36 +958,16 @@ impl ModePolicy {
         let gate_ok = self.state.last_gate_passed;
         let can_exploit = gate_ok && stable_ok && proto_ok && margin_ok;
 
-        // Phase 2.1c: Check post-rescue lock (takes priority over exploit lock)
-        // Phase 2.1l: Only force Exploit if can_exploit is true (quality-gated lock)
-        if self.state.post_rescue_lock_remaining > 0 && !catastrophic {
-            if can_exploit {
-                // Quality conditions met - force Exploit
-                self.state.exploit_count += 1;
-                self.state.exploit_streak += 1;
-                if self.state.exploit_streak > self.state.exploit_streak_max {
-                    self.state.exploit_streak_max = self.state.exploit_streak;
-                }
-                self.state.explore_streak = 0;
-                self.state.last_mode = Mode::Exploit;
-                // Track as hard exploit
-                self.state.exploit_hard_count += 1;
-                if self.state.last_is_bad_state {
-                    self.state.bad_in_exploit_count += 1;
-                }
-                return (Mode::Exploit, false);
-            } else {
-                // Quality conditions NOT met - track and fall through to normal selection
-                self.state.exploit_forced_while_not_ready += 1;
-                // Don't return early - let normal mode selection proceed
-            }
-        }
+        // Phase 2.1m: Lock handling with hysteresis (applies to both post_rescue_lock and exploit_lock)
+        let in_any_lock = (self.state.post_rescue_lock_remaining > 0
+            || self.state.exploit_lock_remaining > 0)
+            && !catastrophic;
 
-        // Check if we're in exploit lock
-        // Phase 2.1l: Only force Exploit if can_exploit is true (quality-gated lock)
-        if self.state.exploit_lock_remaining > 0 && !catastrophic {
+        if in_any_lock {
             if can_exploit {
-                // Quality conditions met - force Exploit
+                // Quality conditions met - force Exploit, reset fail streak
+                self.state.can_exploit_fail_streak = 0;
+                self.state.lock_force_success += 1;
                 self.state.exploit_count += 1;
                 self.state.exploit_streak += 1;
                 if self.state.exploit_streak > self.state.exploit_streak_max {
@@ -974,10 +982,37 @@ impl ModePolicy {
                 }
                 return (Mode::Exploit, false);
             } else {
-                // Quality conditions NOT met - drop the lock and track
-                self.state.exploit_lock_dropped += 1;
-                self.state.exploit_lock_remaining = 0;
-                // Fall through to normal mode selection
+                // Quality conditions NOT met - use hysteresis
+                self.state.can_exploit_fail_streak += 1;
+                if self.state.can_exploit_fail_streak > self.state.can_exploit_fail_streak_max {
+                    self.state.can_exploit_fail_streak_max = self.state.can_exploit_fail_streak;
+                }
+
+                if self.state.can_exploit_fail_streak < self.config.lock_fail_drop_streak {
+                    // Still within grace period - force Exploit anyway (soft exploit)
+                    self.state.lock_force_grace_used += 1;
+                    self.state.exploit_forced_while_not_ready += 1;
+                    self.state.exploit_count += 1;
+                    self.state.exploit_streak += 1;
+                    if self.state.exploit_streak > self.state.exploit_streak_max {
+                        self.state.exploit_streak_max = self.state.exploit_streak;
+                    }
+                    self.state.explore_streak = 0;
+                    self.state.last_mode = Mode::Exploit;
+                    // Track as soft exploit
+                    self.state.exploit_soft_count += 1;
+                    if self.state.last_is_bad_state {
+                        self.state.bad_in_exploit_count += 1;
+                    }
+                    return (Mode::Exploit, false);
+                } else {
+                    // Grace period exhausted - drop locks and fall through
+                    self.state.exploit_lock_dropped += 1;
+                    self.state.post_rescue_lock_remaining = 0;
+                    self.state.exploit_lock_remaining = 0;
+                    self.state.can_exploit_fail_streak = 0;
+                    // Fall through to normal mode selection
+                }
             }
         }
 
@@ -1168,13 +1203,17 @@ impl ModePolicy {
             // Note: can_exploit, proto_ok, margin_ok already computed early for quality-gated locks
             let recent_v = self.state.recent_values.mean();
 
+            // Phase 2.1m: Relaxed soft exploit fallback
+            // Requires gate_ok AND (proto_ok OR margin_ok) AND proto >= proto_soft_min
+            let proto_soft_ok = self.state.last_proto_align >= self.config.proto_soft_min;
+            let fallback_ok = gate_ok && proto_soft_ok && (proto_ok || margin_ok);
+
             if can_exploit {
                 Mode::Exploit
             } else if recent_v < self.config.explore_v_max {
                 Mode::Explore
-            } else if recent_v >= self.config.exploit_v_min && (proto_ok && margin_ok) {
-                // Phase 2.1l: Soft exploit fallback requires proto_ok && margin_ok
-                // This prevents low-quality exploit from V alone
+            } else if recent_v >= self.config.exploit_v_min && fallback_ok {
+                // Phase 2.1m: Relaxed soft exploit fallback
                 Mode::Exploit
             } else {
                 Mode::Explore
@@ -1475,6 +1514,10 @@ impl ModePolicy {
             // Phase 2.1l: Quality-gated lock metrics
             exploit_forced_while_not_ready: self.state.exploit_forced_while_not_ready,
             exploit_lock_dropped: self.state.exploit_lock_dropped,
+            // Phase 2.1m: Lock hysteresis metrics
+            can_exploit_fail_streak_max: self.state.can_exploit_fail_streak_max,
+            lock_force_success: self.state.lock_force_success,
+            lock_force_grace_used: self.state.lock_force_grace_used,
         }
     }
 }
@@ -1519,6 +1562,10 @@ pub struct ModeStats {
     // Phase 2.1l: Quality-gated lock metrics
     pub exploit_forced_while_not_ready: usize,
     pub exploit_lock_dropped: usize,
+    // Phase 2.1m: Lock hysteresis metrics
+    pub can_exploit_fail_streak_max: u32,
+    pub lock_force_success: usize,
+    pub lock_force_grace_used: usize,
 }
 
 // ============================================================================

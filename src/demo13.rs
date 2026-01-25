@@ -73,6 +73,10 @@ pub struct SeedDiagnostics {
     // Phase 2.1l: Quality-gated lock metrics
     pub exploit_forced_while_not_ready: usize,
     pub exploit_lock_dropped: usize,
+    // Phase 2.1m: Lock hysteresis metrics
+    pub can_exploit_fail_streak_max: u32,
+    pub lock_force_success: usize,
+    pub lock_force_grace_used: usize,
 }
 
 /// Phase 2.1b: Warmup stats collector for adaptive thresholds.
@@ -163,31 +167,33 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
         "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 
-    // Phase 2.1l: Print exploit quality metrics table (updated)
+    // Phase 2.1m: Print exploit quality + lock hysteresis metrics table
     println!();
-    println!("Exploit Quality Metrics (Phase 2.1l):");
+    println!("Exploit Quality Metrics (Phase 2.1m):");
     println!(
-        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     println!(
-        "  Seed       | hard_expl | soft_expl | soft_share | forced_not_rdy | lock_dropped"
+        "  Seed       | hard_expl | soft_expl | soft_share | lock_dropped | lock_success | lock_grace | fail_strk_max"
     );
     println!(
-        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     for d in diagnostics {
         println!(
-            "  0x{:08X} | {:9} | {:9} | {:9.1}% | {:14} | {:12}",
+            "  0x{:08X} | {:9} | {:9} | {:9.1}% | {:12} | {:12} | {:10} | {:13}",
             d.seed,
             d.exploit_hard_count,
             d.exploit_soft_count,
             d.exploit_soft_share * 100.0,
-            d.exploit_forced_while_not_ready,
             d.exploit_lock_dropped,
+            d.lock_force_success,
+            d.lock_force_grace_used,
+            d.can_exploit_fail_streak_max,
         );
     }
     println!(
-        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 }
 
@@ -1180,6 +1186,10 @@ fn run_single_seed_full(
         // Phase 2.1l: Quality-gated lock metrics
         exploit_forced_while_not_ready: mode_stats.exploit_forced_while_not_ready,
         exploit_lock_dropped: mode_stats.exploit_lock_dropped,
+        // Phase 2.1m: Lock hysteresis metrics
+        can_exploit_fail_streak_max: mode_stats.can_exploit_fail_streak_max,
+        lock_force_success: mode_stats.lock_force_success,
+        lock_force_grace_used: mode_stats.lock_force_grace_used,
     };
 
     (run, lift_stats, diag)

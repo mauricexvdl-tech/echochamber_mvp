@@ -279,6 +279,14 @@ pub struct Config {
     pub rescue_bad_value: f32,
 
     // =========================================================================
+    // Phase 2.1m: Lock hysteresis + soft exploit relaxation
+    // =========================================================================
+    /// Consecutive can_exploit failures before dropping exploit lock.
+    pub lock_fail_drop_streak: u32,
+    /// Minimum proto alignment for soft exploit fallback (relaxed threshold).
+    pub proto_soft_min: f32,
+
+    // =========================================================================
     // Phase 2.1h: Chronic Instability Clamp v5 (EMA smoothing + hysteresis)
     // =========================================================================
     /// Window size for chronic instability detection (ticks).
@@ -711,6 +719,10 @@ impl Default for Config {
             rescue_bad_proto: 0.12,      // Below this = bad proto (stricter)
             rescue_bad_margin: 0.03,     // Below this = bad margin (stricter)
             rescue_bad_value: -0.20,     // Phase 2.1j: correct scale (V often negative)
+
+            // Phase 2.1m: Lock hysteresis + soft exploit relaxation defaults
+            lock_fail_drop_streak: 12,   // Grace period before dropping lock
+            proto_soft_min: 0.08,        // Relaxed proto threshold for soft exploit
 
             // Phase 2.1h: Chronic Instability Clamp v5 defaults (EMA smoothing + hysteresis)
             chronic_window_ticks: 500,     // Sliding window for raw stats
