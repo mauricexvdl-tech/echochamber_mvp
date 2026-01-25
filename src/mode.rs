@@ -714,6 +714,14 @@ pub struct ModePolicyState {
     pub soft_proto_rescue_window: Vec<bool>,
     /// Current index in rescue window.
     pub soft_proto_rescue_window_idx: usize,
+
+    // Phase 2.1v: Bad-regime proto repair tracking
+    /// Remaining ticks in repair window after burst (P0 override).
+    pub soft_proto_repair_window_remaining: u32,
+    /// Proto updates allowed while in bad-regime.
+    pub soft_proto_bad_regime_allowed: usize,
+    /// Proto updates blocked while in bad-regime.
+    pub soft_proto_bad_regime_blocked: usize,
 }
 
 impl ModePolicyState {
@@ -829,6 +837,11 @@ impl ModePolicyState {
             soft_proto_clear_candidate_ticks: 0,
             soft_proto_rescue_window: vec![false; 1000], // 1000-tick rolling window
             soft_proto_rescue_window_idx: 0,
+
+            // Phase 2.1v: Bad-regime proto repair tracking
+            soft_proto_repair_window_remaining: 0,
+            soft_proto_bad_regime_allowed: 0,
+            soft_proto_bad_regime_blocked: 0,
         }
     }
 }
@@ -1668,6 +1681,32 @@ impl ModePolicy {
         self.state.soft_proto_bad_hold_remaining > 0
     }
 
+    /// Phase 2.1v: Notify that a repair burst was triggered.
+    pub fn notify_burst_triggered(&mut self, config: &crate::config::Config) {
+        self.state.soft_proto_repair_window_remaining = config.soft_proto_repair_after_burst_ticks;
+    }
+
+    /// Phase 2.1v: Check if in repair window after burst (P0 override).
+    pub fn is_in_repair_window(&self) -> bool {
+        self.state.soft_proto_repair_window_remaining > 0
+    }
+
+    /// Phase 2.1v: Tick the repair window countdown.
+    pub fn tick_repair_window(&mut self) {
+        if self.state.soft_proto_repair_window_remaining > 0 {
+            self.state.soft_proto_repair_window_remaining -= 1;
+        }
+    }
+
+    /// Phase 2.1v: Record proto allow/block in bad-regime.
+    pub fn record_bad_regime_proto(&mut self, allowed: bool) {
+        if allowed {
+            self.state.soft_proto_bad_regime_allowed += 1;
+        } else {
+            self.state.soft_proto_bad_regime_blocked += 1;
+        }
+    }
+
     /// Phase 2.1o: Get write override based on current mode and exploit quality.
     /// During soft exploit (mode==Exploit but can_exploit==false), blocks memory writes
     /// to prevent consolidating low-quality signal.
@@ -1869,6 +1908,9 @@ impl ModePolicy {
                 }
             },
             soft_proto_in_bad_regime: self.state.soft_proto_bad_hold_remaining > 0,
+            // Phase 2.1v: Bad-regime proto repair metrics
+            soft_proto_bad_regime_allowed: self.state.soft_proto_bad_regime_allowed,
+            soft_proto_bad_regime_blocked: self.state.soft_proto_bad_regime_blocked,
         }
     }
 }
@@ -1941,6 +1983,11 @@ pub struct ModeStats {
     pub soft_proto_avg_effective_period: f64,
     /// Whether currently in bad regime.
     pub soft_proto_in_bad_regime: bool,
+    // Phase 2.1v: Bad-regime proto repair metrics
+    /// Proto updates allowed while in bad-regime.
+    pub soft_proto_bad_regime_allowed: usize,
+    /// Proto updates blocked while in bad-regime.
+    pub soft_proto_bad_regime_blocked: usize,
 }
 
 // ============================================================================

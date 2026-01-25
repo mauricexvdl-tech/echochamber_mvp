@@ -1295,6 +1295,7 @@ impl ActionPolicy {
     /// Update the repair burst state based on rolling stats.
     /// Call this every tick with current rolling stats from ModePolicy.
     /// Phase 2.1s: Adds episodic logic with gap enforcement, max per run, and escalation.
+    /// Phase 2.1v: Returns true if a new burst was triggered this tick.
     pub fn update_repair_burst(
         &mut self,
         stable_share: f32,
@@ -1302,9 +1303,9 @@ impl ActionPolicy {
         rescue_rate: f32, // rescues per tick in rolling window
         global_tick: u64,
         config: &crate::config::Config,
-    ) {
+    ) -> bool {
         if !config.repair_enabled {
-            return;
+            return false;
         }
 
         // Push current metrics to buffer
@@ -1394,7 +1395,9 @@ impl ActionPolicy {
             self.repair_burst_cooldown = config.repair_burst_cooldown;
             self.repair_burst_trigger_count += 1;
             self.repair_bad_hold = 0; // Reset hold after triggering
+            return true; // Phase 2.1v: Signal that burst was triggered
         }
+        false
     }
 
     /// Finalize a burst episode after post-window measurement completes.

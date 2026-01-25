@@ -204,6 +204,9 @@ pub struct SeedDiagnostics {
     pub burst_td_improve_p50: f64,
     pub burst_td_improve_p90: f64,
     pub burst_mean_pre_td: f64,
+    // Phase 2.1v: Bad-regime proto repair metrics
+    pub soft_proto_bad_regime_allowed: usize,
+    pub soft_proto_bad_regime_blocked: usize,
 }
 
 /// Phase 2.1b: Warmup stats collector for adaptive thresholds.
@@ -428,6 +431,48 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
     );
     println!(
         "─────────────────────────────────────────────────────────────────────────────────────"
+    );
+
+    // Phase 2.1v: Bad-regime proto repair diagnostics
+    println!();
+    println!("Phase 2.1v: Bad-Regime Proto Repair (relaxed gating)");
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+    println!(
+        "  {:>10} | {:>12} | {:>12} | {:>18} | {:>12}",
+        "Seed", "Bad Allowed", "Bad Blocked", "Bad Allow Rate%", "Overall%"
+    );
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+    for d in diagnostics {
+        let bad_total = d.soft_proto_bad_regime_allowed + d.soft_proto_bad_regime_blocked;
+        let bad_allow_rate = if bad_total > 0 {
+            d.soft_proto_bad_regime_allowed as f64 / bad_total as f64 * 100.0
+        } else {
+            0.0
+        };
+        let overall_total = d.soft_exploit_proto_allowed + d.soft_exploit_proto_blocked;
+        let overall_allow_rate = if overall_total > 0 {
+            d.soft_exploit_proto_allowed as f64 / overall_total as f64 * 100.0
+        } else {
+            0.0
+        };
+        // Highlight worst seed (lowest bad allow rate)
+        let marker = if d.soft_proto_bad_active_share > 90.0 { " ⚠" } else { "" };
+        println!(
+            "  0x{:08X} | {:12} | {:12} | {:17.1}% | {:11.1}%{}",
+            d.seed,
+            d.soft_proto_bad_regime_allowed,
+            d.soft_proto_bad_regime_blocked,
+            bad_allow_rate,
+            overall_allow_rate,
+            marker,
+        );
+    }
+    println!(
+        "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 
     // Phase 2.1r: Repair burst diagnostics
@@ -1507,13 +1552,21 @@ pub fn run_single_seed_full(
             // Phase 2.1s: Push metrics into burst buffer for pre/post measurement
             action_policy.push_burst_metrics(abs_td as f32, repair_stable_share, repair_bad_share);
 
-            action_policy.update_repair_burst(
+            // Phase 2.1v: Tick repair window countdown
+            mode_policy.tick_repair_window();
+
+            let burst_triggered = action_policy.update_repair_burst(
                 repair_stable_share,
                 repair_bad_share,
                 repair_rescue_rate,
                 global_tick,
                 config,
             );
+
+            // Phase 2.1v: Notify mode_policy when burst is triggered for repair window
+            if burst_triggered {
+                mode_policy.notify_burst_triggered(config);
+            }
 
             match mode {
                 Mode::Explore => explore_count += 1,
@@ -1679,24 +1732,46 @@ pub fn run_single_seed_full(
             anchor_bank.update_anchor_partition(anchor_id, partition_mask, ctx_hat);
 
             // Update prototype (Phase 2.1p: rate-limited + TD-gated during soft exploit)
+            // Phase 2.1v: In bad-regime, use relaxed gates instead of blocking
             if gate_passed && anchor_id != 0xFFFF {
                 let is_soft_exploit = mode == Mode::Exploit && !mode_policy.last_can_exploit();
 
                 let allow_proto_update = if is_soft_exploit {
-                    // Phase 2.1q: Use adaptive period (P0 in good regime, P12 in bad regime)
-                    let effective_period = mode_policy.get_soft_proto_effective_period(config);
+                    let in_bad_regime = mode_policy.is_soft_proto_bad_regime();
+                    let in_repair_window = mode_policy.is_in_repair_window();
+                    let recent_td = mode_policy.recent_abs_td_mean_n(10);
+
+                    // Phase 2.1v: Determine effective period
+                    // In repair window + bad regime: use P0 for faster recovery
+                    let effective_period = if in_bad_regime && in_repair_window {
+                        0 // P0 during repair window
+                    } else {
+                        mode_policy.get_soft_proto_effective_period(config)
+                    };
                     let period_ok = effective_period == 0
                         || (global_tick - mode_policy.state.last_soft_proto_update_tick)
                             >= effective_period as u64;
-                    let gate_ok = !config.soft_proto_update_require_gate || gate_passed;
-                    let margin_ok = topk_margin >= config.soft_proto_update_min_margin as f64;
-                    let is_bad_state = proto_align < config.rescue_bad_proto
-                        && topk_margin < config.rescue_bad_margin
-                        && anchor_value < config.rescue_bad_value;
-                    let bad_ok = !config.soft_proto_update_block_when_bad || !is_bad_state;
-                    // Phase 2.1p TD gate: only allow when recent TD is calm
-                    let recent_td = mode_policy.recent_abs_td_mean_n(10);
-                    let td_ok = recent_td <= config.soft_proto_update_td_max;
+
+                    // Phase 2.1v: In bad-regime, use relaxed gates instead of hard block
+                    let (gate_ok, margin_ok, td_ok, bad_ok) = if in_bad_regime {
+                        // Relaxed gates for bad-regime
+                        let gate_ok = !config.soft_proto_bad_require_gate || gate_passed;
+                        let margin_ok = topk_margin >= config.soft_proto_bad_margin_min as f64;
+                        let td_ok = recent_td <= config.soft_proto_bad_td_max;
+                        // In bad-regime, also require minimum proto alignment
+                        let proto_ok = proto_align >= config.soft_proto_bad_proto_min;
+                        (gate_ok, margin_ok && proto_ok, td_ok, true) // bad_ok is always true in bad-regime path
+                    } else {
+                        // Normal gates (not in bad-regime)
+                        let gate_ok = !config.soft_proto_update_require_gate || gate_passed;
+                        let margin_ok = topk_margin >= config.soft_proto_update_min_margin as f64;
+                        let td_ok = recent_td <= config.soft_proto_update_td_max;
+                        let is_bad_state = proto_align < config.rescue_bad_proto
+                            && topk_margin < config.rescue_bad_margin
+                            && anchor_value < config.rescue_bad_value;
+                        let bad_ok = !config.soft_proto_update_block_when_bad || !is_bad_state;
+                        (gate_ok, margin_ok, td_ok, bad_ok)
+                    };
 
                     // Track TD-specific blocks separately
                     let quality_ok = period_ok && gate_ok && margin_ok && bad_ok;
@@ -1704,7 +1779,14 @@ pub fn run_single_seed_full(
                         mode_policy.state.soft_exploit_td_blocked += 1;
                     }
 
-                    quality_ok && td_ok
+                    let allowed = quality_ok && td_ok;
+
+                    // Phase 2.1v: Track bad-regime proto decisions
+                    if in_bad_regime {
+                        mode_policy.record_bad_regime_proto(allowed);
+                    }
+
+                    allowed
                 } else {
                     // Hard exploit, explore, or reset: use write_override
                     write_override.allow_proto_update
@@ -2028,6 +2110,9 @@ pub fn run_single_seed_full(
         burst_td_improve_p50: action_policy.burst_effectiveness.td_improve_percentile(50.0),
         burst_td_improve_p90: action_policy.burst_effectiveness.td_improve_percentile(90.0),
         burst_mean_pre_td: action_policy.burst_effectiveness.mean_pre_td(),
+        // Phase 2.1v: Bad-regime proto repair metrics
+        soft_proto_bad_regime_allowed: mode_stats.soft_proto_bad_regime_allowed,
+        soft_proto_bad_regime_blocked: mode_stats.soft_proto_bad_regime_blocked,
     };
 
     (run, lift_stats, diag)
