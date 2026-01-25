@@ -657,6 +657,321 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
     }
 
     // ==========================================================================
+    // TD-GATE SWEEP: Compare period=0 vs period=20 with td_max=0.27
+    // ==========================================================================
+    println!();
+    println!("═══════════════════════════════════════════════════════════════════");
+    println!("TD-GATE SWEEP: period=0 vs period=20 (td_max=0.27)");
+    println!("═══════════════════════════════════════════════════════════════════");
+
+    // Variant A: period=0, td_max=0.27 (already run as FULL above)
+    // We'll just relabel it
+    println!();
+    println!("Variant A (FULL_TD027_P0): period=0, td_max=0.27");
+    println!("  (Using results from FULL run above)");
+
+    // Variant B: period=20, td_max=0.27
+    println!();
+    println!("Running Variant B (FULL_TD027_P20): period=20, td_max=0.27...");
+    let mut config_p20 = config.clone();
+    config_p20.soft_proto_update_period = 20;
+    config_p20.soft_proto_update_td_max = 0.27;
+
+    let mut p20_runs: Vec<SeedRun> = Vec::new();
+    let mut p20_diagnostics: Vec<SeedDiagnostics> = Vec::new();
+
+    for (i, &seed) in seeds.iter().enumerate() {
+        print!("  Seed {}/{} (0x{:08X})... ", i + 1, num_seeds, seed);
+        let (run, _, diag) = run_single_seed_full(&config_p20, &lift_config, seed);
+        println!(
+            "cov={:.1}% sel={:.1}% rescues={}",
+            run.coverage_pos * 100.0,
+            run.selective_accuracy * 100.0,
+            diag.rescue_count,
+        );
+        p20_runs.push(run);
+        p20_diagnostics.push(diag);
+    }
+
+    let p20_agg = multiseed::aggregate(&p20_runs);
+
+    // Print per-seed summary table for both variants
+    println!();
+    println!("───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────");
+    println!("TD-GATE SWEEP: Per-Seed Summary");
+    println!("───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────");
+    println!();
+    println!("FULL_TD027_P0 (period=0, td_max=0.27):");
+    println!("  Seed       | cov%   | sel_acc% | FP%  | stable% | bad%  | soft_share% | proto_allow% | td_blocked | enters | rescues");
+    println!("  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────");
+    for (run, diag) in full_runs.iter().zip(full_diagnostics.iter()) {
+        let proto_allow_rate = if diag.exploit_soft_count > 0 {
+            diag.soft_exploit_proto_allowed as f64 / diag.exploit_soft_count as f64 * 100.0
+        } else {
+            0.0
+        };
+        println!(
+            "  0x{:08X} | {:5.1}% | {:7.1}% | {:3.1}% | {:6.1}% | {:4.1}% | {:10.1}% | {:11.1}% | {:10} | {:6} | {:7}",
+            run.seed,
+            run.coverage_pos * 100.0,
+            run.selective_accuracy * 100.0,
+            run.false_positive * 100.0,
+            diag.stable_share * 100.0,
+            diag.bad_state_share * 100.0,
+            diag.exploit_soft_share * 100.0,
+            proto_allow_rate,
+            diag.soft_exploit_td_blocked,
+            diag.chronic_enter_count,
+            diag.rescue_count,
+        );
+    }
+
+    println!();
+    println!("FULL_TD027_P20 (period=20, td_max=0.27):");
+    println!("  Seed       | cov%   | sel_acc% | FP%  | stable% | bad%  | soft_share% | proto_allow% | td_blocked | enters | rescues");
+    println!("  ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────");
+    for (run, diag) in p20_runs.iter().zip(p20_diagnostics.iter()) {
+        let proto_allow_rate = if diag.exploit_soft_count > 0 {
+            diag.soft_exploit_proto_allowed as f64 / diag.exploit_soft_count as f64 * 100.0
+        } else {
+            0.0
+        };
+        println!(
+            "  0x{:08X} | {:5.1}% | {:7.1}% | {:3.1}% | {:6.1}% | {:4.1}% | {:10.1}% | {:11.1}% | {:10} | {:6} | {:7}",
+            run.seed,
+            run.coverage_pos * 100.0,
+            run.selective_accuracy * 100.0,
+            run.false_positive * 100.0,
+            diag.stable_share * 100.0,
+            diag.bad_state_share * 100.0,
+            diag.exploit_soft_share * 100.0,
+            proto_allow_rate,
+            diag.soft_exploit_td_blocked,
+            diag.chronic_enter_count,
+            diag.rescue_count,
+        );
+    }
+
+    // Print aggregate comparison
+    println!();
+    println!("───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────");
+    println!("TD-GATE SWEEP: Aggregate Metrics (Mean ± Std)");
+    println!("───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────");
+
+    // Calculate aggregate proto_allow_rate and td_blocked for P0
+    let p0_proto_allow_rates: Vec<f64> = full_diagnostics
+        .iter()
+        .map(|d| {
+            if d.exploit_soft_count > 0 {
+                d.soft_exploit_proto_allowed as f64 / d.exploit_soft_count as f64 * 100.0
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let p0_proto_allow_mean =
+        p0_proto_allow_rates.iter().sum::<f64>() / p0_proto_allow_rates.len() as f64;
+    let p0_proto_allow_std = (p0_proto_allow_rates
+        .iter()
+        .map(|x| (x - p0_proto_allow_mean).powi(2))
+        .sum::<f64>()
+        / p0_proto_allow_rates.len() as f64)
+        .sqrt();
+
+    let p0_td_blocked: Vec<f64> = full_diagnostics
+        .iter()
+        .map(|d| d.soft_exploit_td_blocked as f64)
+        .collect();
+    let p0_td_blocked_mean = p0_td_blocked.iter().sum::<f64>() / p0_td_blocked.len() as f64;
+    let p0_td_blocked_std = (p0_td_blocked
+        .iter()
+        .map(|x| (x - p0_td_blocked_mean).powi(2))
+        .sum::<f64>()
+        / p0_td_blocked.len() as f64)
+        .sqrt();
+
+    // Calculate aggregate proto_allow_rate and td_blocked for P20
+    let p20_proto_allow_rates: Vec<f64> = p20_diagnostics
+        .iter()
+        .map(|d| {
+            if d.exploit_soft_count > 0 {
+                d.soft_exploit_proto_allowed as f64 / d.exploit_soft_count as f64 * 100.0
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let p20_proto_allow_mean =
+        p20_proto_allow_rates.iter().sum::<f64>() / p20_proto_allow_rates.len() as f64;
+    let p20_proto_allow_std = (p20_proto_allow_rates
+        .iter()
+        .map(|x| (x - p20_proto_allow_mean).powi(2))
+        .sum::<f64>()
+        / p20_proto_allow_rates.len() as f64)
+        .sqrt();
+
+    let p20_td_blocked: Vec<f64> = p20_diagnostics
+        .iter()
+        .map(|d| d.soft_exploit_td_blocked as f64)
+        .collect();
+    let p20_td_blocked_mean = p20_td_blocked.iter().sum::<f64>() / p20_td_blocked.len() as f64;
+    let p20_td_blocked_std = (p20_td_blocked
+        .iter()
+        .map(|x| (x - p20_td_blocked_mean).powi(2))
+        .sum::<f64>()
+        / p20_td_blocked.len() as f64)
+        .sqrt();
+
+    println!();
+    println!("  FULL_TD027_P0 (period=0):");
+    println!(
+        "    coverage_pos:     {:5.1}% ± {:4.1}%",
+        full_agg.coverage_pos_mean * 100.0,
+        full_agg.coverage_pos_std * 100.0
+    );
+    println!(
+        "    selective_acc:    {:5.1}% ± {:4.1}%",
+        full_agg.selective_accuracy_mean * 100.0,
+        full_agg.selective_accuracy_std * 100.0
+    );
+    println!(
+        "    stable_share:     {:5.1}% ± {:4.1}%",
+        full_agg.stable_share_mean * 100.0,
+        full_agg.stable_share_std * 100.0
+    );
+    println!(
+        "    bad_state_share:  {:5.1}% ± {:4.1}%",
+        full_agg.bad_state_share_mean.unwrap_or(0.0) * 100.0,
+        full_agg.bad_state_share_std.unwrap_or(0.0) * 100.0
+    );
+    println!(
+        "    proto_allow_rate: {:5.1}% ± {:4.1}%",
+        p0_proto_allow_mean, p0_proto_allow_std
+    );
+    println!(
+        "    td_blocked_count: {:5.0} ± {:4.0}",
+        p0_td_blocked_mean, p0_td_blocked_std
+    );
+
+    println!();
+    println!("  FULL_TD027_P20 (period=20):");
+    println!(
+        "    coverage_pos:     {:5.1}% ± {:4.1}%",
+        p20_agg.coverage_pos_mean * 100.0,
+        p20_agg.coverage_pos_std * 100.0
+    );
+    println!(
+        "    selective_acc:    {:5.1}% ± {:4.1}%",
+        p20_agg.selective_accuracy_mean * 100.0,
+        p20_agg.selective_accuracy_std * 100.0
+    );
+    println!(
+        "    stable_share:     {:5.1}% ± {:4.1}%",
+        p20_agg.stable_share_mean * 100.0,
+        p20_agg.stable_share_std * 100.0
+    );
+    println!(
+        "    bad_state_share:  {:5.1}% ± {:4.1}%",
+        p20_agg.bad_state_share_mean.unwrap_or(0.0) * 100.0,
+        p20_agg.bad_state_share_std.unwrap_or(0.0) * 100.0
+    );
+    println!(
+        "    proto_allow_rate: {:5.1}% ± {:4.1}%",
+        p20_proto_allow_mean, p20_proto_allow_std
+    );
+    println!(
+        "    td_blocked_count: {:5.0} ± {:4.0}",
+        p20_td_blocked_mean, p20_td_blocked_std
+    );
+
+    // Print delta comparison
+    println!();
+    println!("───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────");
+    println!("DELTA (P20 - P0):");
+    println!("───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────");
+
+    let cov_delta = (p20_agg.coverage_pos_mean - full_agg.coverage_pos_mean) * 100.0;
+    let sel_acc_delta =
+        (p20_agg.selective_accuracy_mean - full_agg.selective_accuracy_mean) * 100.0;
+    let stable_delta = (p20_agg.stable_share_mean - full_agg.stable_share_mean) * 100.0;
+    let bad_delta = (p20_agg.bad_state_share_mean.unwrap_or(0.0)
+        - full_agg.bad_state_share_mean.unwrap_or(0.0))
+        * 100.0;
+    let proto_allow_delta = p20_proto_allow_mean - p0_proto_allow_mean;
+    let td_blocked_delta = p20_td_blocked_mean - p0_td_blocked_mean;
+
+    // Worst-seed deltas
+    let p0_worst_cov = full_runs
+        .iter()
+        .map(|r| r.coverage_pos)
+        .fold(f64::MAX, f64::min);
+    let p20_worst_cov = p20_runs
+        .iter()
+        .map(|r| r.coverage_pos)
+        .fold(f64::MAX, f64::min);
+    let p0_worst_sel = full_runs
+        .iter()
+        .map(|r| r.selective_accuracy)
+        .fold(f64::MAX, f64::min);
+    let p20_worst_sel = p20_runs
+        .iter()
+        .map(|r| r.selective_accuracy)
+        .fold(f64::MAX, f64::min);
+
+    let worst_cov_delta = (p20_worst_cov - p0_worst_cov) * 100.0;
+    let worst_sel_delta = (p20_worst_sel - p0_worst_sel) * 100.0;
+
+    println!();
+    println!("  cov_mean:           {:+5.1}%", cov_delta);
+    println!("  sel_acc_mean:       {:+5.1}%", sel_acc_delta);
+    println!("  stable_share_mean:  {:+5.1}%", stable_delta);
+    println!("  bad_state_share:    {:+5.1}%", bad_delta);
+    println!("  proto_allow_rate:   {:+5.1}%", proto_allow_delta);
+    println!("  td_blocked_count:   {:+5.0}", td_blocked_delta);
+    println!();
+    println!(
+        "  worst_seed_cov:     {:+5.1}% (P0: {:.1}%, P20: {:.1}%)",
+        worst_cov_delta,
+        p0_worst_cov * 100.0,
+        p20_worst_cov * 100.0
+    );
+    println!(
+        "  worst_seed_sel_acc: {:+5.1}% (P0: {:.1}%, P20: {:.1}%)",
+        worst_sel_delta,
+        p0_worst_sel * 100.0,
+        p20_worst_sel * 100.0
+    );
+
+    // Summary judgment
+    println!();
+    let p0_passes = full_agg.coverage_pos_mean >= 0.70 && full_agg.selective_accuracy_mean >= 0.80;
+    let p20_passes = p20_agg.coverage_pos_mean >= 0.70 && p20_agg.selective_accuracy_mean >= 0.80;
+    println!(
+        "  P0 passes regression guard:  {} (cov≥70%, sel_acc≥80%)",
+        if p0_passes { "✓" } else { "✗" }
+    );
+    println!(
+        "  P20 passes regression guard: {} (cov≥70%, sel_acc≥80%)",
+        if p20_passes { "✓" } else { "✗" }
+    );
+
+    if p0_passes && !p20_passes {
+        println!("  → Recommendation: Use period=0 (TD gate only)");
+    } else if !p0_passes && p20_passes {
+        println!("  → Recommendation: Use period=20 (rate limit + TD gate)");
+    } else if p0_passes && p20_passes {
+        if proto_allow_delta.abs() < 5.0 && cov_delta.abs() < 2.0 && sel_acc_delta.abs() < 2.0 {
+            println!("  → Recommendation: Either works; prefer period=0 for simplicity");
+        } else if proto_allow_delta < -10.0 {
+            println!("  → Recommendation: period=20 significantly reduces proto_allow_rate");
+        } else {
+            println!("  → Recommendation: period=0 (comparable results, simpler)");
+        }
+    } else {
+        println!("  → Neither variant passes regression guard");
+    }
+
+    // ==========================================================================
     // JSON Export (if --out specified)
     // ==========================================================================
     if let Some(ref out_path) = options.out_path {
