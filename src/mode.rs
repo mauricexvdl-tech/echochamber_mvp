@@ -698,6 +698,8 @@ pub struct ModePolicyState {
     pub soft_exploit_proto_allowed: usize,
     /// Phase 2.1p: Last tick when soft exploit proto update was allowed (for cooldown).
     pub last_soft_proto_update_tick: u64,
+    /// Phase 2.1p: Ticks where soft exploit blocked proto updates due to high TD.
+    pub soft_exploit_td_blocked: usize,
 }
 
 impl ModePolicyState {
@@ -802,8 +804,9 @@ impl ModePolicyState {
             soft_exploit_proto_blocked: 0,
             soft_exploit_merge_blocked: 0,
             soft_exploit_proto_allowed: 0,
-            // Phase 2.1p: Cooldown tracking
+            // Phase 2.1p: Cooldown tracking + TD gate
             last_soft_proto_update_tick: 0,
+            soft_exploit_td_blocked: 0,
         }
     }
 }
@@ -1155,9 +1158,7 @@ impl ModePolicy {
             // Phase 2.1n: Rescue throttle - track recent rescues and extend cooldown if too many
             // Clean old rescues from window (keep only those within last 10k ticks)
             let window_start = current_tick.saturating_sub(10000);
-            self.state
-                .rescue_tick_window
-                .retain(|&t| t >= window_start);
+            self.state.rescue_tick_window.retain(|&t| t >= window_start);
 
             // Add current rescue
             self.state.rescue_tick_window.push(current_tick);
@@ -1716,6 +1717,7 @@ impl ModePolicy {
             soft_exploit_proto_blocked: self.state.soft_exploit_proto_blocked,
             soft_exploit_merge_blocked: self.state.soft_exploit_merge_blocked,
             soft_exploit_proto_allowed: self.state.soft_exploit_proto_allowed,
+            soft_exploit_td_blocked: self.state.soft_exploit_td_blocked,
         }
     }
 }
@@ -1779,6 +1781,8 @@ pub struct ModeStats {
     pub soft_exploit_merge_blocked: usize,
     /// Proto updates allowed during soft exploit (rate-limited).
     pub soft_exploit_proto_allowed: usize,
+    /// Proto updates blocked due to high TD during soft exploit.
+    pub soft_exploit_td_blocked: usize,
 }
 
 // ============================================================================
@@ -1846,6 +1850,16 @@ impl ModePolicy {
     /// Get the current mean |TD| from recent observations.
     pub fn current_abs_td(&self) -> f32 {
         self.state.recent_abs_td.mean()
+    }
+
+    /// Get mean |TD| from last N observations (for TD gate).
+    pub fn recent_abs_td_mean_n(&self, n: usize) -> f32 {
+        let values = self.state.recent_abs_td.last_n(n);
+        if values.is_empty() {
+            0.0
+        } else {
+            values.iter().sum::<f32>() / values.len() as f32
+        }
     }
 
     /// Get the last observed anchor value.

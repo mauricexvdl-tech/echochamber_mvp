@@ -87,6 +87,8 @@ pub struct SeedDiagnostics {
     pub soft_exploit_store_blocked: usize,
     pub soft_exploit_proto_blocked: usize,
     pub soft_exploit_proto_allowed: usize,
+    // Phase 2.1p: TD gate metrics
+    pub soft_exploit_td_blocked: usize,
 }
 
 /// Phase 2.1b: Warmup stats collector for adaptive thresholds.
@@ -212,9 +214,7 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
     println!(
         "─────────────────────────────────────────────────────────────────────────────────────────────────"
     );
-    println!(
-        "  Seed       | hard_scan% | hard_focus% | soft_scan% | soft_focus% | throttle"
-    );
+    println!("  Seed       | hard_scan% | hard_focus% | soft_scan% | soft_focus% | throttle");
     println!(
         "─────────────────────────────────────────────────────────────────────────────────────────────────"
     );
@@ -238,17 +238,17 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
         "─────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 
-    // Phase 2.1o-fix: Print soft-exploit quarantine metrics with rate limiting
+    // Phase 2.1p: Print soft-exploit proto updates with TD gate metrics
     println!();
-    println!("Soft-Exploit Proto Updates (Phase 2.1o-fix):");
+    println!("Soft-Exploit Proto Updates (Phase 2.1p TD-gate):");
     println!(
-        "─────────────────────────────────────────────────────────────────────────────────────────────────"
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     println!(
-        "  Seed       | soft_expl_ticks | proto_allowed | proto_blocked | allow_rate%"
+        "  Seed       | soft_expl_ticks | proto_allowed | proto_blocked | td_blocked | allow_rate%"
     );
     println!(
-        "─────────────────────────────────────────────────────────────────────────────────────────────────"
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     for d in diagnostics {
         let total_proto_decisions = d.soft_exploit_proto_allowed + d.soft_exploit_proto_blocked;
@@ -258,16 +258,17 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
             0.0
         };
         println!(
-            "  0x{:08X} | {:15} | {:13} | {:13} | {:10.1}%",
+            "  0x{:08X} | {:15} | {:13} | {:13} | {:10} | {:10.1}%",
             d.seed,
             d.exploit_soft_count,
             d.soft_exploit_proto_allowed,
             d.soft_exploit_proto_blocked,
+            d.soft_exploit_td_blocked,
             allow_rate,
         );
     }
     println!(
-        "─────────────────────────────────────────────────────────────────────────────────────────────────"
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 }
 
@@ -1065,7 +1066,7 @@ fn run_single_seed_full(
             let partition_mask = current_sig.ctx_hat.unwrap_or(0) as u64;
             anchor_bank.update_anchor_partition(anchor_id, partition_mask, ctx_hat);
 
-            // Update prototype (Phase 2.1p: rate-limited during soft exploit)
+            // Update prototype (Phase 2.1p: rate-limited + TD-gated during soft exploit)
             if gate_passed && anchor_id != 0xFFFF {
                 let is_soft_exploit = mode == Mode::Exploit && !mode_policy.last_can_exploit();
 
@@ -1074,17 +1075,23 @@ fn run_single_seed_full(
                     let period_ok = config.soft_proto_update_period == 0
                         || (global_tick - mode_policy.state.last_soft_proto_update_tick)
                             >= config.soft_proto_update_period as u64;
-                    let gate_ok =
-                        !config.soft_proto_update_require_gate || gate_passed;
-                    let margin_ok =
-                        topk_margin >= config.soft_proto_update_min_margin as f64;
+                    let gate_ok = !config.soft_proto_update_require_gate || gate_passed;
+                    let margin_ok = topk_margin >= config.soft_proto_update_min_margin as f64;
                     let is_bad_state = proto_align < config.rescue_bad_proto
                         && topk_margin < config.rescue_bad_margin
                         && anchor_value < config.rescue_bad_value;
-                    let bad_ok =
-                        !config.soft_proto_update_block_when_bad || !is_bad_state;
+                    let bad_ok = !config.soft_proto_update_block_when_bad || !is_bad_state;
+                    // Phase 2.1p TD gate: only allow when recent TD is calm
+                    let recent_td = mode_policy.recent_abs_td_mean_n(10);
+                    let td_ok = recent_td <= config.soft_proto_update_td_max;
 
-                    period_ok && gate_ok && margin_ok && bad_ok
+                    // Track TD-specific blocks separately
+                    let quality_ok = period_ok && gate_ok && margin_ok && bad_ok;
+                    if quality_ok && !td_ok {
+                        mode_policy.state.soft_exploit_td_blocked += 1;
+                    }
+
+                    quality_ok && td_ok
                 } else {
                     // Hard exploit, explore, or reset: use write_override
                     write_override.allow_proto_update
@@ -1369,6 +1376,8 @@ fn run_single_seed_full(
         soft_exploit_store_blocked: mode_stats.soft_exploit_store_blocked,
         soft_exploit_proto_blocked: mode_stats.soft_exploit_proto_blocked,
         soft_exploit_proto_allowed: mode_stats.soft_exploit_proto_allowed,
+        // Phase 2.1p: TD gate metrics
+        soft_exploit_td_blocked: mode_stats.soft_exploit_td_blocked,
     };
 
     (run, lift_stats, diag)

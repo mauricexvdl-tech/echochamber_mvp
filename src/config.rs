@@ -315,6 +315,8 @@ pub struct Config {
     pub soft_proto_update_require_gate: bool,
     /// Block proto update when in bad state during soft exploit.
     pub soft_proto_update_block_when_bad: bool,
+    /// Maximum recent TD (instability) to allow proto update in soft exploit.
+    pub soft_proto_update_td_max: f32,
 
     // =========================================================================
     // Phase 2.1h: Chronic Instability Clamp v5 (EMA smoothing + hysteresis)
@@ -723,13 +725,13 @@ impl Default for Config {
             lift_bad_value: 0.15,
 
             // Phase 2.1b: Seed-Robust Policy Stabilization defaults
-            min_exploit_ticks_on: 100,  // Phase 2.1k: stickier exploit
-            explore_streak_rescue: 80,  // Phase 2.1j: stop rescue spam
-            fail_streak_rescue: 4,      // Rescue earlier on gate-fail cascades
-            rescue_cooldown: 320,       // Phase 2.1j: stop rescue spam
+            min_exploit_ticks_on: 100, // Phase 2.1k: stickier exploit
+            explore_streak_rescue: 80, // Phase 2.1j: stop rescue spam
+            fail_streak_rescue: 4,     // Rescue earlier on gate-fail cascades
+            rescue_cooldown: 320,      // Phase 2.1j: stop rescue spam
             post_reset_exploit_boost_ticks: 80, // Phase 2.1j: reduced stickiness
             post_reset_exploit_margin_scale: 1.35, // Strong margin boost post-reset
-            catastrophic_abs_td: 0.55,             // Moderate threshold
+            catastrophic_abs_td: 0.55, // Moderate threshold
             catastrophic_value_drop: 0.10,
             exploit_proto_min_floor: 0.20, // Much higher floor - require good proto alignment
             exploit_margin_min_floor: 0.045, // Higher margin floor
@@ -751,24 +753,25 @@ impl Default for Config {
             rescue_bad_value: -0.20,     // Phase 2.1j: correct scale (V often negative)
 
             // Phase 2.1m: Lock hysteresis + soft exploit relaxation defaults
-            lock_fail_drop_streak: 12,   // Grace period before dropping lock
-            proto_soft_min: 0.08,        // Relaxed proto threshold for soft exploit
+            lock_fail_drop_streak: 12, // Grace period before dropping lock
+            proto_soft_min: 0.08,      // Relaxed proto threshold for soft exploit
 
             // Phase 2.1n: Quality-aware action defaults
             soft_exploit_scan_prob: 0.0, // Disabled: soft exploit uses Focus (same as hard)
-            rescue_max_per_10k: 15,       // Max rescues per 10k ticks before throttle
+            rescue_max_per_10k: 15,      // Max rescues per 10k ticks before throttle
             rescue_throttle_cooldown: 500, // Extended cooldown when throttle active
 
             // Phase 2.1o: Soft-exploit quarantine defaults (DISABLED - regresses badly)
-            soft_exploit_block_store: false,       // Block memory store during soft exploit
+            soft_exploit_block_store: false, // Block memory store during soft exploit
             soft_exploit_block_proto_update: false, // Block prototype updates during soft exploit
-            soft_exploit_block_merge: false,       // Block merge candidates during soft exploit
+            soft_exploit_block_merge: false, // Block merge candidates during soft exploit
 
             // Phase 2.1p: Rate-limited proto updates in soft exploit
-            soft_proto_update_period: 20,          // Cooldown ticks between soft-exploit proto updates (0 = disabled)
-            soft_proto_update_min_margin: 0.03,    // Minimum margin to allow proto update
-            soft_proto_update_require_gate: true,  // Require gate pass for proto update
+            soft_proto_update_period: 0, // Cooldown ticks between soft-exploit proto updates (0 = disabled)
+            soft_proto_update_min_margin: 0.03, // Minimum margin to allow proto update
+            soft_proto_update_require_gate: true, // Require gate pass for proto update
             soft_proto_update_block_when_bad: true, // Block proto update when in bad state
+            soft_proto_update_td_max: 0.27, // Max recent TD to allow proto update (instability gate)
 
             // Phase 2.1h: Chronic Instability Clamp v5 defaults (EMA smoothing + hysteresis)
             chronic_window_ticks: 500,     // Sliding window for raw stats
@@ -839,7 +842,7 @@ impl Default for Config {
             enable_mode_policy: true,
             mode_explore_v_max: 0.32, // Phase 2.1i: avoid Explore as default for low V
             mode_exploit_v_min: 0.60, // Phase 2.1k: reduce fallback exploit
-            mode_reset_td_min: 0.35, // TD threshold for reset (stable_avg ~0.27)
+            mode_reset_td_min: 0.35,  // TD threshold for reset (stable_avg ~0.27)
             mode_reset_value_drop: 1.0, // Disabled
             mode_reset_fail_streak: 2, // Reset after 2 consecutive gate failures
             mode_post_reset_cooldown: 12,
