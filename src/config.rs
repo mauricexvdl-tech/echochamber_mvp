@@ -685,11 +685,11 @@ impl Default for Config {
             lift_bad_value: 0.15,
 
             // Phase 2.1b: Seed-Robust Policy Stabilization defaults
-            min_exploit_ticks_on: 20,
-            explore_streak_rescue: 200, // Less aggressive - only rescue truly stuck states
+            min_exploit_ticks_on: 80,   // Phase 2.1i: 4x stickier exploit
+            explore_streak_rescue: 18,  // Phase 2.1i: rescue earlier on explore streaks
             fail_streak_rescue: 4,      // Rescue earlier on gate-fail cascades
-            rescue_cooldown: 350,       // Avoid rescue spam
-            post_reset_exploit_boost_ticks: 70,
+            rescue_cooldown: 220,       // Phase 2.1i: allow more rescues, still not spammy
+            post_reset_exploit_boost_ticks: 120, // Phase 2.1i: longer post-reset stabilization
             post_reset_exploit_margin_scale: 1.35, // Strong margin boost post-reset
             catastrophic_abs_td: 0.55,             // Moderate threshold
             catastrophic_value_drop: 0.10,
@@ -779,7 +779,7 @@ impl Default for Config {
 
             // Phase 2.0a: Mode Policy defaults
             enable_mode_policy: true,
-            mode_explore_v_max: 0.18,
+            mode_explore_v_max: 0.32, // Phase 2.1i: avoid Explore as default for low V
             mode_exploit_v_min: 0.55,
             mode_reset_td_min: 0.35, // TD threshold for reset (stable_avg ~0.27)
             mode_reset_value_drop: 1.0, // Disabled
@@ -787,7 +787,7 @@ impl Default for Config {
             mode_post_reset_cooldown: 12,
             mode_explore_margin_scale: 0.6,
             mode_exploit_margin_scale: 1.15,
-            mode_reset_dampen: 0.60, // 40% amplitude reduction on top-K nodes (stronger reset)
+            mode_reset_dampen: 0.45, // Phase 2.1i: 55% amplitude reduction (stronger reset)
             mode_reset_dampen_top_k: 8,
             mode_window_size: 32,
 
