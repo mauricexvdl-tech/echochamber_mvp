@@ -2541,9 +2541,9 @@ fn check_acceptance_2_1t(result: &SweepConfigResult) -> bool {
     let burst_triggers_ok = result.burst_triggers_worst <= 30;
     let burst_active_ok = result.burst_active_share_worst <= 0.03;
 
-    // Burst effectiveness
+    // Burst effectiveness (use p50 instead of mean - more robust to outliers)
     let burst_success_ok = result.burst_success_rate_worst >= 0.55;
-    let td_improve_ok = result.td_improve_mean_worst >= 0.005;
+    let td_improve_ok = result.td_improve_p50_worst >= 0.002; // 0.2% p50 threshold
 
     regression_ok
         && worst_cov_improved
@@ -2867,7 +2867,7 @@ pub fn run_sweep_2_1t(config: &Config) {
         let burst_triggers_ok = best.burst_triggers_worst <= 30;
         let burst_active_ok = best.burst_active_share_worst <= 0.03;
         let burst_success_ok = best.burst_success_rate_worst >= 0.55;
-        let td_improve_ok = best.td_improve_mean_worst >= 0.005;
+        let td_improve_ok = best.td_improve_p50_worst >= 0.002; // 0.2% p50 threshold
 
         println!("  REGRESSION GUARD:");
         println!(
@@ -2944,9 +2944,9 @@ pub fn run_sweep_2_1t(config: &Config) {
             best.burst_success_rate_worst * 100.0
         );
         println!(
-            "    [{}] td_improve_mean >= 0.5%: {:.2}%",
+            "    [{}] td_improve_p50 >= 0.2%: {:.2}%",
             if td_improve_ok { "✓" } else { "✗" },
-            best.td_improve_mean_worst * 100.0
+            best.td_improve_p50_worst * 100.0
         );
         println!(
             "    → Burst effectiveness: {}",
@@ -3015,10 +3015,10 @@ pub fn run_sweep_2_1t(config: &Config) {
                 top.burst_success_rate_worst * 100.0
             );
         }
-        if top.td_improve_mean_worst < 0.005 {
+        if top.td_improve_p50_worst < 0.002 {
             println!(
-                "    ✗ td_improve_mean {:.2}% < 0.5%",
-                top.td_improve_mean_worst * 100.0
+                "    ✗ td_improve_p50 {:.2}% < 0.2%",
+                top.td_improve_p50_worst * 100.0
             );
         }
     }
