@@ -648,6 +648,10 @@ pub struct BurstEffectivenessStats {
     pub success_by_td: u32,
     pub success_by_bad: u32,
     pub success_by_stable: u32,
+    /// Individual TD improvements for percentile calculation (Phase 2.1u diagnostic).
+    pub td_improve_values: Vec<f32>,
+    /// Sum of pre-burst TD values for mean_pre_td calculation.
+    pub pre_td_sum: f32,
 }
 
 impl BurstEffectivenessStats {
@@ -691,6 +695,26 @@ impl BurstEffectivenessStats {
         }
     }
 
+    /// Mean pre-burst TD (for normalization diagnostic).
+    pub fn mean_pre_td(&self) -> f64 {
+        if self.episodes_completed > 0 {
+            self.pre_td_sum as f64 / self.episodes_completed as f64
+        } else {
+            0.0
+        }
+    }
+
+    /// TD improve percentile (p50 or p90). Returns 0 if no data.
+    pub fn td_improve_percentile(&self, pct: f64) -> f64 {
+        if self.td_improve_values.is_empty() {
+            return 0.0;
+        }
+        let mut sorted: Vec<f32> = self.td_improve_values.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let idx = ((pct / 100.0) * (sorted.len() - 1) as f64).round() as usize;
+        sorted[idx.min(sorted.len() - 1)] as f64 * 100.0 // return as percentage
+    }
+
     /// Record a completed episode.
     pub fn record_episode(&mut self, record: &BurstEpisodeRecord, config: &crate::config::Config) {
         self.episodes_completed += 1;
@@ -703,6 +727,10 @@ impl BurstEffectivenessStats {
         self.td_improve_sum += td_improve;
         self.bad_improve_sum += bad_improve;
         self.stable_gain_sum += stable_gain;
+
+        // Track for percentile calculation (Phase 2.1u)
+        self.td_improve_values.push(td_improve);
+        self.pre_td_sum += record.pre_abs_td_mean;
 
         // Check success criteria
         let td_success =

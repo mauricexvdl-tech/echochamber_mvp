@@ -88,6 +88,11 @@ pub struct SweepConfigResult {
     pub quality_improve_mean_worst: f64,
     pub score: f64,
     pub meets_acceptance: bool,
+    // Phase 2.1u diagnostic fields
+    pub td_improve_p50_worst: f64,
+    pub td_improve_p90_worst: f64,
+    pub burst_events_worst: u32,
+    pub mean_pre_td_worst: f64,
 }
 
 /// Phase 2.1t sweep result for JSON export.
@@ -195,6 +200,10 @@ pub struct SeedDiagnostics {
     pub burst_success_by_td: u32,
     pub burst_success_by_bad: u32,
     pub burst_success_by_stable: u32,
+    // Phase 2.1u: TD improve diagnostic metrics
+    pub burst_td_improve_p50: f64,
+    pub burst_td_improve_p90: f64,
+    pub burst_mean_pre_td: f64,
 }
 
 /// Phase 2.1b: Warmup stats collector for adaptive thresholds.
@@ -2015,6 +2024,10 @@ pub fn run_single_seed_full(
         burst_success_by_td: action_policy.burst_effectiveness.success_by_td,
         burst_success_by_bad: action_policy.burst_effectiveness.success_by_bad,
         burst_success_by_stable: action_policy.burst_effectiveness.success_by_stable,
+        // Phase 2.1u: TD improve diagnostic metrics
+        burst_td_improve_p50: action_policy.burst_effectiveness.td_improve_percentile(50.0),
+        burst_td_improve_p90: action_policy.burst_effectiveness.td_improve_percentile(90.0),
+        burst_mean_pre_td: action_policy.burst_effectiveness.mean_pre_td(),
     };
 
     (run, lift_stats, diag)
@@ -2643,6 +2656,11 @@ pub fn run_sweep_2_1t(config: &Config) {
         let burst_active_share_worst = worst_diag.repair_burst_active_share / 100.0; // Convert from % to ratio
         let quality_improve_mean_worst =
             worst_diag.burst_mean_stable_gain - worst_diag.burst_mean_bad_improve;
+        // Phase 2.1u: TD improve diagnostics
+        let td_improve_p50_worst = worst_diag.burst_td_improve_p50 / 100.0; // Convert from % to ratio
+        let td_improve_p90_worst = worst_diag.burst_td_improve_p90 / 100.0;
+        let burst_events_worst = worst_diag.burst_episodes_completed;
+        let mean_pre_td_worst = worst_diag.burst_mean_pre_td;
 
         let score = compute_sweep_score(
             mean_cov,
@@ -2670,6 +2688,11 @@ pub fn run_sweep_2_1t(config: &Config) {
             quality_improve_mean_worst,
             score,
             meets_acceptance: false, // Set later
+            // Phase 2.1u: TD improve diagnostics
+            td_improve_p50_worst,
+            td_improve_p90_worst,
+            burst_events_worst,
+            mean_pre_td_worst,
         };
 
         println!(
@@ -2740,6 +2763,35 @@ pub fn run_sweep_2_1t(config: &Config) {
     println!(
         "  ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
+
+    // Phase 2.1u: TD improve diagnostic table (top 5 configs)
+    println!();
+    println!("═══════════════════════════════════════════════════════════════════════════════════════════════════════");
+    println!("PHASE 2.1u: TD IMPROVE DIAGNOSTIC (top 5 by score, worst-seed):");
+    println!("═══════════════════════════════════════════════════════════════════════════════════════════════════════");
+    println!();
+    println!(
+        "  {:>3} | {:>8} | {:>8} | {:>8} | {:>8} | {:>10}",
+        "ID", "td_mean%", "td_p50%", "td_p90%", "events", "pre_td_abs"
+    );
+    println!("  ───────────────────────────────────────────────────────────────────────────────");
+    for result in results.iter().take(5) {
+        println!(
+            "  {:3} | {:7.3}% | {:7.3}% | {:7.3}% | {:8} | {:10.4}",
+            result.config.id,
+            result.td_improve_mean_worst * 100.0,
+            result.td_improve_p50_worst * 100.0,
+            result.td_improve_p90_worst * 100.0,
+            result.burst_events_worst,
+            result.mean_pre_td_worst,
+        );
+    }
+    println!("  ───────────────────────────────────────────────────────────────────────────────");
+    println!();
+    println!("  Interpretation:");
+    println!("    - If p90 >> threshold but mean < threshold: few bad events dominate");
+    println!("    - If pre_td_abs is small: normalization would inflate relative %");
+    println!("    - If events is low: sample size issue");
 
     // Find best passing config
     let best_passing = results.iter().find(|r| r.meets_acceptance);
