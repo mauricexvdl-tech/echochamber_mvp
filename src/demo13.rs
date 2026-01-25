@@ -64,6 +64,12 @@ pub struct SeedDiagnostics {
     pub chronic_bad_ema_final: f32,
     // Phase 2.1e: Perturb rate
     pub perturb_rate: f64,
+    // Phase 2.1k: Exploit quality metrics
+    pub exploit_hard_count: usize,
+    pub exploit_soft_count: usize,
+    pub exploit_soft_share: f64,
+    pub bad_in_explore_share: f64,
+    pub bad_in_exploit_share: f64,
 }
 
 /// Phase 2.1b: Warmup stats collector for adaptive thresholds.
@@ -152,6 +158,33 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
     }
     println!(
         "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+
+    // Phase 2.1k: Print exploit quality metrics table
+    println!();
+    println!("Exploit Quality Metrics (Phase 2.1k):");
+    println!(
+        "────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+    println!(
+        "  Seed       | hard_exploit | soft_exploit | soft_share | bad_in_expl% | bad_in_exp%"
+    );
+    println!(
+        "────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+    for d in diagnostics {
+        println!(
+            "  0x{:08X} | {:12} | {:12} | {:9.1}% | {:11.1}% | {:10.1}%",
+            d.seed,
+            d.exploit_hard_count,
+            d.exploit_soft_count,
+            d.exploit_soft_share * 100.0,
+            d.bad_in_exploit_share * 100.0,
+            d.bad_in_explore_share * 100.0,
+        );
+    }
+    println!(
+        "────────────────────────────────────────────────────────────────────────────────────────────"
     );
 }
 
@@ -1127,6 +1160,20 @@ fn run_single_seed_full(
         chronic_bad_ema_final: mode_stats.chronic_bad_ema_final,
         // Phase 2.1e: Perturb rate
         perturb_rate: run.perturb_rate,
+        // Phase 2.1k: Exploit quality metrics
+        exploit_hard_count: mode_stats.exploit_hard_count,
+        exploit_soft_count: mode_stats.exploit_soft_count,
+        exploit_soft_share: mode_stats.exploit_soft_share,
+        bad_in_explore_share: if mode_stats.explore_count > 0 {
+            mode_stats.bad_in_explore_count as f64 / mode_stats.explore_count as f64
+        } else {
+            0.0
+        },
+        bad_in_exploit_share: if mode_stats.exploit_count > 0 {
+            mode_stats.bad_in_exploit_count as f64 / mode_stats.exploit_count as f64
+        } else {
+            0.0
+        },
     };
 
     (run, lift_stats, diag)

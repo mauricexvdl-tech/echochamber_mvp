@@ -570,6 +570,20 @@ pub struct ModePolicyState {
     pub chronic_enter_by_unstable: u32,
     /// Exits forced by watchdog (chronic_active_share > max_share).
     pub chronic_exit_by_watchdog: u32,
+
+    // Phase 2.1k: Exploit quality instrumentation
+    /// Last computed is_bad_state (for mode-based bad tracking).
+    pub last_is_bad_state: bool,
+    /// Ticks where mode==Exploit AND can_exploit==true (hard exploit).
+    pub exploit_hard_count: usize,
+    /// Ticks where mode==Exploit AND can_exploit==false (soft/fallback exploit).
+    pub exploit_soft_count: usize,
+    /// Bad state ticks while in Explore mode.
+    pub bad_in_explore_count: usize,
+    /// Bad state ticks while in Exploit mode.
+    pub bad_in_exploit_count: usize,
+    /// Bad state ticks while in Reset mode.
+    pub bad_in_reset_count: usize,
 }
 
 impl ModePolicyState {
@@ -636,6 +650,14 @@ impl ModePolicyState {
             chronic_enter_by_bad: 0,
             chronic_enter_by_unstable: 0,
             chronic_exit_by_watchdog: 0,
+
+            // Phase 2.1k: Exploit quality instrumentation
+            last_is_bad_state: false,
+            exploit_hard_count: 0,
+            exploit_soft_count: 0,
+            bad_in_explore_count: 0,
+            bad_in_exploit_count: 0,
+            bad_in_reset_count: 0,
         }
     }
 }
@@ -788,6 +810,9 @@ impl ModePolicy {
             || (topk_margin < self.config.rescue_bad_margin
                 && proto_align < self.config.rescue_bad_proto
                 && anchor_value < self.config.rescue_bad_value);
+
+        // Phase 2.1k: Store for mode-based bad state tracking
+        self.state.last_is_bad_state = is_bad_state;
 
         // Phase 2.1g: Push observation to true sliding window buffer
         self.state
@@ -1138,6 +1163,15 @@ impl ModePolicy {
             }
         }
 
+        // Phase 2.1k: Recompute can_exploit for instrumentation (must match logic above)
+        let can_exploit_for_tracking = {
+            let stable_ok = !self.config.exploit_requires_stable || self.state.last_is_stable;
+            let proto_ok = self.state.last_proto_align >= self.config.exploit_proto_min;
+            let margin_ok = self.state.last_topk_margin >= self.config.exploit_margin_min;
+            let gate_ok = self.state.last_gate_passed;
+            gate_ok && stable_ok && proto_ok && margin_ok
+        };
+
         // Update streaks and counters
         match mode {
             Mode::Explore => {
@@ -1151,6 +1185,10 @@ impl ModePolicy {
                 if self.state.chronic_lock_remaining > 0 {
                     self.state.chronic_explore_count += 1;
                 }
+                // Phase 2.1k: Track bad state in Explore
+                if self.state.last_is_bad_state {
+                    self.state.bad_in_explore_count += 1;
+                }
             }
             Mode::Exploit => {
                 self.state.exploit_count += 1;
@@ -1163,10 +1201,24 @@ impl ModePolicy {
                 if self.state.last_mode != Mode::Exploit {
                     self.state.exploit_lock_remaining = self.config.min_exploit_ticks_on;
                 }
+                // Phase 2.1k: Track hard vs soft exploit
+                if can_exploit_for_tracking {
+                    self.state.exploit_hard_count += 1;
+                } else {
+                    self.state.exploit_soft_count += 1;
+                }
+                // Phase 2.1k: Track bad state in Exploit
+                if self.state.last_is_bad_state {
+                    self.state.bad_in_exploit_count += 1;
+                }
             }
             Mode::Reset => {
                 self.state.reset_count += 1;
                 self.state.explore_streak = 0;
+                // Phase 2.1k: Track bad state in Reset
+                if self.state.last_is_bad_state {
+                    self.state.bad_in_reset_count += 1;
+                }
                 self.state.exploit_streak = 0;
             }
         }
@@ -1374,6 +1426,20 @@ impl ModePolicy {
             // Phase 2.1h: EMA final values
             chronic_stable_ema_final: self.state.chronic_stable_share_ema,
             chronic_bad_ema_final: self.state.chronic_bad_share_ema,
+            // Phase 2.1k: Exploit quality metrics
+            exploit_hard_count: self.state.exploit_hard_count,
+            exploit_soft_count: self.state.exploit_soft_count,
+            exploit_soft_share: {
+                let total_exploit = self.state.exploit_hard_count + self.state.exploit_soft_count;
+                if total_exploit > 0 {
+                    self.state.exploit_soft_count as f64 / total_exploit as f64
+                } else {
+                    0.0
+                }
+            },
+            bad_in_explore_count: self.state.bad_in_explore_count,
+            bad_in_exploit_count: self.state.bad_in_exploit_count,
+            bad_in_reset_count: self.state.bad_in_reset_count,
         }
     }
 }
@@ -1408,6 +1474,13 @@ pub struct ModeStats {
     // Phase 2.1h: EMA final values
     pub chronic_stable_ema_final: f32,
     pub chronic_bad_ema_final: f32,
+    // Phase 2.1k: Exploit quality metrics
+    pub exploit_hard_count: usize,
+    pub exploit_soft_count: usize,
+    pub exploit_soft_share: f64,
+    pub bad_in_explore_count: usize,
+    pub bad_in_exploit_count: usize,
+    pub bad_in_reset_count: usize,
 }
 
 // ============================================================================

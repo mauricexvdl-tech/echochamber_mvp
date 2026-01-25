@@ -772,15 +772,15 @@ impl Default for Config {
             // - proto_align mean ~0.126, threshold 0.18 requires above-average quality
             // - margin mean ~0.11, threshold 0.06 requires good separation
             // - require stable anchors for reliable exploit
-            exploit_proto_min: 0.10, // Phase 2.1k: easier Exploit entry
-            exploit_margin_min: 0.025, // Phase 2.1k: easier Exploit entry
+            exploit_proto_min: 0.15, // Phase 2.1k: stricter for exploit quality
+            exploit_margin_min: 0.055, // Phase 2.1k: stricter for exploit quality
             exploit_requires_stable: true, // Re-enabled: require anchor stability
             focus_bias_exploit: 0.0, // No artificial bias; rely on mode->action mapping
 
             // Phase 2.0a: Mode Policy defaults
             enable_mode_policy: true,
             mode_explore_v_max: 0.32, // Phase 2.1i: avoid Explore as default for low V
-            mode_exploit_v_min: 0.55,
+            mode_exploit_v_min: 0.60, // Phase 2.1k: reduce fallback exploit
             mode_reset_td_min: 0.35, // TD threshold for reset (stable_avg ~0.27)
             mode_reset_value_drop: 1.0, // Disabled
             mode_reset_fail_streak: 2, // Reset after 2 consecutive gate failures
