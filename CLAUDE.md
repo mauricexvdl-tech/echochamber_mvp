@@ -1,224 +1,244 @@
-# ECHO CHAMBER MVP — CLAUDE.md
+# CLAUDE.md — EchoChamber MVP (Project Contract)
 
-This file is the working contract for contributors (human + LLM).
-It documents architecture, invariants, how to run, and the roadmap.
+This file is the **single source of truth** for how we build, test, and evolve the EchoChamber MVP.
+If something conflicts with ad-hoc instructions or older demo notes, **CLAUDE.md wins**.
 
 ---
 
 ## 0) What this project is
 
-**Echo Chamber MVP** is a small Rust simulation that demonstrates:
-- interference dynamics (constructive vs destructive)
-- concept emergence via context-specialized winners
-- memory via anchors + masks + consolidation/merging
-- actionable readout: ModePolicy (Explore/Exploit/Reset) and ActionPolicy (Scan/Focus/Perturb)
-- fair baselines + regret metrics to prove policy causality
+**EchoChamber MVP** is a deterministic simulation + memory system with:
+- **Echo physics** (complex signals + latent causes)
+- **Anchors / prototypes / values** (memory substrate)
+- **ModePolicy** (Explore / Exploit / Reset)
+- **ActionPolicy** (Scan / Focus / Perturb)
+- A demo-driven test suite (Demos 1–13) with acceptance gates
 
-Core idea: **We do not "teach" a classifier directly.**
-We shape network dynamics and then measure readout/memory/policy behavior.
-
----
-
-## 1) Core invariants (DO NOT BREAK)
-
-### Physics invariants
-- **EchoChamber dynamics must remain stable**: no large refactors or behavior changes that silently change dynamics.
-- Any "policy" logic must operate via **small, bounded knobs only**:
-  - gating thresholds / scaling
-  - bounded noise injection (very small)
-  - bounded local dampening (e.g. buffer *= factor in (0,1])
-
-### Metrics invariants
-Existing acceptance metrics must not regress unless explicitly changing a phase target:
-- coverage_pos
-- selective_accuracy
-- false_positive == 0%
-- stable_drop_ratio <= 0.5%
-- merges_done_proto + avg_merge_score still printed
-- stability / stable_mass metrics still printed (if present)
-
-### Code hygiene invariants
-- **No mega-refactors mid-phase.** Minimal diffs.
-- Every new phase adds:
-  - a config section
-  - a demo (or integrates into an existing demo intentionally)
-  - explicit acceptance checks with ✓/✗
-- Keep deterministic seeds where possible.
+The goal is a **real-world usable policy loop** that:
+1) avoids false positives (hard constraint),
+2) shows causal advantage over fair baselines,
+3) remains stable across seeds (robustness),
+4) has escape/repair mechanisms for bad regimes (worst-seed floor).
 
 ---
 
-## 2) Repository structure (mental model)
+## 1) Repo layout (current intent)
 
-### Simulation layer
-- `src/echo.rs`
-  EchoChamber physics (buffers, delivery, coherence/destruction, etc.)
+Recommended structure (you already started refactoring this way):
 
-- `src/causes.rs`
-  Cause / context injection schedule and evaluation contexts.
-
-### Memory & consolidation layer
-- `src/anchor.rs`
-  Anchors + prototypes + values + stability + merging infrastructure.
-
-- `src/memory.rs` (or keyed memory if present)
-  Signature/memory storage + recall + competitive matching or O(1) keyed lookup.
-
-### Policies (readout/control, not physics)
+- `src/echo.rs` / `complex.rs` / `causes.rs`
+  - Chamber physics: **DO NOT change** for policy experiments unless explicitly in a physics phase.
+- `src/anchor.rs` / `memory.rs` / `concepts.rs`
+  - Anchor lifecycle, merges, prototype updates, recall/binding.
 - `src/mode.rs`
-  ModePolicy: Explore / Exploit / Reset based on diagnostics.
-
+  - Mode selection, guardrails, chronic clamp, rescue logic.
 - `src/action.rs`
-  ActionPolicy: Scan / Focus / Perturb (may be Mode-conditioned).
-  **Phase 2.0c-FIX adds**: ActionTriggers (streak-based), PerturbFloor (rolling window rate enforcement).
-
-- `src/action_ablate.rs`, `src/ablate.rs`, `src/regret.rs`
-  Baselines + ablations + regret/recovery metrics.
-
+  - Action selection (Scan/Focus/Perturb), triggers, perturb effectiveness tracking.
+- `src/regret.rs`
+  - Regret/recovery metrics used in fairness arguments.
 - `src/distill.rs`
-  Distillation infrastructure (teacher/student, stratified replay, budget matching).
-
-### Orchestration
-- `src/config.rs`
-  One place for tunables; phases add config knobs here.
-
-- `src/main.rs`, `src/demos.rs`
-  Demo runners, printing, acceptance checks.
+  - Teacher→student distillation infrastructure (Demo 12).
+- `src/multiseed.rs` / `src/lift.rs` / `src/demo13.rs`
+  - Multi-seed evaluation + policy advantage metrics (Demo 13).
+- `src/demos/` + `src/legacy_demos/`
+  - **Each demo gets its own file** when it grows. `demos.rs` should remain a thin dispatcher.
 
 ---
 
-## 3) Demos overview (what each proves)
+## 2) Hard constraints (never violate)
 
-### Phase 1.x (emergence + memory)
-- Demo 1: cancellation sanity check
-- Demo 2: concept readout + episodic memory
-- Demo 3: intra-episode one-shot binding
-- Demo 4: competitive binding + abstain (Phase 1.4c)
-- Demo 5/6: consolidation + stability + merges (Phase 1.9*)
+### 2.1 Safety / correctness invariants
+- **False positive must remain 0%** (or within the explicitly defined tolerance, default: 0%).
+- Determinism: seeded RNG where possible (especially Demo 13).
+- No "unfair baselines": random comparisons must match **timing** and/or **budget** appropriately.
 
-### Phase 2.0x (actionable readout + fairness baselines)
-- Demo 7: Mode policy loop (Explore/Exploit/Reset)
-- Demo 8: mode ablations (NO_RESET / NO_EXPLORE etc.)
-- Demo 9: Mode → Action loop (Scan/Focus/Perturb) + action usage constraints + **perturb triggers**
-- Demo 10: action ablations + sensitivity sweeps
-- Demo 11: trigger-matched random + regret/recovery metrics (proves causal action type selection)
-- Demo 12: distillation (teacher → student) with fairness/budgeting + natural exploit viability
+### 2.2 Scope rules
+- **Do not change Echo physics / plasticity / merge logic** unless a phase explicitly says so.
+- Prefer **small, isolated patches** (config + policy logic + metrics) over refactors.
+- Demos must remain runnable; never delete demos. Move old stuff to `legacy_demos`.
 
 ---
 
-## 4) How to run
+## 3) What "done" means (Acceptance Gates)
+
+### 3.1 Regression Guard (global)
+Applies to any phase that touches policy/memory:
+- `coverage_pos_mean >= 70%`
+- `selective_accuracy_mean >= 80%`
+- `false_positive_mean == 0%`
+- Variability: `std < 15%` on core metrics (coverage/sel_acc)
+
+### 3.2 Policy Advantage (causal proof)
+FULL must beat fair baselines on **≥ 2/3 lift metrics**:
+- `exploit_focus_lift` (Focus% in Exploit – Focus% in Explore) higher is better
+- `recovery_after_perturb` higher is better
+- `bad_state_share` lower is better
+
+### 3.3 Worst-seed floor (robustness target)
+This is the "real world doesn't care about your mean" gate:
+- `worst_seed_coverage_pos >= 65%`
+- `worst_seed_selective_accuracy >= 75%`
+- No rescue spam (cap rescues per seed; typical gate: `<= 15` unless phase says otherwise)
+
+> Note: Worst-seed is allowed to lag temporarily **only** if we are in an explicit tuning phase (2.1x) and we keep regression guard + advantage.
+
+---
+
+## 4) Phase roadmap (high-level)
+
+### Phase 1.x — Foundation
+- Echo cancellation + concept readout + episodic memory + competitive binding.
+- Output: stable memory substrate + 0% FP.
+
+### Phase 2.0a–2.0e — Policies become causal
+- 2.0a: ModePolicy works (Explore/Exploit/Reset)
+- 2.0b: Mode ablations (directional effects)
+- 2.0c: Mode→Action loop online
+- 2.0d: Action ablations + sensitivity sweep (fair budgets)
+- 2.0e: Trigger-matched random + regret metrics (prove timing/type matters)
+
+### Phase 2.0f — Distillation (Demo 12)
+- Natural teacher viability (no synthetic teacher schedules)
+- Student must learn mode-conditioned behavior (not just the action prior)
+- Budget fairness must be two-sided or target-matched
+
+### Phase 2.1 — Real-world robustness harness (Demo 13)
+- Multi-seed eval
+- Lift metrics
+- Robustness targets (variability + worst-seed floor)
+- "Quality repair" mechanisms allowed if they keep FP=0 and don't regress mean
+
+---
+
+## 5) Demo responsibilities (what each demo is FOR)
+
+- Demo 9: **Mode→Action loop sanity** (regression smoke test)
+  - Not where we optimize anymore; keep fast + stable.
+- Demo 10: **Ablations + sensitivity curves** (prove knobs matter)
+- Demo 11: **Causality proof** (trigger-matched random + regret/recovery)
+- Demo 12: **Distillation** (teacher→student) + fairness
+- Demo 13: **Product gate** (multi-seed + lift + worst-seed floor)
+
+If a demo grows above ~400–600 lines: move it into `src/demos/demoXX.rs`.
+
+---
+
+## 6) Implementation strategy rules (to avoid "context disaster")
+
+### 6.1 Small changes, measurable effect
+Every patch should answer:
+- Which metric is targeted?
+- Which demo proves it?
+- What is the expected directional change?
+
+### 6.2 Baseline fairness
+Any "random" baseline must specify which fairness it matches:
+- Budget-matched (same rates, random timing)
+- Trigger-matched (same timing, random action type)
+- Target-matched limiter (two-sided matching)
+
+No naive random baselines (they lie).
+
+### 6.3 Instrumentation first
+If a metric is failing (e.g., worst-seed floor), add a **minimal table**:
+- per-seed: explore/exploit/reset, stable%, bad%, rescues, chronic%, burst triggers
+Then tune.
+
+---
+
+## 7) How to run (developer workflow)
 
 ### Build
-```bash
-cd ~/workspace/echo_chamber_mvp
-cargo fmt
-cargo build --release
-```
+- `cargo fmt`
+- `cargo build --release`
 
-### Run all demos
-```bash
-cargo run --release
-# or
-./target/release/echo_chamber_mvp
-```
+### Run full suite
+- `cargo run --release`
 
-### Run specific demos
-Control via config flags in `src/config.rs`:
-- `run_demo_7` through `run_demo_12` (Phase 2.0 experiments)
+### Extract specific demo output
+- `cargo run --release | grep -A 250 "DEMO 13"`
+
+### Multi-seed quick mode
+Use the existing config knobs / quick mode if present, but ensure determinism.
 
 ---
 
-## 5) Key terminology
+## 8) "Real world" design principles
 
-| Term | Meaning |
-|------|---------|
-| **Top-K** | The K highest-amplitude nodes after propagation |
-| **Margin** | Gap between 1st and 2nd highest node |
-| **Gate** | Confidence filter based on margin + power thresholds |
-| **Anchor** | Memory address with prototype + value + stability |
-| **Prototype** | Sparse vector (12-node Top-K averages) |
-| **Mode** | Explore / Exploit / Reset (state machine) |
-| **Action** | Scan / Focus / Perturb (executive control) |
-| **TD** | Temporal difference error for value learning |
-| **Trigger** | Streak-based condition for detecting "bad states" |
-| **Floor** | Rolling window mechanism enforcing minimum perturb rate |
+1) **Robustness > peak metrics**
+   - Mean performance is not enough; worst-seed floor matters.
+
+2) **Repair beats force**
+   - When signal quality collapses (low stable%, high bad%), forcing Exploit/Focus tends to backfire.
+   - Prefer targeted "quality repair" interventions (e.g., controlled perturb bursts) that improve stability.
+
+3) **Learning must continue**
+   - Never accidentally block prototype updates for long regimes (this caused regressions before).
+   - If gating proto updates, do it with **quality gates** and clearly bounded rate limits.
 
 ---
 
-## 6) Config key groups
+## 9) Future direction: floats → bit logic (guideline, not immediate refactor)
 
-- **Dynamics**: `decay_per_tick`, `clamp_max_amp`, `pow_target`
-- **Memory**: `proto_m`, `proto_eta`, `memory_max_entries`
-- **Value**: `alpha_v`, `gamma_v`, reward weights
-- **Mode**: `mode_explore_v_max`, `mode_exploit_v_min`, `mode_reset_td_min`
-- **Action**: `scan_topk_scale`, `focus_margin_scale`
-- **Triggers** (Phase 2.0c-FIX): `perturb_extra_triggers`, `perturb_floor_enabled`, `perturb_trig_*` params
+We currently use floats for:
+- complex signal arithmetic
+- continuous thresholds (proto_align, margins, TD)
 
----
+Bit-logic (or fixed-point / integer) may help:
+- speed / cache behavior
+- determinism across platforms
+- eventual hardware targets
 
-## 7) Phase history
+But do **not** prematurely convert the whole system.
+Migration plan:
+1) Identify the minimal "policy feature vector" subset that can become fixed-point.
+2) Quantize features + thresholds with acceptance tests (Demo 13 must not regress).
+3) Only then consider deeper signal quantization.
 
-| Phase | What it added |
-|-------|---------------|
-| 1.9 | Aggressive anchor consolidation |
-| 2.0a | Mode policy (Explore/Exploit/Reset) |
-| 2.0c | Action policy (Scan/Focus/Perturb) |
-| 2.0c-FIX | **Perturb trigger reliability + budget floor** — ActionTriggers, PerturbFloor, streak-based triggers |
-| 2.0f-B | Policy distillation with budget fairness |
-| 2.0f-C | Mode-conditioned distillation + two-sided budget matching |
-| 2.0f-D | Forced mode schedule ensuring Exploit mode occurs with Focus action |
-| 2.0f-E | Natural Exploit emergence via signal quality (stable + proto_align + margin) |
-| 2.1 | Multi-seed evaluation + lift metrics (Demo 13) |
-| 2.1b | **Seed-robust policy stabilization** — Exploit lock, explore rescue, adaptive thresholds |
-| 2.2 | CLI + JSON export + config hashing |
-
-**Current**: Phase 2.1b (Seed-Robust Policy Stabilization)
+Rule: **No numeric representation changes without a demo gate proving equivalence or improvement.**
 
 ---
 
-## 8) Current acceptance status
+## 10) What to move into `legacy_demos/`
 
-All demos passing (as of Phase 2.0c-FIX):
+Safe candidates:
+- old ablation variant lists that are not referenced by the current dispatcher
+- replaced limiters/buffers that are not used in active demos
+- older distillation scaffolding superseded by the current Demo 12 pipeline
 
-| Demo | Status | Key Metrics |
-|------|--------|-------------|
-| Demo 9 | ✓ | perturb_rate: 1.10% (target: 0.5%-5%), coverage: 81.4%, sel_acc: 87.8%, FP: 0% |
-| Demo 10 | ✓ | Action ablations passing |
-| Demo 11 | ✓ | Regret/recovery metrics prove causal action selection |
-| Demo 12 | ✓ | Distillation with budget fairness |
-
-### Demo 9 Perturb Trigger Breakdown
-- by_high_td: ~78%
-- by_mode_reset: ~19%
-- by_value_drop: ~3%
-- Perturb effectiveness: +38.9% TD reduction
+Do **not** delete; move and mark with:
+- `// LEGACY: kept for reference (Phase X.Y), not used by current demos`
 
 ---
 
-## 9) Important patterns
+## 11) Current priorities (what we do next)
 
-**Gating**: Confidence-based filtering using `topk_margin` and `total_power`. Gate params vary by mode (Explore loosens, Exploit tightens).
-
-**Prototype Learning**: Anchors maintain sparse vectors via exponential averaging of Top-K node appearances.
-
-**Value Learning**: TD(0) with reward = f(power_delta, coherence, proto_alignment). Values guide mode transitions.
-
-**Merging**: Every 50 ticks, anchors with `proto_score > 0.78` are consolidated to prevent fragmentation.
-
-**Perturb Triggers** (Phase 2.0c-FIX): Multiple streak-based conditions can fire Perturb independently of mode:
-- `high_td`: |TD| exceeds threshold
-- `gate_fail`: Consecutive gate failures
-- `low_margin`: Weak winner separation
-- `off_proto`: Poor prototype alignment
-- `value_drop`: Declining anchor value
-- `floor`: Rolling window rate below minimum
+1) Keep Demo 9–11 stable as regression gates.
+2) Demo 12: ensure "natural teacher" + mode-conditioned student is real, not synthetic.
+3) Demo 13: pass regression guard + advantage consistently.
+4) Raise worst-seed floor using **quality repair** (bursts / targeted intervention) without FP regressions.
+5) Only then: stable_count target (≥30) as a product hardening step.
 
 ---
 
-## 10) Rules for changes
+## 12) Definition of "MVP complete"
 
-1. **Minimal diffs** — don't refactor unrelated code
-2. **Never remove demos** — only add or modify
-3. **Add config knobs** — don't hardcode magic numbers
-4. **Print acceptance checks** — every demo shows ✓/✗
-5. **Keep deterministic** — use fixed seeds where possible
-6. **No silent behavior changes** — document what changed and why
+MVP is complete when:
+- Demo 13 passes:
+  - regression guard
+  - policy advantage
+  - variability gate
+  - worst-seed floor gate
+  - FP=0
+- And Demo 9–11 remain green as smoke/regression checks.
+
+---
+
+## 13) Communication contract (for Claude / assistants)
+
+When proposing changes:
+- Provide **exact config knob changes** and their intent.
+- Provide **expected metric deltas** (directional).
+- Provide **which demo proves it**.
+- Avoid large refactors; prefer surgical patches.
+- If tuning: propose a small sweep grid and stop when regression guard breaks.
