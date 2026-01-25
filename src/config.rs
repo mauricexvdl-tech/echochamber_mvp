@@ -764,8 +764,8 @@ impl Default for Config {
             soft_exploit_block_proto_update: false, // Block prototype updates during soft exploit
             soft_exploit_block_merge: false,       // Block merge candidates during soft exploit
 
-            // Phase 2.1o-fix: Rate-limited proto updates in soft exploit
-            soft_proto_update_period: 0,           // 0 = no rate limit, only quality gates
+            // Phase 2.1p: Rate-limited proto updates in soft exploit
+            soft_proto_update_period: 20,          // Cooldown ticks between soft-exploit proto updates (0 = disabled)
             soft_proto_update_min_margin: 0.03,    // Minimum margin to allow proto update
             soft_proto_update_require_gate: true,  // Require gate pass for proto update
             soft_proto_update_block_when_bad: true, // Block proto update when in bad state

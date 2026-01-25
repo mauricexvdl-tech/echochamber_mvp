@@ -696,6 +696,8 @@ pub struct ModePolicyState {
     pub soft_exploit_merge_blocked: usize,
     /// Ticks where soft exploit allowed proto updates (rate-limited).
     pub soft_exploit_proto_allowed: usize,
+    /// Phase 2.1p: Last tick when soft exploit proto update was allowed (for cooldown).
+    pub last_soft_proto_update_tick: u64,
 }
 
 impl ModePolicyState {
@@ -800,6 +802,8 @@ impl ModePolicyState {
             soft_exploit_proto_blocked: 0,
             soft_exploit_merge_blocked: 0,
             soft_exploit_proto_allowed: 0,
+            // Phase 2.1p: Cooldown tracking
+            last_soft_proto_update_tick: 0,
         }
     }
 }

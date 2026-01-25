@@ -1065,14 +1065,15 @@ fn run_single_seed_full(
             let partition_mask = current_sig.ctx_hat.unwrap_or(0) as u64;
             anchor_bank.update_anchor_partition(anchor_id, partition_mask, ctx_hat);
 
-            // Update prototype (Phase 2.1o-fix: rate-limited during soft exploit)
+            // Update prototype (Phase 2.1p: rate-limited during soft exploit)
             if gate_passed && anchor_id != 0xFFFF {
                 let is_soft_exploit = mode == Mode::Exploit && !mode_policy.last_can_exploit();
 
                 let allow_proto_update = if is_soft_exploit {
-                    // Rate-limited proto updates in soft exploit
+                    // Phase 2.1p: Cooldown-based rate limiting in soft exploit
                     let period_ok = config.soft_proto_update_period == 0
-                        || (global_tick % config.soft_proto_update_period as u64 == 0);
+                        || (global_tick - mode_policy.state.last_soft_proto_update_tick)
+                            >= config.soft_proto_update_period as u64;
                     let gate_ok =
                         !config.soft_proto_update_require_gate || gate_passed;
                     let margin_ok =
@@ -1093,6 +1094,7 @@ fn run_single_seed_full(
                     anchor_bank.update_anchor_proto(anchor_id, &base_topk, config);
                     if is_soft_exploit {
                         mode_policy.state.soft_exploit_proto_allowed += 1;
+                        mode_policy.state.last_soft_proto_update_tick = global_tick;
                     }
                 } else if is_soft_exploit {
                     mode_policy.record_blocked_write(false, true, false);
