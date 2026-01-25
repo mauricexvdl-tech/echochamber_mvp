@@ -20,6 +20,42 @@ impl Default for Mode {
 }
 
 // ============================================================================
+// Phase 2.1o: Write override for soft-exploit quarantine
+// ============================================================================
+
+/// Controls which memory operations are allowed during the current tick.
+/// Used to quarantine soft exploit ticks from corrupting memory.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WriteOverride {
+    /// Allow storing new observations to keyed memory.
+    pub allow_store: bool,
+    /// Allow updating anchor prototypes.
+    pub allow_proto_update: bool,
+    /// Allow enqueuing merge candidates.
+    pub allow_merge: bool,
+}
+
+impl WriteOverride {
+    /// All writes allowed (default for hard exploit, explore, reset).
+    pub fn allow_all() -> Self {
+        Self {
+            allow_store: true,
+            allow_proto_update: true,
+            allow_merge: true,
+        }
+    }
+
+    /// All writes blocked (for soft exploit quarantine).
+    pub fn block_all() -> Self {
+        Self {
+            allow_store: false,
+            allow_proto_update: false,
+            allow_merge: false,
+        }
+    }
+}
+
+// ============================================================================
 // Phase 2.1g: True sliding window for chronic stats
 // ============================================================================
 
@@ -650,6 +686,14 @@ pub struct ModePolicyState {
     pub rescue_tick_window_idx: usize,
     /// Whether rescue throttle is currently active.
     pub rescue_throttle_active: bool,
+
+    // Phase 2.1o: Soft-exploit quarantine state
+    /// Ticks where soft exploit blocked store operations.
+    pub soft_exploit_store_blocked: usize,
+    /// Ticks where soft exploit blocked proto updates.
+    pub soft_exploit_proto_blocked: usize,
+    /// Ticks where soft exploit blocked merge candidates.
+    pub soft_exploit_merge_blocked: usize,
 }
 
 impl ModePolicyState {
@@ -748,6 +792,11 @@ impl ModePolicyState {
             rescue_tick_window: Vec::with_capacity(50), // max rescues we track
             rescue_tick_window_idx: 0,
             rescue_throttle_active: false,
+
+            // Phase 2.1o: Soft-exploit quarantine state
+            soft_exploit_store_blocked: 0,
+            soft_exploit_proto_blocked: 0,
+            soft_exploit_merge_blocked: 0,
         }
     }
 }
@@ -1471,6 +1520,37 @@ impl ModePolicy {
         self.state.chronic_lock_total_ticks
     }
 
+    /// Phase 2.1o: Get write override based on current mode and exploit quality.
+    /// During soft exploit (mode==Exploit but can_exploit==false), blocks memory writes
+    /// to prevent consolidating low-quality signal.
+    pub fn get_write_override(&self, mode: Mode, config: &crate::config::Config) -> WriteOverride {
+        // Only quarantine during soft exploit
+        let is_soft_exploit = mode == Mode::Exploit && !self.state.last_can_exploit;
+
+        if is_soft_exploit {
+            WriteOverride {
+                allow_store: !config.soft_exploit_block_store,
+                allow_proto_update: !config.soft_exploit_block_proto_update,
+                allow_merge: !config.soft_exploit_block_merge,
+            }
+        } else {
+            WriteOverride::allow_all()
+        }
+    }
+
+    /// Phase 2.1o: Record that a write was blocked during soft exploit.
+    pub fn record_blocked_write(&mut self, store: bool, proto: bool, merge: bool) {
+        if store {
+            self.state.soft_exploit_store_blocked += 1;
+        }
+        if proto {
+            self.state.soft_exploit_proto_blocked += 1;
+        }
+        if merge {
+            self.state.soft_exploit_merge_blocked += 1;
+        }
+    }
+
     /// Check if reset conditions are met.
     fn check_reset_conditions(&self) -> bool {
         let cfg = &self.config;
@@ -1624,6 +1704,10 @@ impl ModePolicy {
             soft_exploit_focus_count: self.state.soft_exploit_focus_count,
             soft_exploit_perturb_count: self.state.soft_exploit_perturb_count,
             rescue_throttle_was_active: self.state.rescue_throttle_active,
+            // Phase 2.1o: Soft-exploit quarantine metrics
+            soft_exploit_store_blocked: self.state.soft_exploit_store_blocked,
+            soft_exploit_proto_blocked: self.state.soft_exploit_proto_blocked,
+            soft_exploit_merge_blocked: self.state.soft_exploit_merge_blocked,
         }
     }
 }
@@ -1681,6 +1765,10 @@ pub struct ModeStats {
     pub soft_exploit_perturb_count: usize,
     /// Whether rescue throttle was ever active.
     pub rescue_throttle_was_active: bool,
+    // Phase 2.1o: Soft-exploit quarantine metrics
+    pub soft_exploit_store_blocked: usize,
+    pub soft_exploit_proto_blocked: usize,
+    pub soft_exploit_merge_blocked: usize,
 }
 
 // ============================================================================

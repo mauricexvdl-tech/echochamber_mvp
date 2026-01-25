@@ -297,6 +297,16 @@ pub struct Config {
     pub rescue_throttle_cooldown: u32,
 
     // =========================================================================
+    // Phase 2.1o: Soft-exploit quarantine (block writes during low-quality exploit)
+    // =========================================================================
+    /// Block memory store operations during soft exploit.
+    pub soft_exploit_block_store: bool,
+    /// Block prototype updates during soft exploit.
+    pub soft_exploit_block_proto_update: bool,
+    /// Block merge candidate enqueuing during soft exploit.
+    pub soft_exploit_block_merge: bool,
+
+    // =========================================================================
     // Phase 2.1h: Chronic Instability Clamp v5 (EMA smoothing + hysteresis)
     // =========================================================================
     /// Window size for chronic instability detection (ticks).
@@ -738,6 +748,11 @@ impl Default for Config {
             soft_exploit_scan_prob: 0.0, // Disabled: soft exploit uses Focus (same as hard)
             rescue_max_per_10k: 15,       // Max rescues per 10k ticks before throttle
             rescue_throttle_cooldown: 500, // Extended cooldown when throttle active
+
+            // Phase 2.1o: Soft-exploit quarantine defaults (DISABLED - regresses badly)
+            soft_exploit_block_store: false,       // Block memory store during soft exploit
+            soft_exploit_block_proto_update: false, // Block prototype updates during soft exploit
+            soft_exploit_block_merge: false,       // Block merge candidates during soft exploit
 
             // Phase 2.1h: Chronic Instability Clamp v5 defaults (EMA smoothing + hysteresis)
             chronic_window_ticks: 500,     // Sliding window for raw stats

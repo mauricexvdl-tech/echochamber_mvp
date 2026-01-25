@@ -14,7 +14,7 @@ use crate::config::Config;
 use crate::echo::EchoChamber;
 use crate::lift::{self, LiftConfig, LiftStats};
 use crate::memory::RollingWindow;
-use crate::mode::{Mode, ModePolicy, ModePolicyConfig};
+use crate::mode::{Mode, ModePolicy, ModePolicyConfig, WriteOverride};
 use crate::multiseed::{self, SeedRun};
 use crate::results::{
     write_json, AcceptanceResult, AggregateResult, Demo13Result, LiftResult, ResultMeta,
@@ -83,6 +83,9 @@ pub struct SeedDiagnostics {
     pub soft_exploit_scan_share: f64,
     pub soft_exploit_focus_share: f64,
     pub rescue_throttle_was_active: bool,
+    // Phase 2.1o: Soft-exploit quarantine metrics
+    pub soft_exploit_store_blocked: usize,
+    pub soft_exploit_proto_blocked: usize,
 }
 
 /// Phase 2.1b: Warmup stats collector for adaptive thresholds.
@@ -232,6 +235,31 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
     }
     println!(
         "─────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+
+    // Phase 2.1o: Print soft-exploit quarantine metrics
+    println!();
+    println!("Soft-Exploit Quarantine (Phase 2.1o):");
+    println!(
+        "──────────────────────────────────────────────────────────────────────────"
+    );
+    println!(
+        "  Seed       | store_blocked | proto_blocked | soft_expl_ticks"
+    );
+    println!(
+        "──────────────────────────────────────────────────────────────────────────"
+    );
+    for d in diagnostics {
+        println!(
+            "  0x{:08X} | {:13} | {:13} | {:15}",
+            d.seed,
+            d.soft_exploit_store_blocked,
+            d.soft_exploit_proto_blocked,
+            d.exploit_soft_count,
+        );
+    }
+    println!(
+        "──────────────────────────────────────────────────────────────────────────"
     );
 }
 
@@ -979,6 +1007,9 @@ fn run_single_seed_full(
                 mode_policy.record_exploit_action(action, mode_policy.last_can_exploit());
             }
 
+            // Phase 2.1o: Get write override for soft-exploit quarantine
+            let write_override = mode_policy.get_write_override(mode, config);
+
             let action_overrides = action_policy.get_overrides(action);
 
             let mut adjusted_gate_params = base_gate_params.clone();
@@ -1026,9 +1057,13 @@ fn run_single_seed_full(
             let partition_mask = current_sig.ctx_hat.unwrap_or(0) as u64;
             anchor_bank.update_anchor_partition(anchor_id, partition_mask, ctx_hat);
 
-            // Update prototype
+            // Update prototype (Phase 2.1o: gated by write_override)
             if gate_passed && anchor_id != 0xFFFF {
-                anchor_bank.update_anchor_proto(anchor_id, &base_topk, config);
+                if write_override.allow_proto_update {
+                    anchor_bank.update_anchor_proto(anchor_id, &base_topk, config);
+                } else {
+                    mode_policy.record_blocked_write(false, true, false);
+                }
             }
 
             // Value update
@@ -1071,9 +1106,14 @@ fn run_single_seed_full(
             let learned_mask = current_sig.ctx_hat.unwrap_or(0) as u64;
             let key = MemoryKey::new(anchor_id, learned_mask);
 
+            // Phase 2.1o: gate memory store by write_override
             if bind_ticks.contains(&t) {
                 let label = current_sig.ctx_hat.unwrap_or(0) as u16;
-                keyed_memory.store(key, label);
+                if write_override.allow_store {
+                    keyed_memory.store(key, label);
+                } else {
+                    mode_policy.record_blocked_write(true, false, false);
+                }
             }
 
             if t >= config.competitive_recall_start && t % config.competitive_recall_stride == 0 {
@@ -1290,6 +1330,9 @@ fn run_single_seed_full(
             }
         },
         rescue_throttle_was_active: mode_stats.rescue_throttle_was_active,
+        // Phase 2.1o: Soft-exploit quarantine metrics
+        soft_exploit_store_blocked: mode_stats.soft_exploit_store_blocked,
+        soft_exploit_proto_blocked: mode_stats.soft_exploit_proto_blocked,
     };
 
     (run, lift_stats, diag)
