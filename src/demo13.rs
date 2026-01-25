@@ -2477,6 +2477,11 @@ fn generate_sweep_configs() -> Vec<SweepConfig> {
 
 /// Compute Phase 2.1t scoring for a config result.
 /// Higher is better.
+///
+/// Priority hierarchy (per CLAUDE.md §8 "Robustness > peak metrics"):
+///   1. PRIMARY: worst_cov / worst_sel (floor constraint)
+///   2. SECONDARY: mean guard + FP (regression guard)
+///   3. TERTIARY: lift/burst metrics
 fn compute_sweep_score(
     mean_cov: f64,
     mean_sel: f64,
@@ -2487,24 +2492,26 @@ fn compute_sweep_score(
     burst_success_rate_worst: f64,
     td_improve_mean_worst: f64,
 ) -> f64 {
-    // Score formula from spec:
-    // + 4.0 * worst_cov + 3.0 * worst_sel
-    // + 1.5 * mean_cov + 1.0 * mean_sel
-    // + 0.5 * burst_success_rate_worst
-    // + 0.5 * clamp(td_improve_mean_worst / 0.01, -1, +1)
-    // - 0.25 * (burst_triggers_worst / 50.0)
-    // - 5.0 * FP_mean
+    // Weights rebalanced to prioritize worst-seed floor:
+    // PRIMARY:   6.0 * worst_cov + 5.0 * worst_sel  (~11x)
+    // SECONDARY: 0.5 * mean_cov + 0.5 * mean_sel    (~1x, regression guard only)
+    // TERTIARY:  burst metrics + td_improve
+    // PENALTY:   FP (hard penalty)
     let td_component = (td_improve_mean_worst / 0.01).clamp(-1.0, 1.0);
     let trigger_penalty = burst_triggers_worst as f64 / 50.0;
 
-    4.0 * worst_cov
-        + 3.0 * worst_sel
-        + 1.5 * mean_cov
-        + 1.0 * mean_sel
-        + 0.5 * burst_success_rate_worst
-        + 0.5 * td_component
-        - 0.25 * trigger_penalty
-        - 5.0 * fp_mean
+    // Primary: worst-seed floor (dominates)
+    6.0 * worst_cov
+        + 5.0 * worst_sel
+        // Secondary: mean guard (regression only)
+        + 0.5 * mean_cov
+        + 0.5 * mean_sel
+        // Tertiary: burst effectiveness
+        + 0.3 * burst_success_rate_worst
+        + 0.3 * td_component
+        - 0.15 * trigger_penalty
+        // Hard penalty: FP
+        - 10.0 * fp_mean
 }
 
 /// Check Phase 2.1t acceptance criteria for a config result.
