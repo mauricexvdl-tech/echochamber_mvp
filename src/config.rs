@@ -685,7 +685,7 @@ impl Default for Config {
             lift_bad_value: 0.15,
 
             // Phase 2.1b: Seed-Robust Policy Stabilization defaults
-            min_exploit_ticks_on: 80,   // Phase 2.1i: 4x stickier exploit
+            min_exploit_ticks_on: 100,  // Phase 2.1k: stickier exploit
             explore_streak_rescue: 80,  // Phase 2.1j: stop rescue spam
             fail_streak_rescue: 4,      // Rescue earlier on gate-fail cascades
             rescue_cooldown: 320,       // Phase 2.1j: stop rescue spam
@@ -772,8 +772,8 @@ impl Default for Config {
             // - proto_align mean ~0.126, threshold 0.18 requires above-average quality
             // - margin mean ~0.11, threshold 0.06 requires good separation
             // - require stable anchors for reliable exploit
-            exploit_proto_min: 0.12, // Phase 2.1k: easier Exploit entry
-            exploit_margin_min: 0.035, // Phase 2.1k: easier Exploit entry
+            exploit_proto_min: 0.10, // Phase 2.1k: easier Exploit entry
+            exploit_margin_min: 0.025, // Phase 2.1k: easier Exploit entry
             exploit_requires_stable: true, // Re-enabled: require anchor stability
             focus_bias_exploit: 0.0, // No artificial bias; rely on mode->action mapping
 
