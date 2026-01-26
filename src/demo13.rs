@@ -1888,6 +1888,7 @@ pub fn run_single_seed_full(
 
             // Phase 2.2a: Apply post-rescue repair override
             // During post-rescue repair window, trigger Perturb when quality is bad
+            // Phase 2.2b: Now respects post-rescue lock to avoid conflict
             if action != Action::Perturb
                 && trigger_reason.is_none()
                 && mode_policy.is_post_rescue_repair_active()
@@ -1895,11 +1896,13 @@ pub fn run_single_seed_full(
                 let repair_quality_bad = mode_policy.is_repair_quality_bad();
                 let perturb_prob = mode_policy.get_repair_perturb_prob();
                 let perturb_cap = mode_policy.get_repair_perturb_cap();
+                let post_rescue_lock_active = mode_policy.is_post_rescue_lock_active();
 
                 if let Some(repair_action) = action_policy.apply_post_rescue_repair_override(
                     repair_quality_bad,
                     perturb_prob,
                     perturb_cap,
+                    post_rescue_lock_active, // Phase 2.2b: Pass lock state to prevent conflict
                 ) {
                     action = repair_action;
                     action_policy

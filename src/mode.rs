@@ -313,6 +313,16 @@ pub struct ModePolicyConfig {
     pub post_rescue_repair_trigger_bad_hi: f32,
     /// TD threshold for repair trigger.
     pub post_rescue_repair_trigger_td_hi: f32,
+
+    // Phase 2.2b: Rescue oscillation damping
+    /// Enable rescue oscillation damping (extends cooldown if quality still bad after lock).
+    pub rescue_oscillation_damping_enabled: bool,
+    /// Stable share threshold below which quality is considered "still bad" after lock.
+    pub rescue_oscillation_stable_threshold: f32,
+    /// Bad share threshold above which quality is considered "still bad" after lock.
+    pub rescue_oscillation_bad_threshold: f32,
+    /// Extended cooldown multiplier when oscillation detected.
+    pub rescue_oscillation_cooldown_multiplier: f32,
 }
 
 impl Default for ModePolicyConfig {
@@ -392,6 +402,12 @@ impl Default for ModePolicyConfig {
             post_rescue_repair_trigger_stable_lo: 0.65,
             post_rescue_repair_trigger_bad_hi: 0.20,
             post_rescue_repair_trigger_td_hi: 0.22,
+
+            // Phase 2.2b: Rescue oscillation damping defaults
+            rescue_oscillation_damping_enabled: true,
+            rescue_oscillation_stable_threshold: 0.50, // If stable_share < 50% after lock, extend cooldown
+            rescue_oscillation_bad_threshold: 0.25,    // If bad_share > 25% after lock, extend cooldown
+            rescue_oscillation_cooldown_multiplier: 2.0, // Double the cooldown on oscillation
         }
     }
 }
@@ -472,6 +488,12 @@ impl ModePolicyConfig {
             post_rescue_repair_trigger_stable_lo: config.post_rescue_repair_trigger_stable_lo,
             post_rescue_repair_trigger_bad_hi: config.post_rescue_repair_trigger_bad_hi,
             post_rescue_repair_trigger_td_hi: config.post_rescue_repair_trigger_td_hi,
+
+            // Phase 2.2b: Rescue oscillation damping
+            rescue_oscillation_damping_enabled: config.rescue_oscillation_damping_enabled,
+            rescue_oscillation_stable_threshold: config.rescue_oscillation_stable_threshold,
+            rescue_oscillation_bad_threshold: config.rescue_oscillation_bad_threshold,
+            rescue_oscillation_cooldown_multiplier: config.rescue_oscillation_cooldown_multiplier,
         }
     }
 }
@@ -782,6 +804,12 @@ pub struct ModePolicyState {
     // Phase 2.2a: Post-rescue stability grace tracking (legacy, to be removed)
     /// Ticks where post-rescue grace was used for stable_ok AND final mode is Exploit.
     pub post_rescue_grace_exploit_ticks: usize,
+
+    // Phase 2.2b: Rescue oscillation damping state
+    /// Number of times rescue oscillation was detected (quality still bad when lock ends).
+    pub rescue_oscillation_count: u32,
+    /// Total extra cooldown ticks added due to oscillation damping.
+    pub rescue_oscillation_extra_cooldown: u32,
 }
 
 impl ModePolicyState {
@@ -916,6 +944,10 @@ impl ModePolicyState {
 
             // Phase 2.2a: Post-rescue stability grace tracking (legacy)
             post_rescue_grace_exploit_ticks: 0,
+
+            // Phase 2.2b: Rescue oscillation damping state
+            rescue_oscillation_count: 0,
+            rescue_oscillation_extra_cooldown: 0,
         }
     }
 }
@@ -1028,9 +1060,34 @@ impl ModePolicy {
         }
 
         // Phase 2.1c: Decrement post-rescue lock
+        // Phase 2.2b: Check for oscillation when lock expires
         if self.state.post_rescue_lock_remaining > 0 {
+            let was_last_tick = self.state.post_rescue_lock_remaining == 1;
             self.state.post_rescue_lock_remaining -= 1;
             self.state.post_rescue_lock_total_ticks += 1;
+
+            // Phase 2.2b: Rescue oscillation damping
+            // When lock expires, check if quality is still bad
+            if was_last_tick && self.config.rescue_oscillation_damping_enabled {
+                let stable_share = self.state.chronic_stable_share_ema;
+                let bad_share = self.state.chronic_bad_share_ema;
+
+                let quality_still_bad =
+                    stable_share < self.config.rescue_oscillation_stable_threshold
+                        || bad_share > self.config.rescue_oscillation_bad_threshold;
+
+                if quality_still_bad {
+                    // Quality didn't improve during lock - likely to oscillate
+                    // Extend rescue cooldown to break the cycle
+                    self.state.rescue_oscillation_count += 1;
+
+                    let extra_cooldown = (self.state.rescue_cooldown as f32
+                        * (self.config.rescue_oscillation_cooldown_multiplier - 1.0))
+                        as u32;
+                    self.state.rescue_cooldown += extra_cooldown;
+                    self.state.rescue_oscillation_extra_cooldown += extra_cooldown;
+                }
+            }
         }
 
         // Phase 2.2a: Decrement post-rescue repair window and cooldown
@@ -2058,6 +2115,10 @@ impl ModePolicy {
             soft_proto_bad_regime_period_block: self.state.soft_proto_bad_regime_period_block,
             // Phase 2.2a: Post-rescue stability grace metrics
             post_rescue_grace_exploit_ticks: self.state.post_rescue_grace_exploit_ticks,
+
+            // Phase 2.2b: Rescue oscillation damping metrics
+            rescue_oscillation_count: self.state.rescue_oscillation_count,
+            rescue_oscillation_extra_cooldown: self.state.rescue_oscillation_extra_cooldown,
         }
     }
 }
@@ -2145,6 +2206,12 @@ pub struct ModeStats {
     // Phase 2.2a: Post-rescue stability grace metrics
     /// Ticks where post-rescue grace enabled Exploit (anchor wasn't stable).
     pub post_rescue_grace_exploit_ticks: usize,
+
+    // Phase 2.2b: Rescue oscillation damping metrics
+    /// Number of times rescue oscillation was detected.
+    pub rescue_oscillation_count: u32,
+    /// Total extra cooldown ticks added due to oscillation damping.
+    pub rescue_oscillation_extra_cooldown: u32,
 }
 
 // ============================================================================

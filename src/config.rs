@@ -674,6 +674,18 @@ pub struct Config {
     pub post_rescue_repair_trigger_td_hi: f32,
 
     // =========================================================================
+    // Phase 2.2b: Rescue Oscillation Damping
+    // =========================================================================
+    /// Enable rescue oscillation damping (extends cooldown if quality still bad after lock).
+    pub rescue_oscillation_damping_enabled: bool,
+    /// Stable share threshold below which quality is considered "still bad" after lock.
+    pub rescue_oscillation_stable_threshold: f32,
+    /// Bad share threshold above which quality is considered "still bad" after lock.
+    pub rescue_oscillation_bad_threshold: f32,
+    /// Extended cooldown multiplier when oscillation detected.
+    pub rescue_oscillation_cooldown_multiplier: f32,
+
+    // =========================================================================
     // Phase 1.9b: Stability Hysteresis (flicker elimination)
     // =========================================================================
     /// Minimum proto_support to ENTER stable state.
@@ -1069,6 +1081,12 @@ impl Default for Config {
             post_rescue_repair_trigger_stable_lo: 0.65, // Stricter stable threshold
             post_rescue_repair_trigger_bad_hi: 0.20, // Lower bad threshold
             post_rescue_repair_trigger_td_hi: 0.22, // Lower TD threshold
+
+            // Phase 2.2b: Rescue oscillation damping defaults
+            rescue_oscillation_damping_enabled: true,
+            rescue_oscillation_stable_threshold: 0.50, // If stable_share < 50% after lock, extend cooldown
+            rescue_oscillation_bad_threshold: 0.25,    // If bad_share > 25% after lock, extend cooldown
+            rescue_oscillation_cooldown_multiplier: 2.0, // Double the cooldown on oscillation
 
             // Phase 1.9e Option A: Stability hysteresis (very easy entry, stickier state)
             stable_min_support_enter: 18, // Phase 1.9e: 30 -> 18 (very easy entry)

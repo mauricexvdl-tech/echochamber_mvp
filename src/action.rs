@@ -1538,12 +1538,22 @@ impl ActionPolicy {
     /// Phase 2.2a: Apply post-rescue repair override to action selection.
     /// Returns Some(Action::Perturb) if repair should override, None otherwise.
     /// Called when ModePolicy.is_post_rescue_repair_active() is true.
+    ///
+    /// Phase 2.2b FIX: Now respects post_rescue_lock - no perturb injection during lock
+    /// to avoid conflicting with lock's Focus-forcing behavior.
     pub fn apply_post_rescue_repair_override(
         &mut self,
         repair_quality_bad: bool,
         perturb_prob: f32,
         perturb_cap: f32,
+        post_rescue_lock_active: bool, // Phase 2.2b: Added to prevent conflict
     ) -> Option<Action> {
+        // Phase 2.2b FIX: Don't inject perturb during post-rescue lock
+        // The lock is trying to stabilize via Focus - perturb would sabotage this
+        if post_rescue_lock_active {
+            return None;
+        }
+
         // Only override if quality is bad
         if !repair_quality_bad {
             return None;
@@ -1563,5 +1573,79 @@ impl ActionPolicy {
         } else {
             None
         }
+    }
+
+    // =========================================================================
+    // Phase 2.2b: Centralized Action Priority Resolver
+    // =========================================================================
+
+    /// Phase 2.2b: Resolve final action with clear priority ordering.
+    /// This is the SINGLE source of truth for action conflicts.
+    ///
+    /// Priority order (highest first):
+    /// 1. Chronic clamp perturb block (safety - prevents destabilization)
+    /// 2. Post-rescue lock Focus bias (stabilization after rescue)
+    /// 3. Post-rescue repair Perturb (quality repair, only after lock ends)
+    /// 4. Repair burst Perturb (episodic quality repair)
+    /// 5. Normal mode→action mapping
+    pub fn resolve_action_with_priority(
+        &mut self,
+        base_action: Action,
+        mode: crate::mode::Mode,
+        // Priority 1: Chronic clamp state
+        chronic_perturb_disallowed: bool,
+        // Priority 2: Post-rescue lock state
+        post_rescue_lock_active: bool,
+        lock_focus_bias: f32,
+        // Priority 3: Post-rescue repair state
+        post_rescue_repair_active: bool,
+        repair_quality_bad: bool,
+        repair_perturb_prob: f32,
+        repair_perturb_cap: f32,
+        // Priority 4: Repair burst state
+        repair_burst_active: bool,
+        is_soft_exploit: bool,
+        is_bad_state: bool,
+        config: &crate::config::Config,
+    ) -> Action {
+        let mut final_action = base_action;
+
+        // Priority 4: Repair burst override (lowest priority override)
+        if repair_burst_active {
+            if let Some(burst_action) = self.apply_repair_burst_override(
+                is_soft_exploit,
+                is_bad_state,
+                config,
+            ) {
+                final_action = burst_action;
+            }
+        }
+
+        // Priority 3: Post-rescue repair override (only if lock NOT active)
+        if post_rescue_repair_active && !post_rescue_lock_active {
+            if let Some(repair_action) = self.apply_post_rescue_repair_override(
+                repair_quality_bad,
+                repair_perturb_prob,
+                repair_perturb_cap,
+                post_rescue_lock_active,
+            ) {
+                final_action = repair_action;
+            }
+        }
+
+        // Priority 2: Post-rescue lock Focus bias
+        // During lock, strongly prefer Focus over Scan (but don't override Perturb from Reset mode)
+        if post_rescue_lock_active && final_action == Action::Scan && lock_focus_bias >= 1.0 {
+            final_action = Action::Focus;
+        }
+
+        // Priority 1: Chronic clamp perturb block (HIGHEST - safety mechanism)
+        // Only block perturb if it wasn't from Mode::Reset (Reset mode perturb is always allowed)
+        if chronic_perturb_disallowed && final_action == Action::Perturb && mode != crate::mode::Mode::Reset {
+            // Block non-Reset perturbs during chronic clamp
+            final_action = Action::Focus;
+        }
+
+        final_action
     }
 }
