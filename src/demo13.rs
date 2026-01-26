@@ -1896,9 +1896,11 @@ pub fn run_single_seed_full(
                 let perturb_prob = mode_policy.get_repair_perturb_prob();
                 let perturb_cap = mode_policy.get_repair_perturb_cap();
 
-                if let Some(repair_action) = action_policy
-                    .apply_post_rescue_repair_override(repair_quality_bad, perturb_prob, perturb_cap)
-                {
+                if let Some(repair_action) = action_policy.apply_post_rescue_repair_override(
+                    repair_quality_bad,
+                    perturb_prob,
+                    perturb_cap,
+                ) {
                     action = repair_action;
                     action_policy
                         .triggers

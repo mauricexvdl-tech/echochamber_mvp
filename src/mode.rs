@@ -383,12 +383,12 @@ impl Default for ModePolicyConfig {
             rescue_max_per_10k: 15,
             rescue_throttle_cooldown: 500,
 
-            // Phase 2.2a: Post-rescue quality repair defaults
+            // Phase 2.2a: Post-rescue quality repair defaults (conservative: repair, not thrash)
             post_rescue_repair_enabled: true,
-            post_rescue_repair_ticks: 500,
-            post_rescue_repair_cooldown: 600,
-            post_rescue_repair_perturb_prob: 0.60,
-            post_rescue_repair_perturb_cap: 0.045,
+            post_rescue_repair_ticks: 400,
+            post_rescue_repair_cooldown: 800,
+            post_rescue_repair_perturb_prob: 0.35,
+            post_rescue_repair_perturb_cap: 0.025,
             post_rescue_repair_trigger_stable_lo: 0.65,
             post_rescue_repair_trigger_bad_hi: 0.20,
             post_rescue_repair_trigger_td_hi: 0.22,
@@ -1191,17 +1191,9 @@ impl ModePolicy {
             || value_drop >= self.config.catastrophic_value_drop;
 
         // Phase 2.1l: Compute can_exploit EARLY for quality-gated locks
-        // Phase 2.2a: Quality-gated stability grace
-        // - Grace is only allowed when quality is reasonable (not in repair-bad state)
-        // - This prevents forcing Exploit on truly bad signal while still allowing recovery
-        let in_boost_window = self.state.post_reset_boost_remaining > 0;
-        let quality_reasonable = self.state.chronic_stable_share_ema
-            >= self.config.post_rescue_repair_trigger_stable_lo * 0.9
-            && self.state.chronic_bad_share_ema <= self.config.post_rescue_repair_trigger_bad_hi * 1.2;
-        let in_post_rescue_grace = in_boost_window && quality_reasonable;
-        let stable_ok = in_post_rescue_grace
-            || !self.config.exploit_requires_stable
-            || self.state.last_is_stable;
+        // Phase 2.2a: Grace REMOVED - only post-rescue repair remains as intervention
+        // stable_ok is now purely based on exploit_requires_stable and actual stability
+        let stable_ok = !self.config.exploit_requires_stable || self.state.last_is_stable;
         let proto_ok = self.state.last_proto_align >= self.config.exploit_proto_min;
         let margin_ok = self.state.last_topk_margin >= self.config.exploit_margin_min;
         let gate_ok = self.state.last_gate_passed;
@@ -1232,10 +1224,6 @@ impl ModePolicy {
                 if self.state.last_is_bad_state {
                     self.state.bad_in_exploit_count += 1;
                 }
-                // Phase 2.2a: Track post-rescue grace exploit ticks
-                if in_post_rescue_grace && !self.state.last_is_stable {
-                    self.state.post_rescue_grace_exploit_ticks += 1;
-                }
                 return (Mode::Exploit, false);
             } else {
                 // Quality conditions NOT met - use hysteresis
@@ -1259,10 +1247,6 @@ impl ModePolicy {
                     self.state.exploit_soft_count += 1;
                     if self.state.last_is_bad_state {
                         self.state.bad_in_exploit_count += 1;
-                    }
-                    // Phase 2.2a: Track post-rescue grace exploit ticks
-                    if in_post_rescue_grace && !self.state.last_is_stable {
-                        self.state.post_rescue_grace_exploit_ticks += 1;
                     }
                     return (Mode::Exploit, false);
                 } else {
@@ -1572,11 +1556,6 @@ impl ModePolicy {
                 // Phase 2.1k: Track bad state in Exploit
                 if self.state.last_is_bad_state {
                     self.state.bad_in_exploit_count += 1;
-                }
-                // Phase 2.2a: Track post-rescue grace exploit ticks
-                // (grace enabled Exploit when anchor wasn't stable)
-                if in_post_rescue_grace && !self.state.last_is_stable {
-                    self.state.post_rescue_grace_exploit_ticks += 1;
                 }
             }
             Mode::Reset => {
