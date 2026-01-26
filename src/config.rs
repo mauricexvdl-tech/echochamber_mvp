@@ -983,7 +983,7 @@ impl Default for Config {
 
             // Phase 2.0a: Mode Policy defaults
             enable_mode_policy: true,
-            mode_explore_v_max: 0.32, // Phase 2.1i: avoid Explore as default for low V
+            mode_explore_v_max: 0.25, // Phase 2.2a: reduce Explore rate for worst-seed improvement
             mode_exploit_v_min: 0.60, // Phase 2.1k: reduce fallback exploit
             mode_reset_td_min: 0.35,  // TD threshold for reset (stable_avg ~0.27)
             mode_reset_value_drop: 1.0, // Disabled

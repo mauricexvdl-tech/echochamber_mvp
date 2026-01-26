@@ -218,6 +218,8 @@ pub struct SeedDiagnostics {
     // Action rates (overall)
     pub scan_rate: f64,
     pub focus_rate: f64,
+    // Phase 2.2a: Post-rescue stability grace metrics
+    pub post_rescue_grace_exploit_ticks: usize,
 }
 
 /// Phase 2.1b: Warmup stats collector for adaptive thresholds.
@@ -733,7 +735,7 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
         "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     println!(
-        "  Seed       | explore% | exploit% | stable% | bad%  | rescues | scan%  | focus% | perturb% | hard_expl | soft_expl | soft_share"
+        "  Seed       | explore% | exploit% | stable% | bad%  | rescues | scan%  | focus% | perturb% | hard_expl | soft_expl | soft_share | grace_ticks"
     );
     println!(
         "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
@@ -749,7 +751,7 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
             ""
         };
         println!(
-            "  0x{:08X} | {:6.1}%  | {:6.1}%  | {:5.1}%  | {:4.1}% | {:7} | {:5.1}% | {:5.1}% | {:7.1}%  | {:9} | {:9} | {:9.1}%{}",
+            "  0x{:08X} | {:6.1}%  | {:6.1}%  | {:5.1}%  | {:4.1}% | {:7} | {:5.1}% | {:5.1}% | {:7.1}%  | {:9} | {:9} | {:9.1}% | {:11}{}",
             d.seed,
             d.explore_rate * 100.0,
             d.exploit_rate * 100.0,
@@ -762,6 +764,7 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
             d.exploit_hard_count,
             d.exploit_soft_count,
             d.exploit_soft_share * 100.0,
+            d.post_rescue_grace_exploit_ticks,
             collapse_marker,
         );
     }
@@ -2391,6 +2394,8 @@ pub fn run_single_seed_full(
         // Phase 2.1x: Action rates
         scan_rate: run.scan_rate,
         focus_rate: run.focus_rate,
+        // Phase 2.2a: Post-rescue stability grace metrics
+        post_rescue_grace_exploit_ticks: mode_stats.post_rescue_grace_exploit_ticks,
     };
 
     (run, lift_stats, diag)

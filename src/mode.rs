@@ -728,6 +728,10 @@ pub struct ModePolicyState {
     pub soft_proto_bad_regime_quality_fail: usize,
     /// Phase 2.1w: Blocked by period even though quality passed.
     pub soft_proto_bad_regime_period_block: usize,
+
+    // Phase 2.2a: Post-rescue stability grace tracking
+    /// Ticks where post-rescue grace was used for stable_ok AND final mode is Exploit.
+    pub post_rescue_grace_exploit_ticks: usize,
 }
 
 impl ModePolicyState {
@@ -852,6 +856,9 @@ impl ModePolicyState {
             soft_proto_bad_regime_quality_pass: 0,
             soft_proto_bad_regime_quality_fail: 0,
             soft_proto_bad_regime_period_block: 0,
+
+            // Phase 2.2a: Post-rescue stability grace tracking
+            post_rescue_grace_exploit_ticks: 0,
         }
     }
 }
@@ -1118,7 +1125,11 @@ impl ModePolicy {
             || value_drop >= self.config.catastrophic_value_drop;
 
         // Phase 2.1l: Compute can_exploit EARLY for quality-gated locks
-        let stable_ok = !self.config.exploit_requires_stable || self.state.last_is_stable;
+        // Phase 2.2a: Add post-rescue stability grace (allow Exploit even if stability hasn't recovered)
+        let in_post_rescue_grace = self.state.post_reset_boost_remaining > 0;
+        let stable_ok = in_post_rescue_grace
+            || !self.config.exploit_requires_stable
+            || self.state.last_is_stable;
         let proto_ok = self.state.last_proto_align >= self.config.exploit_proto_min;
         let margin_ok = self.state.last_topk_margin >= self.config.exploit_margin_min;
         let gate_ok = self.state.last_gate_passed;
@@ -1149,6 +1160,10 @@ impl ModePolicy {
                 if self.state.last_is_bad_state {
                     self.state.bad_in_exploit_count += 1;
                 }
+                // Phase 2.2a: Track post-rescue grace exploit ticks
+                if in_post_rescue_grace && !self.state.last_is_stable {
+                    self.state.post_rescue_grace_exploit_ticks += 1;
+                }
                 return (Mode::Exploit, false);
             } else {
                 // Quality conditions NOT met - use hysteresis
@@ -1172,6 +1187,10 @@ impl ModePolicy {
                     self.state.exploit_soft_count += 1;
                     if self.state.last_is_bad_state {
                         self.state.bad_in_exploit_count += 1;
+                    }
+                    // Phase 2.2a: Track post-rescue grace exploit ticks
+                    if in_post_rescue_grace && !self.state.last_is_stable {
+                        self.state.post_rescue_grace_exploit_ticks += 1;
                     }
                     return (Mode::Exploit, false);
                 } else {
@@ -1471,6 +1490,11 @@ impl ModePolicy {
                 // Phase 2.1k: Track bad state in Exploit
                 if self.state.last_is_bad_state {
                     self.state.bad_in_exploit_count += 1;
+                }
+                // Phase 2.2a: Track post-rescue grace exploit ticks
+                // (grace enabled Exploit when anchor wasn't stable)
+                if in_post_rescue_grace && !self.state.last_is_stable {
+                    self.state.post_rescue_grace_exploit_ticks += 1;
                 }
             }
             Mode::Reset => {
@@ -1925,6 +1949,8 @@ impl ModePolicy {
             soft_proto_bad_regime_quality_pass: self.state.soft_proto_bad_regime_quality_pass,
             soft_proto_bad_regime_quality_fail: self.state.soft_proto_bad_regime_quality_fail,
             soft_proto_bad_regime_period_block: self.state.soft_proto_bad_regime_period_block,
+            // Phase 2.2a: Post-rescue stability grace metrics
+            post_rescue_grace_exploit_ticks: self.state.post_rescue_grace_exploit_ticks,
         }
     }
 }
@@ -2009,6 +2035,9 @@ pub struct ModeStats {
     pub soft_proto_bad_regime_quality_fail: usize,
     /// Blocked by period even though quality passed.
     pub soft_proto_bad_regime_period_block: usize,
+    // Phase 2.2a: Post-rescue stability grace metrics
+    /// Ticks where post-rescue grace enabled Exploit (anchor wasn't stable).
+    pub post_rescue_grace_exploit_ticks: usize,
 }
 
 // ============================================================================
