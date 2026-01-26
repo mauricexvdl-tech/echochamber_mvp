@@ -853,7 +853,7 @@ impl Default for Config {
 
             // Phase 2.1b: Seed-Robust Policy Stabilization defaults
             min_exploit_ticks_on: 100, // Phase 2.1k: stickier exploit
-            explore_streak_rescue: 80, // Original value - isolate post-rescue repair effect
+            explore_streak_rescue: 60, // Phase 2.2b Hybrid: 80→60 (earlier intervention)
             fail_streak_rescue: 4,     // Rescue earlier on gate-fail cascades
             rescue_cooldown: 320,      // Phase 2.1j: stop rescue spam
             post_reset_exploit_boost_ticks: 80, // Phase 2.1j: reduced stickiness
@@ -903,7 +903,7 @@ impl Default for Config {
             // Phase 2.1q: Adaptive soft proto update period defaults
             soft_proto_adaptive_enabled: true,
             soft_proto_period_good: 0,         // P0 in good regime
-            soft_proto_period_bad: 5,          // P5 in bad regime (Phase 2.2b: 8->5, more updates for recovery)
+            soft_proto_period_bad: 0,          // P0 in bad regime (Phase 2.2b Hybrid: every tick for max recovery)
             soft_proto_bad_stable_lo: 0.55,    // Enter bad if stable < 55%
             soft_proto_bad_bad_hi: 0.28,       // Enter bad if bad > 28%
             soft_proto_bad_explore_hi: 0.25,   // Enter bad if explore > 25%
@@ -913,7 +913,7 @@ impl Default for Config {
             soft_proto_bad_clear_bad: 0.24,    // Early clear if bad < 24%
 
             // Phase 2.1v: Bad-Regime Proto Repair (relaxed gating)
-            soft_proto_bad_td_max: 0.30, // Max TD in bad-regime (more relaxed than normal 0.27)
+            soft_proto_bad_td_max: 0.40, // Phase 2.2b Hybrid: 0.30→0.40 (allow higher TD for recovery)
             soft_proto_bad_margin_min: 0.02, // Min margin in bad-regime (relaxed from 0.03)
             soft_proto_bad_proto_min: 0.08, // Min proto_align in bad-regime
             soft_proto_bad_require_gate: true, // Still require gate in bad-regime
