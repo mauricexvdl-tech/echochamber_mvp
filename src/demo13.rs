@@ -211,6 +211,13 @@ pub struct SeedDiagnostics {
     pub soft_proto_bad_regime_quality_pass: usize,
     pub soft_proto_bad_regime_quality_fail: usize,
     pub soft_proto_bad_regime_period_block: usize,
+    // Phase 2.1x: "Why Scan?" breakdown
+    pub scan_by_explore_mode: usize,      // Scan from Mode::Explore
+    pub scan_by_soft_exploit_prob: usize, // Scan from soft-exploit random flip
+    pub scan_by_lock_bias: usize,         // Scan from post-rescue/chronic lock bias
+    // Action rates (overall)
+    pub scan_rate: f64,
+    pub focus_rate: f64,
 }
 
 /// Phase 2.1b: Warmup stats collector for adaptive thresholds.
@@ -464,7 +471,11 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
             0.0
         };
         // Highlight worst seed (lowest bad allow rate)
-        let marker = if d.soft_proto_bad_active_share > 90.0 { " ⚠" } else { "" };
+        let marker = if d.soft_proto_bad_active_share > 90.0 {
+            " ⚠"
+        } else {
+            ""
+        };
         println!(
             "  0x{:08X} | {:12} | {:12} | {:17.1}% | {:11.1}%{}",
             d.seed,
@@ -493,14 +504,17 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
         "──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     for d in diagnostics {
-        let quality_total = d.soft_proto_bad_regime_quality_pass + d.soft_proto_bad_regime_quality_fail;
+        let quality_total =
+            d.soft_proto_bad_regime_quality_pass + d.soft_proto_bad_regime_quality_fail;
         let quality_rate = if quality_total > 0 {
             d.soft_proto_bad_regime_quality_pass as f64 / quality_total as f64 * 100.0
         } else {
             0.0
         };
         let period_block_rate = if d.soft_proto_bad_regime_quality_pass > 0 {
-            d.soft_proto_bad_regime_period_block as f64 / d.soft_proto_bad_regime_quality_pass as f64 * 100.0
+            d.soft_proto_bad_regime_period_block as f64
+                / d.soft_proto_bad_regime_quality_pass as f64
+                * 100.0
         } else {
             0.0
         };
@@ -533,7 +547,8 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
     let bad_quality_rates: Vec<f64> = diagnostics
         .iter()
         .map(|d| {
-            let q_total = d.soft_proto_bad_regime_quality_pass + d.soft_proto_bad_regime_quality_fail;
+            let q_total =
+                d.soft_proto_bad_regime_quality_pass + d.soft_proto_bad_regime_quality_fail;
             if q_total > 0 {
                 d.soft_proto_bad_regime_quality_pass as f64 / q_total as f64
             } else {
@@ -709,6 +724,141 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
         "  [{}] mean_td_improve >= 5%: {:.1}%",
         if td_improve_ok { "✓" } else { "✗" },
         mean_td_improve,
+    );
+
+    // Phase 2.1x: Consolidated Mode/State + Action diagnostic table
+    println!();
+    println!("Phase 2.1x: Consolidated Diagnostics (Mode + State + Actions):");
+    println!(
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+    println!(
+        "  Seed       | explore% | exploit% | stable% | bad%  | rescues | scan%  | focus% | perturb% | hard_expl | soft_expl | soft_share"
+    );
+    println!(
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+    for d in diagnostics {
+        let collapse_marker = if d.explore_rate > 0.25
+            || d.stable_share < 0.55
+            || d.rescue_count > 15
+            || d.scan_rate > 0.25
+        {
+            " ⚠"
+        } else {
+            ""
+        };
+        println!(
+            "  0x{:08X} | {:6.1}%  | {:6.1}%  | {:5.1}%  | {:4.1}% | {:7} | {:5.1}% | {:5.1}% | {:7.1}%  | {:9} | {:9} | {:9.1}%{}",
+            d.seed,
+            d.explore_rate * 100.0,
+            d.exploit_rate * 100.0,
+            d.stable_share * 100.0,
+            d.bad_state_share * 100.0,
+            d.rescue_count,
+            d.scan_rate * 100.0,
+            d.focus_rate * 100.0,
+            d.perturb_rate * 100.0,
+            d.exploit_hard_count,
+            d.exploit_soft_count,
+            d.exploit_soft_share * 100.0,
+            collapse_marker,
+        );
+    }
+    println!(
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+
+    // Phase 2.1x: "Why Scan?" breakdown
+    println!();
+    println!("Phase 2.1x: Why Scan? (breakdown by cause):");
+    println!(
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+    println!(
+        "  Seed       | total_scan | by_explore | by_soft_prob | by_lock_bias | explore%  | soft_prob% | lock_bias%"
+    );
+    println!(
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+    for d in diagnostics {
+        let total_scan = d.scan_by_explore_mode + d.scan_by_soft_exploit_prob + d.scan_by_lock_bias;
+        let explore_pct = if total_scan > 0 {
+            d.scan_by_explore_mode as f64 / total_scan as f64 * 100.0
+        } else {
+            0.0
+        };
+        let soft_prob_pct = if total_scan > 0 {
+            d.scan_by_soft_exploit_prob as f64 / total_scan as f64 * 100.0
+        } else {
+            0.0
+        };
+        let lock_bias_pct = if total_scan > 0 {
+            d.scan_by_lock_bias as f64 / total_scan as f64 * 100.0
+        } else {
+            0.0
+        };
+        // Mark seeds where soft_exploit_prob or lock_bias contributes significantly
+        let marker = if soft_prob_pct > 30.0 || lock_bias_pct > 10.0 {
+            " ⚠"
+        } else {
+            ""
+        };
+        println!(
+            "  0x{:08X} | {:10} | {:10} | {:12} | {:12} | {:8.1}% | {:9.1}% | {:9.1}%{}",
+            d.seed,
+            total_scan,
+            d.scan_by_explore_mode,
+            d.scan_by_soft_exploit_prob,
+            d.scan_by_lock_bias,
+            explore_pct,
+            soft_prob_pct,
+            lock_bias_pct,
+            marker,
+        );
+    }
+    // Summary row
+    let total_scan_all: usize = diagnostics
+        .iter()
+        .map(|d| d.scan_by_explore_mode + d.scan_by_soft_exploit_prob + d.scan_by_lock_bias)
+        .sum();
+    let total_by_explore: usize = diagnostics.iter().map(|d| d.scan_by_explore_mode).sum();
+    let total_by_soft_prob: usize = diagnostics
+        .iter()
+        .map(|d| d.scan_by_soft_exploit_prob)
+        .sum();
+    let total_by_lock_bias: usize = diagnostics.iter().map(|d| d.scan_by_lock_bias).sum();
+    let mean_explore_pct = if total_scan_all > 0 {
+        total_by_explore as f64 / total_scan_all as f64 * 100.0
+    } else {
+        0.0
+    };
+    let mean_soft_prob_pct = if total_scan_all > 0 {
+        total_by_soft_prob as f64 / total_scan_all as f64 * 100.0
+    } else {
+        0.0
+    };
+    let mean_lock_bias_pct = if total_scan_all > 0 {
+        total_by_lock_bias as f64 / total_scan_all as f64 * 100.0
+    } else {
+        0.0
+    };
+    println!(
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+    println!(
+        "  {:>10} | {:10} | {:10} | {:12} | {:12} | {:8.1}% | {:9.1}% | {:9.1}%",
+        "Total",
+        total_scan_all,
+        total_by_explore,
+        total_by_soft_prob,
+        total_by_lock_bias,
+        mean_explore_pct,
+        mean_soft_prob_pct,
+        mean_lock_bias_pct,
+    );
+    println!(
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 }
 
@@ -1466,6 +1616,11 @@ pub fn run_single_seed_full(
     let mut stable_ticks: usize = 0;
     let mut total_ticks: usize = 0;
 
+    // Phase 2.1x: "Why Scan?" tracking
+    let mut scan_by_explore_mode: usize = 0;
+    let mut scan_by_soft_exploit_prob: usize = 0;
+    let mut scan_by_lock_bias: usize = 0;
+
     // Lift stats
     let mut lift_stats = LiftStats::new();
 
@@ -1669,6 +1824,9 @@ pub fn run_single_seed_full(
                 config,
             );
 
+            // Phase 2.1x: Track scan reason
+            let action_before_lock_bias = action;
+
             // Phase 2.1d: Override with combined lock bias if active (except for Perturb from triggers)
             if (post_rescue_active || chronic_active) && trigger_reason.is_none() {
                 action = action_policy.choose_action_with_combined_lock(
@@ -1682,9 +1840,14 @@ pub fn run_single_seed_full(
                 );
             }
 
+            // Phase 2.1x: Track lock bias scan
+            let scan_from_lock_bias =
+                action == Action::Scan && action_before_lock_bias != Action::Scan;
+
             // Phase 2.1n: Quality-aware action mapping in soft exploit
             // If mode==Exploit but can_exploit==false (soft exploit), prefer Scan over Focus
             // to rebuild signal quality instead of consolidating poor signal
+            let mut scan_from_soft_exploit_prob = false;
             if mode == Mode::Exploit && action == Action::Focus {
                 let can_exploit = mode_policy.last_can_exploit();
                 if !can_exploit {
@@ -1693,6 +1856,7 @@ pub fn run_single_seed_full(
                     let rng_val = ((global_tick * 2654435761) % 1000) as f32 / 1000.0;
                     if rng_val < config.soft_exploit_scan_prob {
                         action = Action::Scan;
+                        scan_from_soft_exploit_prob = true;
                     }
                 }
             }
@@ -1753,6 +1917,17 @@ pub fn run_single_seed_full(
 
             action_policy.record_trigger(trigger_reason);
             action_policy.record_action_for_floor(action);
+
+            // Phase 2.1x: Track "Why Scan?" reason
+            if action == Action::Scan {
+                if scan_from_soft_exploit_prob {
+                    scan_by_soft_exploit_prob += 1;
+                } else if scan_from_lock_bias {
+                    scan_by_lock_bias += 1;
+                } else if mode == Mode::Explore {
+                    scan_by_explore_mode += 1;
+                }
+            }
 
             // Phase 2.1n: Record action during Exploit for quality-aware instrumentation
             if mode == Mode::Exploit {
@@ -2195,8 +2370,12 @@ pub fn run_single_seed_full(
         burst_success_by_bad: action_policy.burst_effectiveness.success_by_bad,
         burst_success_by_stable: action_policy.burst_effectiveness.success_by_stable,
         // Phase 2.1u: TD improve diagnostic metrics
-        burst_td_improve_p50: action_policy.burst_effectiveness.td_improve_percentile(50.0),
-        burst_td_improve_p90: action_policy.burst_effectiveness.td_improve_percentile(90.0),
+        burst_td_improve_p50: action_policy
+            .burst_effectiveness
+            .td_improve_percentile(50.0),
+        burst_td_improve_p90: action_policy
+            .burst_effectiveness
+            .td_improve_percentile(90.0),
         burst_mean_pre_td: action_policy.burst_effectiveness.mean_pre_td(),
         // Phase 2.1v: Bad-regime proto repair metrics
         soft_proto_bad_regime_allowed: mode_stats.soft_proto_bad_regime_allowed,
@@ -2205,6 +2384,13 @@ pub fn run_single_seed_full(
         soft_proto_bad_regime_quality_pass: mode_stats.soft_proto_bad_regime_quality_pass,
         soft_proto_bad_regime_quality_fail: mode_stats.soft_proto_bad_regime_quality_fail,
         soft_proto_bad_regime_period_block: mode_stats.soft_proto_bad_regime_period_block,
+        // Phase 2.1x: "Why Scan?" breakdown
+        scan_by_explore_mode,
+        scan_by_soft_exploit_prob,
+        scan_by_lock_bias,
+        // Phase 2.1x: Action rates
+        scan_rate: run.scan_rate,
+        focus_rate: run.focus_rate,
     };
 
     (run, lift_stats, diag)

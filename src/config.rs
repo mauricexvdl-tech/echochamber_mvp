@@ -881,9 +881,9 @@ impl Default for Config {
             soft_proto_bad_clear_bad: 0.24,    // Early clear if bad < 24%
 
             // Phase 2.1v: Bad-Regime Proto Repair (relaxed gating)
-            soft_proto_bad_td_max: 0.30,       // Max TD in bad-regime (more relaxed than normal 0.27)
-            soft_proto_bad_margin_min: 0.02,   // Min margin in bad-regime (relaxed from 0.03)
-            soft_proto_bad_proto_min: 0.08,    // Min proto_align in bad-regime
+            soft_proto_bad_td_max: 0.30, // Max TD in bad-regime (more relaxed than normal 0.27)
+            soft_proto_bad_margin_min: 0.02, // Min margin in bad-regime (relaxed from 0.03)
+            soft_proto_bad_proto_min: 0.08, // Min proto_align in bad-regime
             soft_proto_bad_require_gate: true, // Still require gate in bad-regime
             soft_proto_repair_after_burst_ticks: 300, // P0 for 300 ticks after burst
 
