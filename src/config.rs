@@ -853,7 +853,7 @@ impl Default for Config {
 
             // Phase 2.1b: Seed-Robust Policy Stabilization defaults
             min_exploit_ticks_on: 100, // Phase 2.1k: stickier exploit
-            explore_streak_rescue: 60, // Phase 2.2b Hybrid: 80→60 (earlier intervention)
+            explore_streak_rescue: 100, // Phase 2.2b: 60→100 (more time to self-stabilize before rescue)
             fail_streak_rescue: 4,     // Rescue earlier on gate-fail cascades
             rescue_cooldown: 320,      // Phase 2.1j: stop rescue spam
             post_reset_exploit_boost_ticks: 80, // Phase 2.1j: reduced stickiness
