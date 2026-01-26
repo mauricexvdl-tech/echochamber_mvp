@@ -518,6 +518,41 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
         "──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 
+    // Summary: bad_update_rate and bad_quality_rate
+    let bad_update_rates: Vec<f64> = diagnostics
+        .iter()
+        .map(|d| {
+            let bad_total = d.soft_proto_bad_regime_allowed + d.soft_proto_bad_regime_blocked;
+            if bad_total > 0 {
+                d.soft_proto_bad_regime_allowed as f64 / bad_total as f64
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let bad_quality_rates: Vec<f64> = diagnostics
+        .iter()
+        .map(|d| {
+            let q_total = d.soft_proto_bad_regime_quality_pass + d.soft_proto_bad_regime_quality_fail;
+            if q_total > 0 {
+                d.soft_proto_bad_regime_quality_pass as f64 / q_total as f64
+            } else {
+                0.0
+            }
+        })
+        .collect();
+    let mean_bad_update_rate =
+        bad_update_rates.iter().sum::<f64>() / bad_update_rates.len().max(1) as f64;
+    let mean_bad_quality_rate =
+        bad_quality_rates.iter().sum::<f64>() / bad_quality_rates.len().max(1) as f64;
+
+    println!();
+    println!("Bad-Regime Rate Summary (copyable):");
+    println!("────────────────────────────────────────");
+    println!("bad_update_rate:  {:.4}", mean_bad_update_rate);
+    println!("bad_quality_rate: {:.4}", mean_bad_quality_rate);
+    println!("────────────────────────────────────────");
+
     // Phase 2.1r: Repair burst diagnostics
     println!();
     println!("Phase 2.1r: Bad-Regime Quality Repair (Perturb Burst)");
