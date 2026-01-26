@@ -722,6 +722,12 @@ pub struct ModePolicyState {
     pub soft_proto_bad_regime_allowed: usize,
     /// Proto updates blocked while in bad-regime.
     pub soft_proto_bad_regime_blocked: usize,
+    /// Phase 2.1w: Quality passed in bad-regime (gate+margin+proto+td, without period).
+    pub soft_proto_bad_regime_quality_pass: usize,
+    /// Phase 2.1w: Quality failed in bad-regime.
+    pub soft_proto_bad_regime_quality_fail: usize,
+    /// Phase 2.1w: Blocked by period even though quality passed.
+    pub soft_proto_bad_regime_period_block: usize,
 }
 
 impl ModePolicyState {
@@ -842,6 +848,10 @@ impl ModePolicyState {
             soft_proto_repair_window_remaining: 0,
             soft_proto_bad_regime_allowed: 0,
             soft_proto_bad_regime_blocked: 0,
+            // Phase 2.1w: Quality-pass tracking in bad-regime
+            soft_proto_bad_regime_quality_pass: 0,
+            soft_proto_bad_regime_quality_fail: 0,
+            soft_proto_bad_regime_period_block: 0,
         }
     }
 }
@@ -1911,6 +1921,10 @@ impl ModePolicy {
             // Phase 2.1v: Bad-regime proto repair metrics
             soft_proto_bad_regime_allowed: self.state.soft_proto_bad_regime_allowed,
             soft_proto_bad_regime_blocked: self.state.soft_proto_bad_regime_blocked,
+            // Phase 2.1w: Quality-pass tracking in bad-regime
+            soft_proto_bad_regime_quality_pass: self.state.soft_proto_bad_regime_quality_pass,
+            soft_proto_bad_regime_quality_fail: self.state.soft_proto_bad_regime_quality_fail,
+            soft_proto_bad_regime_period_block: self.state.soft_proto_bad_regime_period_block,
         }
     }
 }
@@ -1988,6 +2002,13 @@ pub struct ModeStats {
     pub soft_proto_bad_regime_allowed: usize,
     /// Proto updates blocked while in bad-regime.
     pub soft_proto_bad_regime_blocked: usize,
+    // Phase 2.1w: Quality-pass tracking in bad-regime
+    /// Quality passed in bad-regime (gate+margin+proto+td, without period).
+    pub soft_proto_bad_regime_quality_pass: usize,
+    /// Quality failed in bad-regime.
+    pub soft_proto_bad_regime_quality_fail: usize,
+    /// Blocked by period even though quality passed.
+    pub soft_proto_bad_regime_period_block: usize,
 }
 
 // ============================================================================

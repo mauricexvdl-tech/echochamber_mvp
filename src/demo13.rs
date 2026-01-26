@@ -207,6 +207,10 @@ pub struct SeedDiagnostics {
     // Phase 2.1v: Bad-regime proto repair metrics
     pub soft_proto_bad_regime_allowed: usize,
     pub soft_proto_bad_regime_blocked: usize,
+    // Phase 2.1w: Quality-pass tracking in bad-regime
+    pub soft_proto_bad_regime_quality_pass: usize,
+    pub soft_proto_bad_regime_quality_fail: usize,
+    pub soft_proto_bad_regime_period_block: usize,
 }
 
 /// Phase 2.1b: Warmup stats collector for adaptive thresholds.
@@ -473,6 +477,45 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
     }
     println!(
         "─────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+
+    // Phase 2.1w: Quality-pass diagnostics (without period_ok)
+    println!();
+    println!("Phase 2.1w: Bad-Regime Quality Pass (without period)");
+    println!(
+        "──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+    println!(
+        "  {:>10} | {:>12} | {:>12} | {:>14} | {:>12} | {:>12}",
+        "Seed", "Quality Pass", "Quality Fail", "Quality Rate%", "Period Block", "Period Block%"
+    );
+    println!(
+        "──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+    for d in diagnostics {
+        let quality_total = d.soft_proto_bad_regime_quality_pass + d.soft_proto_bad_regime_quality_fail;
+        let quality_rate = if quality_total > 0 {
+            d.soft_proto_bad_regime_quality_pass as f64 / quality_total as f64 * 100.0
+        } else {
+            0.0
+        };
+        let period_block_rate = if d.soft_proto_bad_regime_quality_pass > 0 {
+            d.soft_proto_bad_regime_period_block as f64 / d.soft_proto_bad_regime_quality_pass as f64 * 100.0
+        } else {
+            0.0
+        };
+        println!(
+            "  0x{:08X} | {:12} | {:12} | {:13.1}% | {:12} | {:11.1}%",
+            d.seed,
+            d.soft_proto_bad_regime_quality_pass,
+            d.soft_proto_bad_regime_quality_fail,
+            quality_rate,
+            d.soft_proto_bad_regime_period_block,
+            period_block_rate,
+        );
+    }
+    println!(
+        "──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 
     // Phase 2.1r: Repair burst diagnostics
@@ -1753,14 +1796,14 @@ pub fn run_single_seed_full(
                             >= effective_period as u64;
 
                     // Phase 2.1v: In bad-regime, use relaxed gates instead of hard block
-                    let (gate_ok, margin_ok, td_ok, bad_ok) = if in_bad_regime {
+                    let (gate_ok, margin_ok, proto_ok, td_ok, bad_ok) = if in_bad_regime {
                         // Relaxed gates for bad-regime
                         let gate_ok = !config.soft_proto_bad_require_gate || gate_passed;
                         let margin_ok = topk_margin >= config.soft_proto_bad_margin_min as f64;
                         let td_ok = recent_td <= config.soft_proto_bad_td_max;
                         // In bad-regime, also require minimum proto alignment
                         let proto_ok = proto_align >= config.soft_proto_bad_proto_min;
-                        (gate_ok, margin_ok && proto_ok, td_ok, true) // bad_ok is always true in bad-regime path
+                        (gate_ok, margin_ok, proto_ok, td_ok, true) // bad_ok is always true in bad-regime path
                     } else {
                         // Normal gates (not in bad-regime)
                         let gate_ok = !config.soft_proto_update_require_gate || gate_passed;
@@ -1770,19 +1813,29 @@ pub fn run_single_seed_full(
                             && topk_margin < config.rescue_bad_margin
                             && anchor_value < config.rescue_bad_value;
                         let bad_ok = !config.soft_proto_update_block_when_bad || !is_bad_state;
-                        (gate_ok, margin_ok, td_ok, bad_ok)
+                        (gate_ok, margin_ok, true, td_ok, bad_ok) // proto_ok always true in normal path
                     };
 
                     // Track TD-specific blocks separately
-                    let quality_ok = period_ok && gate_ok && margin_ok && bad_ok;
+                    let quality_ok = period_ok && gate_ok && margin_ok && proto_ok && bad_ok;
                     if quality_ok && !td_ok {
                         mode_policy.state.soft_exploit_td_blocked += 1;
                     }
 
                     let allowed = quality_ok && td_ok;
 
-                    // Phase 2.1v: Track bad-regime proto decisions
+                    // Phase 2.1w: Track quality-pass in bad-regime (without period_ok)
                     if in_bad_regime {
+                        let quality_pass = gate_ok && margin_ok && proto_ok && td_ok;
+                        if quality_pass {
+                            mode_policy.state.soft_proto_bad_regime_quality_pass += 1;
+                        } else {
+                            mode_policy.state.soft_proto_bad_regime_quality_fail += 1;
+                        }
+                        if !period_ok && quality_pass {
+                            mode_policy.state.soft_proto_bad_regime_period_block += 1;
+                        }
+                        // Phase 2.1v: Track bad-regime proto decisions (applied update rate)
                         mode_policy.record_bad_regime_proto(allowed);
                     }
 
@@ -2113,6 +2166,10 @@ pub fn run_single_seed_full(
         // Phase 2.1v: Bad-regime proto repair metrics
         soft_proto_bad_regime_allowed: mode_stats.soft_proto_bad_regime_allowed,
         soft_proto_bad_regime_blocked: mode_stats.soft_proto_bad_regime_blocked,
+        // Phase 2.1w: Quality-pass tracking in bad-regime
+        soft_proto_bad_regime_quality_pass: mode_stats.soft_proto_bad_regime_quality_pass,
+        soft_proto_bad_regime_quality_fail: mode_stats.soft_proto_bad_regime_quality_fail,
+        soft_proto_bad_regime_period_block: mode_stats.soft_proto_bad_regime_period_block,
     };
 
     (run, lift_stats, diag)
