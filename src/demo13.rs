@@ -220,6 +220,11 @@ pub struct SeedDiagnostics {
     pub focus_rate: f64,
     // Phase 2.2a: Post-rescue stability grace metrics
     pub post_rescue_grace_exploit_ticks: usize,
+    // Phase 2.2a: Post-rescue quality repair metrics
+    pub post_rescue_repair_triggers: u32,
+    pub post_rescue_repair_active_ticks: u32,
+    pub post_rescue_repair_perturb_count: u32,
+    pub post_rescue_repair_active_share: f64,
 }
 
 /// Phase 2.1b: Warmup stats collector for adaptive thresholds.
@@ -728,17 +733,17 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
         mean_td_improve,
     );
 
-    // Phase 2.1x: Consolidated Mode/State + Action diagnostic table
+    // Phase 2.2a: Consolidated Mode/State + Action diagnostic table (includes repair metrics)
     println!();
-    println!("Phase 2.1x: Consolidated Diagnostics (Mode + State + Actions):");
+    println!("Phase 2.2a: Consolidated Diagnostics (Mode + State + Actions + Repair):");
     println!(
-        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     println!(
-        "  Seed       | explore% | exploit% | stable% | bad%  | rescues | scan%  | focus% | perturb% | hard_expl | soft_expl | soft_share | grace_ticks"
+        "  Seed       | explore% | exploit% | stable% | bad%  | rescues | scan%  | perturb% | repair_trg | repair_pert | repair_act%"
     );
     println!(
-        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
     for d in diagnostics {
         let collapse_marker = if d.explore_rate > 0.25
@@ -751,7 +756,7 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
             ""
         };
         println!(
-            "  0x{:08X} | {:6.1}%  | {:6.1}%  | {:5.1}%  | {:4.1}% | {:7} | {:5.1}% | {:5.1}% | {:7.1}%  | {:9} | {:9} | {:9.1}% | {:11}{}",
+            "  0x{:08X} | {:6.1}%  | {:6.1}%  | {:5.1}%  | {:4.1}% | {:7} | {:5.1}% | {:7.1}%  | {:10} | {:11} | {:10.1}%{}",
             d.seed,
             d.explore_rate * 100.0,
             d.exploit_rate * 100.0,
@@ -759,17 +764,15 @@ fn print_diagnostics_table(diagnostics: &[SeedDiagnostics]) {
             d.bad_state_share * 100.0,
             d.rescue_count,
             d.scan_rate * 100.0,
-            d.focus_rate * 100.0,
             d.perturb_rate * 100.0,
-            d.exploit_hard_count,
-            d.exploit_soft_count,
-            d.exploit_soft_share * 100.0,
-            d.post_rescue_grace_exploit_ticks,
+            d.post_rescue_repair_triggers,
+            d.post_rescue_repair_perturb_count,
+            d.post_rescue_repair_active_share * 100.0,
             collapse_marker,
         );
     }
     println!(
-        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+        "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
     );
 
     // Phase 2.1x: "Why Scan?" breakdown
@@ -1883,6 +1886,27 @@ pub fn run_single_seed_full(
                 }
             }
 
+            // Phase 2.2a: Apply post-rescue repair override
+            // During post-rescue repair window, trigger Perturb when quality is bad
+            if action != Action::Perturb
+                && trigger_reason.is_none()
+                && mode_policy.is_post_rescue_repair_active()
+            {
+                let repair_quality_bad = mode_policy.is_repair_quality_bad();
+                let perturb_prob = mode_policy.get_repair_perturb_prob();
+                let perturb_cap = mode_policy.get_repair_perturb_cap();
+
+                if let Some(repair_action) = action_policy
+                    .apply_post_rescue_repair_override(repair_quality_bad, perturb_prob, perturb_cap)
+                {
+                    action = repair_action;
+                    action_policy
+                        .triggers
+                        .on_perturb(config.perturb_cooldown_ticks);
+                    mode_policy.record_repair_perturb();
+                }
+            }
+
             // Phase 2.1e: Enforce perturb budget cap (BEFORE min perturb guard)
             // If over budget and action is Perturb (not from Reset mode), downgrade to Focus
             if action == Action::Perturb && mode != Mode::Reset {
@@ -2209,6 +2233,10 @@ pub fn run_single_seed_full(
         0.0
     };
 
+    // Phase 2.2a: Get post-rescue repair stats
+    let (repair_triggers, repair_active_ticks, repair_perturb_count, _repair_remaining) =
+        mode_policy.repair_stats();
+
     let diag = SeedDiagnostics {
         seed,
         proto_align_mean: if !warmup_stats.proto_samples.is_empty() {
@@ -2396,6 +2424,15 @@ pub fn run_single_seed_full(
         focus_rate: run.focus_rate,
         // Phase 2.2a: Post-rescue stability grace metrics
         post_rescue_grace_exploit_ticks: mode_stats.post_rescue_grace_exploit_ticks,
+        // Phase 2.2a: Post-rescue quality repair metrics
+        post_rescue_repair_triggers: repair_triggers,
+        post_rescue_repair_active_ticks: repair_active_ticks,
+        post_rescue_repair_perturb_count: repair_perturb_count,
+        post_rescue_repair_active_share: if total_ticks > 0 {
+            repair_active_ticks as f64 / total_ticks as f64
+        } else {
+            0.0
+        },
     };
 
     (run, lift_stats, diag)

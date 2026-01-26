@@ -654,6 +654,26 @@ pub struct Config {
     pub max_cross_partition_merges_per_scan: u32,
 
     // =========================================================================
+    // Phase 2.2a: Post-Rescue Quality Repair (replace stability grace)
+    // =========================================================================
+    /// Enable post-rescue repair window (replaces post-rescue stability grace).
+    pub post_rescue_repair_enabled: bool,
+    /// Duration of repair window after rescue (ticks).
+    pub post_rescue_repair_ticks: u32,
+    /// Cooldown after repair window before next repair can trigger.
+    pub post_rescue_repair_cooldown: u32,
+    /// Probability of choosing Perturb during repair when quality is bad.
+    pub post_rescue_repair_perturb_prob: f32,
+    /// Maximum perturb rate to allow during repair (safety cap).
+    pub post_rescue_repair_perturb_cap: f32,
+    /// Stable share threshold below which repair is triggered.
+    pub post_rescue_repair_trigger_stable_lo: f32,
+    /// Bad share threshold above which repair is triggered.
+    pub post_rescue_repair_trigger_bad_hi: f32,
+    /// TD threshold above which repair is triggered.
+    pub post_rescue_repair_trigger_td_hi: f32,
+
+    // =========================================================================
     // Phase 1.9b: Stability Hysteresis (flicker elimination)
     // =========================================================================
     /// Minimum proto_support to ENTER stable state.
@@ -821,7 +841,7 @@ impl Default for Config {
 
             // Phase 2.1b: Seed-Robust Policy Stabilization defaults
             min_exploit_ticks_on: 100, // Phase 2.1k: stickier exploit
-            explore_streak_rescue: 80, // Phase 2.1j: stop rescue spam
+            explore_streak_rescue: 120, // Phase 2.2a: increased from 80 to reduce rescue spam
             fail_streak_rescue: 4,     // Rescue earlier on gate-fail cascades
             rescue_cooldown: 320,      // Phase 2.1j: stop rescue spam
             post_reset_exploit_boost_ticks: 80, // Phase 2.1j: reduced stickiness
@@ -983,7 +1003,7 @@ impl Default for Config {
 
             // Phase 2.0a: Mode Policy defaults
             enable_mode_policy: true,
-            mode_explore_v_max: 0.25, // Phase 2.2a: reduce Explore rate for worst-seed improvement
+            mode_explore_v_max: 0.18, // Phase 2.2a: reduce Explore rate (was 0.25 → 0.18 balanced)
             mode_exploit_v_min: 0.60, // Phase 2.1k: reduce fallback exploit
             mode_reset_td_min: 0.35,  // TD threshold for reset (stable_avg ~0.27)
             mode_reset_value_drop: 1.0, // Disabled
@@ -1039,6 +1059,16 @@ impl Default for Config {
             value_eps_cross_mask: 0.18, // Max |dv| for cross-mask merges (was 0.15)
             allow_mid_stable_cross_mode: true, // Allow Mid<->Stable (both must be stable)
             max_cross_partition_merges_per_scan: 24, // Phase 1.9e: 48 -> 24 (more conservative to allow stable accumulation)
+
+            // Phase 2.2a: Post-Rescue Quality Repair defaults
+            post_rescue_repair_enabled: true,
+            post_rescue_repair_ticks: 500,         // Longer repair window
+            post_rescue_repair_cooldown: 600,      // Shorter cooldown for more frequent repair
+            post_rescue_repair_perturb_prob: 0.60, // Higher prob to break bad attractors
+            post_rescue_repair_perturb_cap: 0.045, // Allow more perturbs during repair
+            post_rescue_repair_trigger_stable_lo: 0.65, // Stricter stable threshold
+            post_rescue_repair_trigger_bad_hi: 0.20,    // Lower bad threshold
+            post_rescue_repair_trigger_td_hi: 0.22,     // Lower TD threshold
 
             // Phase 1.9e Option A: Stability hysteresis (very easy entry, stickier state)
             stable_min_support_enter: 18, // Phase 1.9e: 30 -> 18 (very easy entry)

@@ -1530,4 +1530,38 @@ impl ActionPolicy {
     pub fn burst_episode_count(&self) -> usize {
         self.burst_episodes.len()
     }
+
+    // =========================================================================
+    // Phase 2.2a: Post-Rescue Quality Repair Override
+    // =========================================================================
+
+    /// Phase 2.2a: Apply post-rescue repair override to action selection.
+    /// Returns Some(Action::Perturb) if repair should override, None otherwise.
+    /// Called when ModePolicy.is_post_rescue_repair_active() is true.
+    pub fn apply_post_rescue_repair_override(
+        &mut self,
+        repair_quality_bad: bool,
+        perturb_prob: f32,
+        perturb_cap: f32,
+    ) -> Option<Action> {
+        // Only override if quality is bad
+        if !repair_quality_bad {
+            return None;
+        }
+
+        // Check budget cap - don't perturb if already over cap
+        if let Some(ref budget) = self.budget {
+            if budget.perturb_rate() >= perturb_cap {
+                return None;
+            }
+        }
+
+        // Apply perturb probability
+        let rand_val = self.repair_rng_next();
+        if rand_val < perturb_prob {
+            Some(Action::Perturb)
+        } else {
+            None
+        }
+    }
 }

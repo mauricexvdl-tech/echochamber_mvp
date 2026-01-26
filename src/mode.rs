@@ -295,6 +295,24 @@ pub struct ModePolicyConfig {
     pub rescue_max_per_10k: u32,
     /// Extended cooldown when rescue throttle is active.
     pub rescue_throttle_cooldown: u32,
+
+    // Phase 2.2a: Post-rescue quality repair (replaces stability grace)
+    /// Enable post-rescue repair window.
+    pub post_rescue_repair_enabled: bool,
+    /// Duration of repair window after rescue.
+    pub post_rescue_repair_ticks: u32,
+    /// Cooldown after repair window.
+    pub post_rescue_repair_cooldown: u32,
+    /// Probability of Perturb during repair when quality is bad.
+    pub post_rescue_repair_perturb_prob: f32,
+    /// Max perturb rate during repair (safety cap).
+    pub post_rescue_repair_perturb_cap: f32,
+    /// Stable share threshold for repair trigger.
+    pub post_rescue_repair_trigger_stable_lo: f32,
+    /// Bad share threshold for repair trigger.
+    pub post_rescue_repair_trigger_bad_hi: f32,
+    /// TD threshold for repair trigger.
+    pub post_rescue_repair_trigger_td_hi: f32,
 }
 
 impl Default for ModePolicyConfig {
@@ -364,6 +382,16 @@ impl Default for ModePolicyConfig {
             // Phase 2.1n: Quality-aware actions + rescue throttle
             rescue_max_per_10k: 15,
             rescue_throttle_cooldown: 500,
+
+            // Phase 2.2a: Post-rescue quality repair defaults
+            post_rescue_repair_enabled: true,
+            post_rescue_repair_ticks: 500,
+            post_rescue_repair_cooldown: 600,
+            post_rescue_repair_perturb_prob: 0.60,
+            post_rescue_repair_perturb_cap: 0.045,
+            post_rescue_repair_trigger_stable_lo: 0.65,
+            post_rescue_repair_trigger_bad_hi: 0.20,
+            post_rescue_repair_trigger_td_hi: 0.22,
         }
     }
 }
@@ -434,6 +462,16 @@ impl ModePolicyConfig {
             // Phase 2.1n: Quality-aware actions + rescue throttle
             rescue_max_per_10k: config.rescue_max_per_10k,
             rescue_throttle_cooldown: config.rescue_throttle_cooldown,
+
+            // Phase 2.2a: Post-rescue quality repair
+            post_rescue_repair_enabled: config.post_rescue_repair_enabled,
+            post_rescue_repair_ticks: config.post_rescue_repair_ticks,
+            post_rescue_repair_cooldown: config.post_rescue_repair_cooldown,
+            post_rescue_repair_perturb_prob: config.post_rescue_repair_perturb_prob,
+            post_rescue_repair_perturb_cap: config.post_rescue_repair_perturb_cap,
+            post_rescue_repair_trigger_stable_lo: config.post_rescue_repair_trigger_stable_lo,
+            post_rescue_repair_trigger_bad_hi: config.post_rescue_repair_trigger_bad_hi,
+            post_rescue_repair_trigger_td_hi: config.post_rescue_repair_trigger_td_hi,
         }
     }
 }
@@ -729,7 +767,19 @@ pub struct ModePolicyState {
     /// Phase 2.1w: Blocked by period even though quality passed.
     pub soft_proto_bad_regime_period_block: usize,
 
-    // Phase 2.2a: Post-rescue stability grace tracking
+    // Phase 2.2a: Post-rescue quality repair (replaces stability grace)
+    /// Remaining ticks in post-rescue repair window.
+    pub post_rescue_repair_remaining: u32,
+    /// Cooldown remaining after repair window.
+    pub post_rescue_repair_cooldown_remaining: u32,
+    /// Total repair windows triggered.
+    pub post_rescue_repair_triggers: u32,
+    /// Total ticks spent in repair window (active).
+    pub post_rescue_repair_active_ticks: u32,
+    /// Perturbs triggered during repair window.
+    pub post_rescue_repair_perturb_count: u32,
+
+    // Phase 2.2a: Post-rescue stability grace tracking (legacy, to be removed)
     /// Ticks where post-rescue grace was used for stable_ok AND final mode is Exploit.
     pub post_rescue_grace_exploit_ticks: usize,
 }
@@ -857,7 +907,14 @@ impl ModePolicyState {
             soft_proto_bad_regime_quality_fail: 0,
             soft_proto_bad_regime_period_block: 0,
 
-            // Phase 2.2a: Post-rescue stability grace tracking
+            // Phase 2.2a: Post-rescue quality repair state
+            post_rescue_repair_remaining: 0,
+            post_rescue_repair_cooldown_remaining: 0,
+            post_rescue_repair_triggers: 0,
+            post_rescue_repair_active_ticks: 0,
+            post_rescue_repair_perturb_count: 0,
+
+            // Phase 2.2a: Post-rescue stability grace tracking (legacy)
             post_rescue_grace_exploit_ticks: 0,
         }
     }
@@ -974,6 +1031,15 @@ impl ModePolicy {
         if self.state.post_rescue_lock_remaining > 0 {
             self.state.post_rescue_lock_remaining -= 1;
             self.state.post_rescue_lock_total_ticks += 1;
+        }
+
+        // Phase 2.2a: Decrement post-rescue repair window and cooldown
+        if self.state.post_rescue_repair_remaining > 0 {
+            self.state.post_rescue_repair_remaining -= 1;
+            self.state.post_rescue_repair_active_ticks += 1;
+        }
+        if self.state.post_rescue_repair_cooldown_remaining > 0 {
+            self.state.post_rescue_repair_cooldown_remaining -= 1;
         }
 
         // Phase 2.1g: Update chronic lock state
@@ -1125,8 +1191,14 @@ impl ModePolicy {
             || value_drop >= self.config.catastrophic_value_drop;
 
         // Phase 2.1l: Compute can_exploit EARLY for quality-gated locks
-        // Phase 2.2a: Add post-rescue stability grace (allow Exploit even if stability hasn't recovered)
-        let in_post_rescue_grace = self.state.post_reset_boost_remaining > 0;
+        // Phase 2.2a: Quality-gated stability grace
+        // - Grace is only allowed when quality is reasonable (not in repair-bad state)
+        // - This prevents forcing Exploit on truly bad signal while still allowing recovery
+        let in_boost_window = self.state.post_reset_boost_remaining > 0;
+        let quality_reasonable = self.state.chronic_stable_share_ema
+            >= self.config.post_rescue_repair_trigger_stable_lo * 0.9
+            && self.state.chronic_bad_share_ema <= self.config.post_rescue_repair_trigger_bad_hi * 1.2;
+        let in_post_rescue_grace = in_boost_window && quality_reasonable;
         let stable_ok = in_post_rescue_grace
             || !self.config.exploit_requires_stable
             || self.state.last_is_stable;
@@ -1259,6 +1331,16 @@ impl ModePolicy {
 
             // Phase 2.1c: Set post-rescue lock
             self.state.post_rescue_lock_remaining = self.config.post_rescue_lock_ticks;
+
+            // Phase 2.2a: Start post-rescue repair window (if enabled and cooldown expired)
+            if self.config.post_rescue_repair_enabled
+                && self.state.post_rescue_repair_cooldown_remaining == 0
+            {
+                self.state.post_rescue_repair_remaining = self.config.post_rescue_repair_ticks;
+                self.state.post_rescue_repair_cooldown_remaining =
+                    self.config.post_rescue_repair_cooldown;
+                self.state.post_rescue_repair_triggers += 1;
+            }
 
             // Record pre-reset TD for effectiveness
             let pre_td_values = self.state.recent_abs_td.last_n(10);
@@ -1739,6 +1821,52 @@ impl ModePolicy {
         } else {
             self.state.soft_proto_bad_regime_blocked += 1;
         }
+    }
+
+    // =========================================================================
+    // Phase 2.2a: Post-rescue quality repair methods
+    // =========================================================================
+
+    /// Phase 2.2a: Check if post-rescue repair window is active.
+    pub fn is_post_rescue_repair_active(&self) -> bool {
+        self.state.post_rescue_repair_remaining > 0
+    }
+
+    /// Phase 2.2a: Check if current quality is "bad" for repair purposes.
+    /// Uses rolling EMA stats from chronic window.
+    pub fn is_repair_quality_bad(&self) -> bool {
+        let stable_share = self.state.chronic_stable_share_ema;
+        let bad_share = self.state.chronic_bad_share_ema;
+        let recent_td = self.state.recent_abs_td.mean();
+
+        stable_share < self.config.post_rescue_repair_trigger_stable_lo
+            || bad_share > self.config.post_rescue_repair_trigger_bad_hi
+            || recent_td > self.config.post_rescue_repair_trigger_td_hi
+    }
+
+    /// Phase 2.2a: Get the perturb probability for repair window.
+    pub fn get_repair_perturb_prob(&self) -> f32 {
+        self.config.post_rescue_repair_perturb_prob
+    }
+
+    /// Phase 2.2a: Get the perturb cap for repair window.
+    pub fn get_repair_perturb_cap(&self) -> f32 {
+        self.config.post_rescue_repair_perturb_cap
+    }
+
+    /// Phase 2.2a: Record that a perturb was triggered during repair.
+    pub fn record_repair_perturb(&mut self) {
+        self.state.post_rescue_repair_perturb_count += 1;
+    }
+
+    /// Phase 2.2a: Get repair stats for diagnostics.
+    pub fn repair_stats(&self) -> (u32, u32, u32, u32) {
+        (
+            self.state.post_rescue_repair_triggers,
+            self.state.post_rescue_repair_active_ticks,
+            self.state.post_rescue_repair_perturb_count,
+            self.state.post_rescue_repair_remaining,
+        )
     }
 
     /// Phase 2.1o: Get write override based on current mode and exploit quality.
