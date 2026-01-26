@@ -903,7 +903,7 @@ impl Default for Config {
             // Phase 2.1q: Adaptive soft proto update period defaults
             soft_proto_adaptive_enabled: true,
             soft_proto_period_good: 0,         // P0 in good regime
-            soft_proto_period_bad: 8,          // P8 in bad regime (Phase 2.1v: reduced from 12)
+            soft_proto_period_bad: 5,          // P5 in bad regime (Phase 2.2b: 8->5, more updates for recovery)
             soft_proto_bad_stable_lo: 0.55,    // Enter bad if stable < 55%
             soft_proto_bad_bad_hi: 0.28,       // Enter bad if bad > 28%
             soft_proto_bad_explore_hi: 0.25,   // Enter bad if explore > 25%
@@ -952,7 +952,7 @@ impl Default for Config {
             chronic_window_ticks: 500,     // Sliding window for raw stats
             chronic_share_ema_alpha: 0.05, // EMA smoothing (slower response)
             chronic_bad_share_hi: 0.35,    // ENTER if bad_ema > 35%
-            chronic_stable_share_lo: 0.50, // ENTER if stable_ema < 50%
+            chronic_stable_share_lo: 0.42, // ENTER if stable_ema < 42% (Phase 2.2b: 0.50->0.42, less aggressive)
             chronic_enter_hold_ticks: 400, // Enter-hold window (longer)
             chronic_enter_hold_tolerance: 0.02, // Require 98% pass-rate
             chronic_exit_bad_max: 0.25,    // EXIT if bad_ema < 25% AND stable_ema > 55%
@@ -1086,7 +1086,7 @@ impl Default for Config {
             rescue_oscillation_damping_enabled: true,
             rescue_oscillation_stable_threshold: 0.50, // If stable_share < 50% after lock, extend cooldown
             rescue_oscillation_bad_threshold: 0.25,    // If bad_share > 25% after lock, extend cooldown
-            rescue_oscillation_cooldown_multiplier: 2.0, // Double the cooldown on oscillation
+            rescue_oscillation_cooldown_multiplier: 3.0, // Triple the cooldown on oscillation (Phase 2.2b: 2.0->3.0)
 
             // Phase 1.9e Option A: Stability hysteresis (very easy entry, stickier state)
             stable_min_support_enter: 18, // Phase 1.9e: 30 -> 18 (very easy entry)
