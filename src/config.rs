@@ -785,13 +785,13 @@ impl Default for Config {
             // Phase 2.2b: Topology configuration defaults
             topology_kind: TopologyKind::SmallWorld,
             topology_seed: 0xC0FFEE,
-            sw_k: 8,       // Even, >= 2 (each node connects to k neighbors)
-            sw_beta: 0.05, // Low rewiring probability for clustering
+            sw_k: 8,       // Best tested value
+            sw_beta: 0.05, // Best tested value - low rewiring keeps clustering
             // Phase 2.2d: Probing tests multiple layouts and picks the best
             injector_layout: InjectorLayout::Probing,
             injector_seed: 0, // 0 = use topology_seed as base
-            probe_num_candidates: 6,  // Test 6 different layouts per seed
-            probe_episodes: 30,       // 30 episodes per probe (quick but informative)
+            probe_num_candidates: 12, // Test 12 different layouts per seed (was 6)
+            probe_episodes: 50,       // 50 episodes per probe (was 30)
 
             // Dynamics
             decay_per_tick: 0.08,
