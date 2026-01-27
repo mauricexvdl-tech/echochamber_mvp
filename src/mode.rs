@@ -20,6 +20,93 @@ impl Default for Mode {
 }
 
 // ============================================================================
+// Phase 2.2b: Extracted Diagnostics Struct
+// ============================================================================
+
+/// Diagnostic/instrumentation data extracted from ModePolicyState.
+/// This struct contains counters and metrics that are NOT used for policy decisions,
+/// only for reporting and analysis. Keeping them separate clarifies what state is
+/// truly operational vs. what is just instrumentation.
+#[derive(Clone, Debug, Default)]
+pub struct ModePolicyDiagnostics {
+    // Mode counters
+    pub explore_count: usize,
+    pub exploit_count: usize,
+    pub reset_count: usize,
+
+    // Gate pass counts
+    pub gate_pass_explore: usize,
+    pub gate_pass_exploit: usize,
+    pub gate_total_explore: usize,
+    pub gate_total_exploit: usize,
+
+    // Exploit quality instrumentation
+    pub exploit_hard_count: usize,
+    pub exploit_soft_count: usize,
+    pub bad_in_explore_count: usize,
+    pub bad_in_exploit_count: usize,
+    pub bad_in_reset_count: usize,
+
+    // Lock tracking
+    pub exploit_forced_while_not_ready: usize,
+    pub exploit_lock_dropped: usize,
+    pub can_exploit_fail_streak_max: u32,
+    pub lock_force_success: usize,
+    pub lock_force_grace_used: usize,
+
+    // Action counts during exploit modes
+    pub hard_exploit_scan_count: usize,
+    pub hard_exploit_focus_count: usize,
+    pub hard_exploit_perturb_count: usize,
+    pub soft_exploit_scan_count: usize,
+    pub soft_exploit_focus_count: usize,
+    pub soft_exploit_perturb_count: usize,
+
+    // Soft-exploit quarantine stats
+    pub soft_exploit_store_blocked: usize,
+    pub soft_exploit_proto_blocked: usize,
+    pub soft_exploit_merge_blocked: usize,
+    pub soft_exploit_proto_allowed: usize,
+    pub soft_exploit_td_blocked: usize,
+
+    // Adaptive proto period stats
+    pub soft_proto_bad_active_ticks: u32,
+    pub soft_proto_effective_period_sum: u64,
+    pub soft_proto_bad_regime_allowed: usize,
+    pub soft_proto_bad_regime_blocked: usize,
+    pub soft_proto_bad_regime_quality_pass: usize,
+    pub soft_proto_bad_regime_quality_fail: usize,
+    pub soft_proto_bad_regime_period_block: usize,
+
+    // Chronic clamp stats
+    pub chronic_lock_total_ticks: usize,
+    pub chronic_enter_count: u32,
+    pub chronic_exit_count: u32,
+    pub chronic_enter_by_bad: u32,
+    pub chronic_enter_by_unstable: u32,
+    pub chronic_exit_by_watchdog: u32,
+
+    // Post-rescue stats
+    pub post_rescue_lock_total_ticks: usize,
+    pub post_rescue_repair_triggers: u32,
+    pub post_rescue_repair_active_ticks: u32,
+    pub post_rescue_repair_perturb_count: u32,
+    pub post_rescue_grace_exploit_ticks: usize,
+
+    // Streak maxes
+    pub explore_streak_max: u32,
+    pub exploit_streak_max: u32,
+    pub gate_fail_streak_max: u32,
+
+    // Reset effectiveness
+    pub reset_effectiveness_sum: f64,
+    pub reset_effectiveness_count: usize,
+
+    // Rescue count
+    pub rescue_count: usize,
+}
+
+// ============================================================================
 // Phase 2.1o: Write override for soft-exploit quarantine
 // ============================================================================
 
@@ -948,6 +1035,88 @@ impl ModePolicyState {
             // Phase 2.2b: Rescue oscillation damping state
             rescue_oscillation_count: 0,
             rescue_oscillation_extra_cooldown: 0,
+        }
+    }
+
+    /// Extract diagnostic fields into a separate struct.
+    /// This separates instrumentation from operational state.
+    pub fn diagnostics(&self) -> ModePolicyDiagnostics {
+        ModePolicyDiagnostics {
+            // Mode counters
+            explore_count: self.explore_count,
+            exploit_count: self.exploit_count,
+            reset_count: self.reset_count,
+
+            // Gate pass counts
+            gate_pass_explore: self.gate_pass_explore,
+            gate_pass_exploit: self.gate_pass_exploit,
+            gate_total_explore: self.gate_total_explore,
+            gate_total_exploit: self.gate_total_exploit,
+
+            // Exploit quality instrumentation
+            exploit_hard_count: self.exploit_hard_count,
+            exploit_soft_count: self.exploit_soft_count,
+            bad_in_explore_count: self.bad_in_explore_count,
+            bad_in_exploit_count: self.bad_in_exploit_count,
+            bad_in_reset_count: self.bad_in_reset_count,
+
+            // Lock tracking
+            exploit_forced_while_not_ready: self.exploit_forced_while_not_ready,
+            exploit_lock_dropped: self.exploit_lock_dropped,
+            can_exploit_fail_streak_max: self.can_exploit_fail_streak_max,
+            lock_force_success: self.lock_force_success,
+            lock_force_grace_used: self.lock_force_grace_used,
+
+            // Action counts during exploit modes
+            hard_exploit_scan_count: self.hard_exploit_scan_count,
+            hard_exploit_focus_count: self.hard_exploit_focus_count,
+            hard_exploit_perturb_count: self.hard_exploit_perturb_count,
+            soft_exploit_scan_count: self.soft_exploit_scan_count,
+            soft_exploit_focus_count: self.soft_exploit_focus_count,
+            soft_exploit_perturb_count: self.soft_exploit_perturb_count,
+
+            // Soft-exploit quarantine stats
+            soft_exploit_store_blocked: self.soft_exploit_store_blocked,
+            soft_exploit_proto_blocked: self.soft_exploit_proto_blocked,
+            soft_exploit_merge_blocked: self.soft_exploit_merge_blocked,
+            soft_exploit_proto_allowed: self.soft_exploit_proto_allowed,
+            soft_exploit_td_blocked: self.soft_exploit_td_blocked,
+
+            // Adaptive proto period stats
+            soft_proto_bad_active_ticks: self.soft_proto_bad_active_ticks,
+            soft_proto_effective_period_sum: self.soft_proto_effective_period_sum,
+            soft_proto_bad_regime_allowed: self.soft_proto_bad_regime_allowed,
+            soft_proto_bad_regime_blocked: self.soft_proto_bad_regime_blocked,
+            soft_proto_bad_regime_quality_pass: self.soft_proto_bad_regime_quality_pass,
+            soft_proto_bad_regime_quality_fail: self.soft_proto_bad_regime_quality_fail,
+            soft_proto_bad_regime_period_block: self.soft_proto_bad_regime_period_block,
+
+            // Chronic clamp stats
+            chronic_lock_total_ticks: self.chronic_lock_total_ticks,
+            chronic_enter_count: self.chronic_enter_count,
+            chronic_exit_count: self.chronic_exit_count,
+            chronic_enter_by_bad: self.chronic_enter_by_bad,
+            chronic_enter_by_unstable: self.chronic_enter_by_unstable,
+            chronic_exit_by_watchdog: self.chronic_exit_by_watchdog,
+
+            // Post-rescue stats
+            post_rescue_lock_total_ticks: self.post_rescue_lock_total_ticks,
+            post_rescue_repair_triggers: self.post_rescue_repair_triggers,
+            post_rescue_repair_active_ticks: self.post_rescue_repair_active_ticks,
+            post_rescue_repair_perturb_count: self.post_rescue_repair_perturb_count,
+            post_rescue_grace_exploit_ticks: self.post_rescue_grace_exploit_ticks,
+
+            // Streak maxes
+            explore_streak_max: self.explore_streak_max,
+            exploit_streak_max: self.exploit_streak_max,
+            gate_fail_streak_max: self.gate_fail_streak_max,
+
+            // Reset effectiveness
+            reset_effectiveness_sum: self.reset_effectiveness_sum,
+            reset_effectiveness_count: self.reset_effectiveness_count,
+
+            // Rescue count
+            rescue_count: self.rescue_count,
         }
     }
 }

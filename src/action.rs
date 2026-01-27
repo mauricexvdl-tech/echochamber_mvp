@@ -201,85 +201,69 @@ impl ActionPolicyStats {
         }
     }
 
-    pub fn gate_pass_rate(&self, action: Action) -> f64 {
+    // Phase 2.2b: Helper methods to reduce match duplication
+    /// Get raw stats for an action: (count, gate_pass, gate_total, abs_td_sum, value_sum, stable_ticks)
+    fn get_action_raw(&self, action: Action) -> (usize, usize, usize, f64, f64, usize) {
         match action {
-            Action::Scan => {
-                if self.scan_gate_total > 0 {
-                    self.scan_gate_pass as f64 / self.scan_gate_total as f64
-                } else {
-                    0.0
-                }
-            }
-            Action::Focus => {
-                if self.focus_gate_total > 0 {
-                    self.focus_gate_pass as f64 / self.focus_gate_total as f64
-                } else {
-                    0.0
-                }
-            }
-            Action::Perturb => {
-                if self.perturb_gate_total > 0 {
-                    self.perturb_gate_pass as f64 / self.perturb_gate_total as f64
-                } else {
-                    0.0
-                }
-            }
+            Action::Scan => (
+                self.scan_count,
+                self.scan_gate_pass,
+                self.scan_gate_total,
+                self.scan_abs_td_sum,
+                self.scan_value_sum,
+                self.scan_stable_ticks,
+            ),
+            Action::Focus => (
+                self.focus_count,
+                self.focus_gate_pass,
+                self.focus_gate_total,
+                self.focus_abs_td_sum,
+                self.focus_value_sum,
+                self.focus_stable_ticks,
+            ),
+            Action::Perturb => (
+                self.perturb_count,
+                self.perturb_gate_pass,
+                self.perturb_gate_total,
+                self.perturb_abs_td_sum,
+                self.perturb_value_sum,
+                self.perturb_stable_ticks,
+            ),
         }
+    }
+
+    /// Safe division helper: returns 0.0 if denominator is 0.
+    #[inline]
+    fn safe_div(num: f64, denom: usize) -> f64 {
+        if denom > 0 {
+            num / denom as f64
+        } else {
+            0.0
+        }
+    }
+
+    pub fn gate_pass_rate(&self, action: Action) -> f64 {
+        let (_, gate_pass, gate_total, _, _, _) = self.get_action_raw(action);
+        Self::safe_div(gate_pass as f64, gate_total)
     }
 
     pub fn mean_abs_td(&self, action: Action) -> f64 {
-        match action {
-            Action::Scan => {
-                if self.scan_count > 0 {
-                    self.scan_abs_td_sum / self.scan_count as f64
-                } else {
-                    0.0
-                }
-            }
-            Action::Focus => {
-                if self.focus_count > 0 {
-                    self.focus_abs_td_sum / self.focus_count as f64
-                } else {
-                    0.0
-                }
-            }
-            Action::Perturb => {
-                if self.perturb_count > 0 {
-                    self.perturb_abs_td_sum / self.perturb_count as f64
-                } else {
-                    0.0
-                }
-            }
-        }
+        let (count, _, _, abs_td_sum, _, _) = self.get_action_raw(action);
+        Self::safe_div(abs_td_sum, count)
     }
 
     pub fn mean_value(&self, action: Action) -> f64 {
-        match action {
-            Action::Scan => {
-                if self.scan_count > 0 {
-                    self.scan_value_sum / self.scan_count as f64
-                } else {
-                    0.0
-                }
-            }
-            Action::Focus => {
-                if self.focus_count > 0 {
-                    self.focus_value_sum / self.focus_count as f64
-                } else {
-                    0.0
-                }
-            }
-            Action::Perturb => {
-                if self.perturb_count > 0 {
-                    self.perturb_value_sum / self.perturb_count as f64
-                } else {
-                    0.0
-                }
-            }
-        }
+        let (count, _, _, _, value_sum, _) = self.get_action_raw(action);
+        Self::safe_div(value_sum, count)
     }
 
     pub fn stable_share(&self, action: Action) -> f64 {
+        let (count, _, _, _, _, stable_ticks) = self.get_action_raw(action);
+        Self::safe_div(stable_ticks as f64, count)
+    }
+
+    // Legacy methods kept for backwards compatibility
+    pub fn _stable_share_legacy(&self, action: Action) -> f64 {
         match action {
             Action::Scan => {
                 if self.scan_count > 0 {
@@ -322,7 +306,8 @@ impl ActionPolicyStats {
 // =============================================================================
 
 /// Tracks conditions that indicate "bad states" requiring intervention.
-#[derive(Clone, Debug, Default)]
+/// Phase 2.2b: Buffer sizes are now configurable instead of hardcoded.
+#[derive(Clone, Debug)]
 pub struct ActionTriggers {
     /// Consecutive ticks where gate failed.
     pub gate_fail_streak: u32,
@@ -334,12 +319,52 @@ pub struct ActionTriggers {
     pub value_drop_streak: u32,
     /// Cooldown counter (ticks since last perturb).
     pub cooldown: u32,
-    /// Rolling value buffer for drop detection.
-    value_buffer: [f32; 32],
+    /// Rolling value buffer for drop detection (configurable size).
+    value_buffer: Vec<f32>,
     /// Write index into value buffer.
     value_idx: usize,
     /// Number of values written.
     value_count: usize,
+    /// Buffer size (from config).
+    buffer_size: usize,
+    /// Minimum samples before drop detection (from config).
+    min_samples: usize,
+    /// Window size for average comparison (from config).
+    window_size: usize,
+}
+
+impl Default for ActionTriggers {
+    fn default() -> Self {
+        Self::new(32, 16, 8) // Legacy defaults
+    }
+}
+
+impl ActionTriggers {
+    /// Create with configurable buffer parameters.
+    pub fn new(buffer_size: usize, min_samples: usize, window_size: usize) -> Self {
+        Self {
+            gate_fail_streak: 0,
+            low_margin_streak: 0,
+            off_proto_streak: 0,
+            value_drop_streak: 0,
+            cooldown: 0,
+            value_buffer: vec![0.0; buffer_size],
+            value_idx: 0,
+            value_count: 0,
+            buffer_size,
+            min_samples,
+            window_size,
+        }
+    }
+
+    /// Create from config.
+    pub fn from_config(config: &crate::config::Config) -> Self {
+        Self::new(
+            config.action_trigger_buffer_size,
+            config.action_trigger_min_samples,
+            config.action_trigger_window_size,
+        )
+    }
 }
 
 /// Statistics for perturb trigger breakdown.
@@ -487,11 +512,8 @@ impl PerturbFloor {
 }
 
 impl ActionTriggers {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Update trigger state based on current tick observations.
+    /// Phase 2.2b: Uses configurable buffer_size, min_samples, window_size.
     pub fn update(
         &mut self,
         gate_passed: bool,
@@ -524,25 +546,31 @@ impl ActionTriggers {
         }
 
         // Update value buffer and compute drop streak
+        // Phase 2.2b: Uses configurable buffer_size instead of hardcoded 32
         self.value_buffer[self.value_idx] = anchor_value;
-        self.value_idx = (self.value_idx + 1) % 32;
-        if self.value_count < 32 {
+        self.value_idx = (self.value_idx + 1) % self.buffer_size;
+        if self.value_count < self.buffer_size {
             self.value_count += 1;
         }
 
         // Check for value drop (compare recent avg to older avg)
-        if self.value_count >= 16 {
-            let recent_start = (self.value_idx + 32 - 8) % 32;
-            let older_start = (self.value_idx + 32 - 24) % 32;
+        // Phase 2.2b: Uses configurable min_samples and window_size
+        if self.value_count >= self.min_samples {
+            let window = self.window_size;
+            let buffer_size = self.buffer_size;
+            // Recent window: last `window` samples
+            let recent_start = (self.value_idx + buffer_size - window) % buffer_size;
+            // Older window: samples from `window*3` to `window*2` ago
+            let older_start = (self.value_idx + buffer_size - window * 3) % buffer_size;
 
             let mut recent_sum = 0.0f32;
             let mut older_sum = 0.0f32;
-            for i in 0..8 {
-                recent_sum += self.value_buffer[(recent_start + i) % 32];
-                older_sum += self.value_buffer[(older_start + i) % 32];
+            for i in 0..window {
+                recent_sum += self.value_buffer[(recent_start + i) % buffer_size];
+                older_sum += self.value_buffer[(older_start + i) % buffer_size];
             }
-            let recent_avg = recent_sum / 8.0;
-            let older_avg = older_sum / 8.0;
+            let recent_avg = recent_sum / window as f32;
+            let older_avg = older_sum / window as f32;
 
             if older_avg - recent_avg > value_drop_threshold {
                 self.value_drop_streak += 1;
@@ -869,64 +897,16 @@ pub struct ActionPolicy {
 
 impl ActionPolicy {
     pub fn new(config: ActionConfig) -> Self {
-        Self {
-            config,
-            stats: ActionPolicyStats::new(),
-            triggers: ActionTriggers::new(),
-            trigger_stats: PerturbTriggerStats::new(),
-            floor: None,
-            budget: None,
-            // Phase 2.1r: Repair burst state
-            repair_bad_hold: 0,
-            repair_clear_hold: 0,
-            repair_burst_remaining: 0,
-            repair_burst_cooldown: 0,
-            repair_burst_trigger_count: 0,
-            repair_burst_total_ticks: 0,
-            repair_rng_state: 0x12345678,
-            // Phase 2.1s: Episodic burst state
-            burst_last_end_tick: 0,
-            burst_current_prob: 0.40,
-            burst_current_ticks: 30,
-            burst_consecutive_failures: 0,
-            burst_pre_metrics: None,
-            burst_start_tick: 0,
-            burst_metric_buffer: BurstMetricBuffer::new(500),
-            burst_post_window_remaining: 0,
-            burst_episodes: Vec::new(),
-            burst_effectiveness: BurstEffectivenessStats::new(),
-        }
+        Self::new_with_options(config, None, None)
     }
 
     /// Create with perturb floor enabled.
     pub fn new_with_floor(config: ActionConfig, floor_window: usize, floor_min_rate: f32) -> Self {
-        Self {
+        Self::new_with_options(
             config,
-            stats: ActionPolicyStats::new(),
-            triggers: ActionTriggers::new(),
-            trigger_stats: PerturbTriggerStats::new(),
-            floor: Some(PerturbFloor::new(floor_window, floor_min_rate)),
-            budget: None,
-            // Phase 2.1r: Repair burst state
-            repair_bad_hold: 0,
-            repair_clear_hold: 0,
-            repair_burst_remaining: 0,
-            repair_burst_cooldown: 0,
-            repair_burst_trigger_count: 0,
-            repair_burst_total_ticks: 0,
-            repair_rng_state: 0x12345678,
-            // Phase 2.1s: Episodic burst state
-            burst_last_end_tick: 0,
-            burst_current_prob: 0.40,
-            burst_current_ticks: 30,
-            burst_consecutive_failures: 0,
-            burst_pre_metrics: None,
-            burst_start_tick: 0,
-            burst_metric_buffer: BurstMetricBuffer::new(500),
-            burst_post_window_remaining: 0,
-            burst_episodes: Vec::new(),
-            burst_effectiveness: BurstEffectivenessStats::new(),
-        }
+            Some(PerturbFloor::new(floor_window, floor_min_rate)),
+            None,
+        )
     }
 
     /// Phase 2.1e: Create with perturb floor and budget cap enabled.
@@ -937,13 +917,26 @@ impl ActionPolicy {
         budget_window: usize,
         budget_max_rate: f32,
     ) -> Self {
+        Self::new_with_options(
+            config,
+            Some(PerturbFloor::new(floor_window, floor_min_rate)),
+            Some(PerturbBudget::new(budget_window, budget_max_rate)),
+        )
+    }
+
+    /// Phase 2.2b: Internal constructor to reduce duplication.
+    fn new_with_options(
+        config: ActionConfig,
+        floor: Option<PerturbFloor>,
+        budget: Option<PerturbBudget>,
+    ) -> Self {
         Self {
             config,
             stats: ActionPolicyStats::new(),
-            triggers: ActionTriggers::new(),
+            triggers: ActionTriggers::default(),
             trigger_stats: PerturbTriggerStats::new(),
-            floor: Some(PerturbFloor::new(floor_window, floor_min_rate)),
-            budget: Some(PerturbBudget::new(budget_window, budget_max_rate)),
+            floor,
+            budget,
             // Phase 2.1r: Repair burst state
             repair_bad_hold: 0,
             repair_clear_hold: 0,

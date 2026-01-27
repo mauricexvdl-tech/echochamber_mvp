@@ -654,6 +654,14 @@ pub struct Config {
     /// Cooldown ticks after perturb before next trigger allowed.
     pub perturb_cooldown_ticks: u32,
 
+    // Phase 2.2b: Action Trigger Buffer Configuration (was hardcoded as 32/16/8)
+    /// Size of rolling value buffer for drop detection.
+    pub action_trigger_buffer_size: usize,
+    /// Minimum samples needed before computing value drop.
+    pub action_trigger_min_samples: usize,
+    /// Window size for recent/older average comparison.
+    pub action_trigger_window_size: usize,
+
     // =========================================================================
     // Phase 1.9b: CONSOLIDATION (Aggressive merge scanning + flicker elimination)
     // =========================================================================
@@ -1105,6 +1113,11 @@ impl Default for Config {
             perturb_trig_value_drop: 0.08, // Value drop threshold
             perturb_trig_value_streak: 8, // Value drop streak threshold
             perturb_cooldown_ticks: 100,  // Cooldown after perturb
+
+            // Phase 2.2b: Action Trigger Buffer Configuration defaults
+            action_trigger_buffer_size: 32, // Rolling buffer size
+            action_trigger_min_samples: 16, // Min samples before drop detection
+            action_trigger_window_size: 8,  // Window for avg comparison
 
             // Phase 1.9e: CONSOLIDATION defaults (balanced merge + stable accumulation)
             merge_scan_period: 50, // Phase 1.9e: 40 -> 50 (less frequent for stable accumulation)
