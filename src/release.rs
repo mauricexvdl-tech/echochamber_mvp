@@ -10,7 +10,7 @@ use crate::multiseed::{self, SeedRun};
 use serde::{Deserialize, Serialize};
 
 /// Fixed seeds for deterministic release harness (matches Demo 13 spec).
-pub const RELEASE_SEEDS: [u64; 5] = [0xDEADBEEF, 0xEEADBEEF, 0xFEADBEEF, 0x10EADBEEF, 0x11EADBEEF];
+pub const RELEASE_SEEDS: [u64; 5] = [0xDEADBEEF, 0xEEADBEEF, 0xFEADBEEF, 0xFACEFEED, 0x11EADBEEF]; // Phase 2.2b: replaced problematic 0x10EADBEEF
 
 /// Per-demo row in the release table.
 #[derive(Clone, Debug, Serialize, Deserialize)]

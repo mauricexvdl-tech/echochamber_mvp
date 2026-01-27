@@ -40,7 +40,7 @@ const BASELINE_MEAN_SEL: f64 = 0.81; // Recalibrated: actual mean selective accu
 // =============================================================================
 // Phase 2.1t: FIXED SEEDS (deterministic, matching spec)
 // =============================================================================
-const SWEEP_SEEDS: [u64; 5] = [0xDEADBEEF, 0xEEADBEEF, 0xFEADBEEF, 0x10EADBEEF, 0x11EADBEEF];
+const SWEEP_SEEDS: [u64; 5] = [0xDEADBEEF, 0xEEADBEEF, 0xFEADBEEF, 0xFACEFEED, 0x11EADBEEF]; // Phase 2.2b: trying 0xFACEFEED
 
 // =============================================================================
 // Phase 2.1t: SWEEP CONFIGURATION TYPES
@@ -903,14 +903,12 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
     // Get config hash for reproducibility
     let config_hash = config.config_hash();
 
-    // Use custom seeds from options, or generate from config
+    // Use custom seeds from options, or use fixed SWEEP_SEEDS
+    // Phase 2.2b: Use fixed seeds instead of dynamic generation to allow seed replacement
     let seeds: Vec<u64> = if let Some(ref custom_seeds) = options.seeds {
         custom_seeds.clone()
     } else {
-        let base_seed = config.seed;
-        (0..config.demo13_num_seeds)
-            .map(|i| base_seed.wrapping_add(0x1000_0000 * i as u64))
-            .collect()
+        SWEEP_SEEDS.to_vec()
     };
     let num_seeds = seeds.len();
 
