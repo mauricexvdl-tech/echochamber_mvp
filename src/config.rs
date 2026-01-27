@@ -36,11 +36,14 @@ pub enum InjectorLayout {
     /// This ensures each simulation seed gets unique injector positions, avoiding
     /// pathological seed-topology combinations that cause chronic instability.
     SeedAdaptive,
+    /// Probing: Tests multiple layouts per seed and selects the best one.
+    /// Runs short probe phase for each candidate, measures quality, picks winner.
+    Probing,
 }
 
 impl Default for InjectorLayout {
     fn default() -> Self {
-        InjectorLayout::SeedAdaptive // Default to seed-adaptive for robustness
+        InjectorLayout::Probing // Default to probing for best robustness
     }
 }
 
@@ -61,10 +64,14 @@ pub struct Config {
     pub sw_k: usize,
     /// Small-World beta parameter (rewiring probability, 0.0 to 1.0).
     pub sw_beta: f32,
-    /// Injector layout strategy: Random or UniformSpread.
+    /// Injector layout strategy: Random, UniformSpread, SeedAdaptive, or Probing.
     pub injector_layout: InjectorLayout,
     /// Seed for injector placement (defaults to topology_seed if 0).
     pub injector_seed: u64,
+    /// Phase 2.2d: Number of candidate layouts to probe (for Probing mode).
+    pub probe_num_candidates: usize,
+    /// Phase 2.2d: Number of episodes to run per probe candidate.
+    pub probe_episodes: usize,
 
     // Dynamics
     pub decay_per_tick: f64,
@@ -780,9 +787,11 @@ impl Default for Config {
             topology_seed: 0xC0FFEE,
             sw_k: 8,       // Even, >= 2 (each node connects to k neighbors)
             sw_beta: 0.05, // Low rewiring probability for clustering
-            // Phase 2.2c: SeedAdaptive gives each seed unique injector positions
-            injector_layout: InjectorLayout::SeedAdaptive,
+            // Phase 2.2d: Probing tests multiple layouts and picks the best
+            injector_layout: InjectorLayout::Probing,
             injector_seed: 0, // 0 = use topology_seed as base
+            probe_num_candidates: 6,  // Test 6 different layouts per seed
+            probe_episodes: 30,       // 30 episodes per probe (quick but informative)
 
             // Dynamics
             decay_per_tick: 0.08,

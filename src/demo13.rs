@@ -81,6 +81,11 @@ pub struct TopologyCache {
     pub total_injectors: usize,
     /// Layout mode (needed for per-seed generation).
     pub layout: InjectorLayout,
+    /// Phase 2.2d: Probing config
+    pub probe_num_candidates: usize,
+    pub probe_episodes: usize,
+    /// Phase 2.2d: Cache of probed best layouts (sim_seed -> best_offset)
+    probed_layouts: std::cell::RefCell<std::collections::HashMap<u64, u64>>,
 }
 
 impl TopologyCache {
@@ -130,6 +135,15 @@ impl TopologyCache {
                 );
                 (Vec::new(), desc)
             }
+            InjectorLayout::Probing => {
+                // Don't pre-compute - will probe and select best layout per seed
+                let desc = format!(
+                    "Probing(M={}, base=0x{:X}, candidates={}, episodes={})",
+                    total_injectors, injector_seed,
+                    config.probe_num_candidates, config.probe_episodes
+                );
+                (Vec::new(), desc)
+            }
             InjectorLayout::Random => {
                 // Random injectors will be selected per-seed by Causes::new
                 let desc = "Random".to_string();
@@ -145,17 +159,33 @@ impl TopologyCache {
             injector_base_seed: injector_seed,
             total_injectors,
             layout: config.injector_layout,
+            probe_num_candidates: config.probe_num_candidates,
+            probe_episodes: config.probe_episodes,
+            probed_layouts: std::cell::RefCell::new(std::collections::HashMap::new()),
         }
     }
 
     /// Get injectors for a specific simulation seed.
     /// For SeedAdaptive layout, XORs base seed with simulation seed.
+    /// For Probing layout, uses cached best offset from probe phase.
     pub fn get_injectors_for_seed(&self, sim_seed: u64) -> Vec<usize> {
         match self.layout {
             InjectorLayout::SeedAdaptive => {
                 // XOR base seed with simulation seed for unique per-seed layout
                 let combined_seed = self.injector_base_seed ^ sim_seed;
                 uniform_spread_injectors(&self.adj, self.total_injectors, combined_seed)
+            }
+            InjectorLayout::Probing => {
+                // Check if we have a cached best offset for this seed
+                if let Some(&best_offset) = self.probed_layouts.borrow().get(&sim_seed) {
+                    let combined_seed = self.injector_base_seed ^ sim_seed ^ best_offset;
+                    uniform_spread_injectors(&self.adj, self.total_injectors, combined_seed)
+                } else {
+                    // No cached result - caller should run probe_best_layout first
+                    // Fall back to SeedAdaptive behavior (offset 0)
+                    let combined_seed = self.injector_base_seed ^ sim_seed;
+                    uniform_spread_injectors(&self.adj, self.total_injectors, combined_seed)
+                }
             }
             InjectorLayout::UniformSpread => {
                 // Return cached injectors
@@ -168,15 +198,110 @@ impl TopologyCache {
         }
     }
 
+    /// Generate candidate injector offsets for probing.
+    fn generate_probe_offsets(&self) -> Vec<u64> {
+        // Use well-distributed offsets based on golden ratio
+        let mut offsets = Vec::with_capacity(self.probe_num_candidates);
+        let golden = 0x9E3779B97F4A7C15u64; // Golden ratio * 2^64
+        for i in 0..self.probe_num_candidates {
+            offsets.push(golden.wrapping_mul(i as u64));
+        }
+        offsets
+    }
+
+    /// Probe multiple layouts and return the best offset for this seed.
+    /// Runs short simulations and measures quality (stable_share).
+    pub fn probe_best_layout(&self, config: &Config, sim_seed: u64) -> u64 {
+        // Check cache first
+        if let Some(&cached) = self.probed_layouts.borrow().get(&sim_seed) {
+            return cached;
+        }
+
+        let offsets = self.generate_probe_offsets();
+        let mut best_offset = 0u64;
+        let mut best_score = f64::NEG_INFINITY;
+
+        for &offset in &offsets {
+            let score = self.run_probe(config, sim_seed, offset);
+            if score > best_score {
+                best_score = score;
+                best_offset = offset;
+            }
+        }
+
+        // Cache the result
+        self.probed_layouts.borrow_mut().insert(sim_seed, best_offset);
+        best_offset
+    }
+
+    /// Run a short probe simulation and return quality score.
+    fn run_probe(&self, config: &Config, sim_seed: u64, offset: u64) -> f64 {
+        use crate::causes::Causes;
+        use crate::echo::EchoChamber;
+        use crate::rng::Rng;
+
+        let mut rng = Rng::new(sim_seed.wrapping_add(0x7A7A_7A7A));
+
+        // Build chamber
+        let mut chamber = EchoChamber::from_adjacency(config.clone(), &self.adj, &mut rng);
+
+        // Build causes with probed offset
+        let combined_seed = self.injector_base_seed ^ sim_seed ^ offset;
+        let injectors = uniform_spread_injectors(&self.adj, self.total_injectors, combined_seed);
+        let causes = Causes::with_injectors(config, injectors);
+
+        // Run probe episodes
+        let mut stable_count = 0usize;
+        let mut total_ticks = 0usize;
+
+        let ticks_per_episode = config.episode_ticks;
+
+        for _ in 0..self.probe_episodes {
+            let mut rng_ep = Rng::new(rng.next_u64());
+
+            for _ in 0..ticks_per_episode {
+                let (active_mask, _) = causes.sample_active(&mut rng_ep);
+                causes.inject_for_tick(&mut rng_ep, &mut chamber, active_mask);
+                chamber.tick();
+
+                // Quick stability check: high power in top nodes = stable
+                let powers: Vec<f64> = chamber.nodes.iter()
+                    .map(|n| n.buffer.power())
+                    .collect();
+                let mut sorted_powers = powers.clone();
+                sorted_powers.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+                let top_power: f64 = sorted_powers.iter().take(3).sum();
+                let total_power: f64 = powers.iter().sum();
+
+                if total_power > 0.1 && top_power / total_power > 0.5 {
+                    stable_count += 1;
+                }
+                total_ticks += 1;
+            }
+        }
+
+        // Score = stable_share (higher is better)
+        if total_ticks > 0 {
+            stable_count as f64 / total_ticks as f64
+        } else {
+            0.0
+        }
+    }
+
     /// Build chamber and causes using cached topology.
     /// `rng` is used for edge phase initialization (simulation-seed dependent).
-    /// `sim_seed` is used for SeedAdaptive injector placement.
+    /// `sim_seed` is used for SeedAdaptive/Probing injector placement.
     fn build_chamber_and_causes(
         &self,
         config: &Config,
         rng: &mut Rng,
         sim_seed: u64,
     ) -> (EchoChamber, Causes) {
+        // Phase 2.2d: For Probing mode, run probe phase first to find best layout
+        if self.layout == InjectorLayout::Probing {
+            self.probe_best_layout(config, sim_seed);
+        }
+
         // Build chamber from cached topology
         let chamber = EchoChamber::from_adjacency(config.clone(), &self.adj, rng);
 
@@ -186,7 +311,7 @@ impl TopologyCache {
             // Random layout - use original method
             Causes::new(config, rng)
         } else {
-            // UniformSpread or SeedAdaptive - use computed injectors
+            // UniformSpread, SeedAdaptive, or Probing - use computed injectors
             Causes::with_injectors(config, injectors)
         };
 
