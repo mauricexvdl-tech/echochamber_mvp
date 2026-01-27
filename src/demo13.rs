@@ -40,7 +40,17 @@ const BASELINE_MEAN_SEL: f64 = 0.81; // Recalibrated: actual mean selective accu
 // =============================================================================
 // Phase 2.1t: FIXED SEEDS (deterministic, matching spec)
 // =============================================================================
-const SWEEP_SEEDS: [u64; 5] = [0xDEADBEEF, 0xEEADBEEF, 0xFEADBEEF, 0xFACEFEED, 0x11EADBEEF]; // Phase 2.2b: trying 0xFACEFEED
+// Phase 2.2b: Extended to 15 seeds for robustness testing
+// Includes problematic seed 0x10EADBEEF to measure true robustness
+const SWEEP_SEEDS: [u64; 15] = [
+    // Original 5 seeds (known to work)
+    0xDEADBEEF, 0xEEADBEEF, 0xFEADBEEF, 0xFACEFEED, 0x11EADBEEF,
+    // Problematic seed (known to struggle)
+    0x10EADBEEF,
+    // New test seeds with diverse patterns
+    0xCAFEBABE, 0xBAADF00D, 0xC0FFEE42, 0xDECAF123,
+    0x12345678, 0x87654321, 0xABCDEF01, 0xFEDCBA98, 0x55AA55AA,
+];
 
 // =============================================================================
 // Phase 2.1t: SWEEP CONFIGURATION TYPES

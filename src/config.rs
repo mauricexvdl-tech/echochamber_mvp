@@ -846,7 +846,7 @@ impl Default for Config {
             run_demo_13: true, // Phase 2.1: Multi-seed + Lift Metrics demo
 
             // Phase 2.1: Multi-seed + Lift Metrics defaults
-            demo13_num_seeds: 5,
+            demo13_num_seeds: 15, // Phase 2.2b: Extended for robustness testing
             lift_bad_margin: 0.02,
             lift_bad_proto: 0.10,
             lift_bad_value: 0.15,
