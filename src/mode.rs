@@ -406,7 +406,7 @@ impl Default for ModePolicyConfig {
             // Phase 2.2b: Rescue oscillation damping defaults
             rescue_oscillation_damping_enabled: true,
             rescue_oscillation_stable_threshold: 0.50, // If stable_share < 50% after lock, extend cooldown
-            rescue_oscillation_bad_threshold: 0.25,    // If bad_share > 25% after lock, extend cooldown
+            rescue_oscillation_bad_threshold: 0.25, // If bad_share > 25% after lock, extend cooldown
             rescue_oscillation_cooldown_multiplier: 2.0, // Reset to original
         }
     }
@@ -1072,9 +1072,9 @@ impl ModePolicy {
                 let stable_share = self.state.chronic_stable_share_ema;
                 let bad_share = self.state.chronic_bad_share_ema;
 
-                let quality_still_bad =
-                    stable_share < self.config.rescue_oscillation_stable_threshold
-                        || bad_share > self.config.rescue_oscillation_bad_threshold;
+                let quality_still_bad = stable_share
+                    < self.config.rescue_oscillation_stable_threshold
+                    || bad_share > self.config.rescue_oscillation_bad_threshold;
 
                 if quality_still_bad {
                     // Quality didn't improve during lock - likely to oscillate

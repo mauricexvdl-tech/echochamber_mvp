@@ -1612,11 +1612,9 @@ impl ActionPolicy {
 
         // Priority 4: Repair burst override (lowest priority override)
         if repair_burst_active {
-            if let Some(burst_action) = self.apply_repair_burst_override(
-                is_soft_exploit,
-                is_bad_state,
-                config,
-            ) {
+            if let Some(burst_action) =
+                self.apply_repair_burst_override(is_soft_exploit, is_bad_state, config)
+            {
                 final_action = burst_action;
             }
         }
@@ -1641,7 +1639,10 @@ impl ActionPolicy {
 
         // Priority 1: Chronic clamp perturb block (HIGHEST - safety mechanism)
         // Only block perturb if it wasn't from Mode::Reset (Reset mode perturb is always allowed)
-        if chronic_perturb_disallowed && final_action == Action::Perturb && mode != crate::mode::Mode::Reset {
+        if chronic_perturb_disallowed
+            && final_action == Action::Perturb
+            && mode != crate::mode::Mode::Reset
+        {
             // Block non-Reset perturbs during chronic clamp
             final_action = Action::Focus;
         }
