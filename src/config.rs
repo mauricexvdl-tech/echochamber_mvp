@@ -30,13 +30,17 @@ impl Default for TopologyKind {
 pub enum InjectorLayout {
     /// Random placement (original behavior).
     Random,
-    /// Uniform spread via farthest-point sampling.
+    /// Uniform spread via farthest-point sampling (fixed seed).
     UniformSpread,
+    /// Seed-adaptive: XORs topology seed with simulation seed for per-seed injector layout.
+    /// This ensures each simulation seed gets unique injector positions, avoiding
+    /// pathological seed-topology combinations that cause chronic instability.
+    SeedAdaptive,
 }
 
 impl Default for InjectorLayout {
     fn default() -> Self {
-        InjectorLayout::UniformSpread // Default to uniform spread
+        InjectorLayout::SeedAdaptive // Default to seed-adaptive for robustness
     }
 }
 
@@ -776,8 +780,9 @@ impl Default for Config {
             topology_seed: 0xC0FFEE,
             sw_k: 8,       // Even, >= 2 (each node connects to k neighbors)
             sw_beta: 0.05, // Low rewiring probability for clustering
-            injector_layout: InjectorLayout::UniformSpread,
-            injector_seed: 0, // 0 = use topology_seed
+            // Phase 2.2c: SeedAdaptive gives each seed unique injector positions
+            injector_layout: InjectorLayout::SeedAdaptive,
+            injector_seed: 0, // 0 = use topology_seed as base
 
             // Dynamics
             decay_per_tick: 0.08,
