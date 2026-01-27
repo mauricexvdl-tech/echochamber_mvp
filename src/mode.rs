@@ -367,7 +367,7 @@ impl Default for ModePolicyConfig {
             chronic_window_ticks: 500,
             chronic_share_ema_alpha: 0.08,
             chronic_bad_share_hi: 0.35,
-            chronic_stable_share_lo: 0.42, // Phase 2.2b: 0.47->0.42 (less aggressive chronic entry)
+            chronic_stable_share_lo: 0.47, // Reset to original
             chronic_enter_hold_ticks: 120,
             chronic_enter_hold_tolerance: 0.10,
             chronic_exit_bad_max: 0.28,
@@ -407,7 +407,7 @@ impl Default for ModePolicyConfig {
             rescue_oscillation_damping_enabled: true,
             rescue_oscillation_stable_threshold: 0.50, // If stable_share < 50% after lock, extend cooldown
             rescue_oscillation_bad_threshold: 0.25,    // If bad_share > 25% after lock, extend cooldown
-            rescue_oscillation_cooldown_multiplier: 3.0, // Triple the cooldown on oscillation (Phase 2.2b: 2.0->3.0)
+            rescue_oscillation_cooldown_multiplier: 2.0, // Reset to original
         }
     }
 }
