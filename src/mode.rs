@@ -93,10 +93,6 @@ pub struct ModePolicyDiagnostics {
     pub post_rescue_repair_perturb_count: u32,
     pub post_rescue_grace_exploit_ticks: usize,
 
-    // Rescue oscillation stats
-    pub rescue_oscillation_count: u32,
-    pub rescue_oscillation_extra_cooldown: u32,
-
     // Streak maxes
     pub explore_streak_max: u32,
     pub exploit_streak_max: u32,
@@ -1077,10 +1073,6 @@ impl ModePolicyState {
             post_rescue_repair_active_ticks: self.post_rescue_repair_active_ticks,
             post_rescue_repair_perturb_count: self.post_rescue_repair_perturb_count,
             post_rescue_grace_exploit_ticks: self.post_rescue_grace_exploit_ticks,
-
-            // Rescue oscillation stats
-            rescue_oscillation_count: self.rescue_oscillation_count,
-            rescue_oscillation_extra_cooldown: self.rescue_oscillation_extra_cooldown,
 
             // Streak maxes
             explore_streak_max: self.explore_streak_max,
