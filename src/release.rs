@@ -1292,7 +1292,9 @@ fn run_demo13_metrics(config: &Config) -> Demo13Metrics {
 
     for (i, &seed) in seeds.iter().enumerate() {
         print!("  Seed {}/{} (0x{:08X})... ", i + 1, num_seeds, seed);
-        let (run, lift_stats, diag) = demo13::run_single_seed_full(&config, &lift_config, seed);
+        // Phase 2.2b: Pass None for topology_cache (release uses random topology)
+        let (run, lift_stats, diag) =
+            demo13::run_single_seed_full(&config, &lift_config, seed, None);
         println!(
             "cov={:.1}% sel={:.1}% rescues={}",
             run.coverage_pos * 100.0,
@@ -1313,12 +1315,14 @@ fn run_demo13_metrics(config: &Config) -> Demo13Metrics {
 
     let mut budgeted_lifts: Vec<crate::lift::LiftStats> = Vec::new();
     for &seed in &seeds {
+        // Phase 2.2b: Pass None for topology_cache (release uses random topology)
         let (_, lift_stats) = demo13::run_single_seed_budgeted(
             &config,
             &lift_config,
             seed,
             target_scan_rate,
             target_perturb_rate,
+            None,
         );
         budgeted_lifts.push(lift_stats);
     }

@@ -60,6 +60,37 @@ impl Causes {
         }
     }
 
+    /// Create Causes with pre-selected injector nodes (for uniform spread).
+    /// `all_injectors` should have exactly num_causes * injectors_per_cause nodes.
+    pub fn with_injectors(config: &Config, all_injectors: Vec<usize>) -> Self {
+        let total_injectors = config.num_causes * config.injectors_per_cause;
+        assert_eq!(
+            all_injectors.len(),
+            total_injectors,
+            "Expected {} injectors, got {}",
+            total_injectors,
+            all_injectors.len()
+        );
+
+        // Assign to causes
+        let mut injectors = Vec::with_capacity(config.num_causes);
+        for cause in 0..config.num_causes {
+            let start = cause * config.injectors_per_cause;
+            let end = start + config.injectors_per_cause;
+            injectors.push(all_injectors[start..end].to_vec());
+        }
+
+        Causes {
+            injectors,
+            cause_phases: config.cause_phases(),
+            inject_amp: config.inject_amp,
+            ph_noise: config.ph_noise,
+            noise_injects: config.noise_injects,
+            noise_amp: config.noise_amp,
+            prob_single_cause: config.prob_single_cause,
+        }
+    }
+
     pub fn num_causes(&self) -> usize {
         self.injectors.len()
     }

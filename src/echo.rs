@@ -497,6 +497,25 @@ impl EchoChamber {
         chamber
     }
 
+    /// Build chamber from a pre-computed adjacency list.
+    /// This allows using deterministic topologies (e.g., Small-World).
+    /// Edge phases are still initialized randomly using rng.
+    pub fn from_adjacency(config: Config, adj: &[Vec<usize>], rng: &mut Rng) -> Self {
+        assert_eq!(
+            adj.len(),
+            config.num_nodes,
+            "Adjacency list size must match num_nodes"
+        );
+        let mut chamber = EchoChamber::new(config);
+
+        for (from, neighbors) in adj.iter().enumerate() {
+            for &to in neighbors {
+                chamber.add_edge_random(from, to, rng);
+            }
+        }
+        chamber
+    }
+
     /// Dampen node buffers by a factor in (0, 1].
     /// Used by Reset mode to reduce dominant node amplitudes.
     pub fn dampen_nodes(&mut self, node_ids: &[usize], factor: f32) {

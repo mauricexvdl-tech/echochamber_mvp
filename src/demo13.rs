@@ -12,7 +12,7 @@ use crate::anchor::{
     KeyedMemoryStore, KeyedRecallDecision, MemoryKey, ANCHOR_MARGIN_MIN,
 };
 use crate::causes::{get_top_k, Causes};
-use crate::config::Config;
+use crate::config::{Config, InjectorLayout, TopologyKind};
 use crate::echo::EchoChamber;
 use crate::lift::{self, LiftConfig, LiftStats};
 use crate::memory::RollingWindow;
@@ -23,6 +23,7 @@ use crate::results::{
     SeedRunResult, VariantResult,
 };
 use crate::rng::Rng;
+use crate::topology::{build_random_er, build_small_world, uniform_spread_injectors, AdjList};
 use serde::{Deserialize, Serialize};
 use std::fs;
 
@@ -44,13 +45,116 @@ const BASELINE_MEAN_SEL: f64 = 0.81; // Recalibrated: actual mean selective accu
 // Includes problematic seed 0x10EADBEEF to measure true robustness
 const SWEEP_SEEDS: [u64; 15] = [
     // Original 5 seeds (known to work)
-    0xDEADBEEF, 0xEEADBEEF, 0xFEADBEEF, 0xFACEFEED, 0x11EADBEEF,
+    0xDEADBEEF,
+    0xEEADBEEF,
+    0xFEADBEEF,
+    0xFACEFEED,
+    0x11EADBEEF,
     // Problematic seed (known to struggle)
     0x10EADBEEF,
     // New test seeds with diverse patterns
-    0xCAFEBABE, 0xBAADF00D, 0xC0FFEE42, 0xDECAF123,
-    0x12345678, 0x87654321, 0xABCDEF01, 0xFEDCBA98, 0x55AA55AA,
+    0xCAFEBABE,
+    0xBAADF00D,
+    0xC0FFEE42,
+    0xDECAF123,
+    0x12345678,
+    0x87654321,
+    0xABCDEF01,
+    0xFEDCBA98,
+    0x55AA55AA,
 ];
+
+// =============================================================================
+// Phase 2.2b: TOPOLOGY-AWARE CHAMBER/CAUSES BUILDER
+// =============================================================================
+
+/// Cached topology for a given configuration.
+/// Topology is deterministic based on topology_seed, so we can reuse it across seeds.
+pub struct TopologyCache {
+    pub adj: AdjList,
+    pub injectors: Vec<usize>,
+    pub topology_desc: String,
+    pub injector_desc: String,
+}
+
+impl TopologyCache {
+    /// Build topology and injector cache based on config.
+    pub fn new(config: &Config) -> Self {
+        let n = config.num_nodes;
+        let total_injectors = config.num_causes * config.injectors_per_cause;
+        let injector_seed = if config.injector_seed == 0 {
+            config.topology_seed
+        } else {
+            config.injector_seed
+        };
+
+        let (adj, topology_desc) = match config.topology_kind {
+            TopologyKind::SmallWorld => {
+                let adj = build_small_world(n, config.sw_k, config.sw_beta, config.topology_seed);
+                let desc = format!(
+                    "SmallWorld(n={}, k={}, beta={:.2}, seed=0x{:X})",
+                    n, config.sw_k, config.sw_beta, config.topology_seed
+                );
+                (adj, desc)
+            }
+            TopologyKind::RandomER => {
+                let adj = build_random_er(n, config.avg_degree, config.topology_seed);
+                let desc = format!(
+                    "RandomER(n={}, avg_deg={}, seed=0x{:X})",
+                    n, config.avg_degree, config.topology_seed
+                );
+                (adj, desc)
+            }
+        };
+
+        let (injectors, injector_desc) = match config.injector_layout {
+            InjectorLayout::UniformSpread => {
+                let inj = uniform_spread_injectors(&adj, total_injectors, injector_seed);
+                let desc = format!(
+                    "UniformSpread(M={}, seed=0x{:X})",
+                    total_injectors, injector_seed
+                );
+                (inj, desc)
+            }
+            InjectorLayout::Random => {
+                // Random injectors will be selected per-seed by Causes::new
+                let desc = "Random".to_string();
+                (Vec::new(), desc)
+            }
+        };
+
+        TopologyCache {
+            adj,
+            injectors,
+            topology_desc,
+            injector_desc,
+        }
+    }
+
+    /// Build chamber and causes using cached topology.
+    /// `rng` is used for edge phase initialization (simulation-seed dependent).
+    fn build_chamber_and_causes(&self, config: &Config, rng: &mut Rng) -> (EchoChamber, Causes) {
+        // Build chamber from cached topology
+        let chamber = EchoChamber::from_adjacency(config.clone(), &self.adj, rng);
+
+        // Build causes
+        let causes = if self.injectors.is_empty() {
+            // Random layout - use original method
+            Causes::new(config, rng)
+        } else {
+            // Uniform spread - use cached injectors
+            Causes::with_injectors(config, self.injectors.clone())
+        };
+
+        (chamber, causes)
+    }
+
+    /// Print topology info.
+    fn print_info(&self) {
+        println!("Topology: {}", self.topology_desc);
+        println!("InjectorLayout: {}", self.injector_desc);
+    }
+}
 
 // =============================================================================
 // Phase 2.1t: SWEEP CONFIGURATION TYPES
@@ -922,13 +1026,23 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
     };
     let num_seeds = seeds.len();
 
+    // Phase 2.2b: Build topology cache for deterministic structure
+    let topology_cache = TopologyCache::new(&config);
+
     println!("Configuration:");
     println!("  config_hash: {}", config_hash);
     println!("  num_seeds: {}", num_seeds);
-    println!("  seeds: {:?}", seeds);
+    println!(
+        "  seeds: {:?}",
+        seeds
+            .iter()
+            .map(|s| format!("0x{:08X}", s))
+            .collect::<Vec<_>>()
+    );
     println!("  episodes_per_seed: {}", config.competitive_episodes);
     println!("  ticks_per_episode: {}", config.competitive_episode_ticks);
     println!("  mode: FULL (quick mode disabled)");
+    topology_cache.print_info();
     println!();
 
     let lift_config = LiftConfig {
@@ -949,7 +1063,8 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
 
     for (i, &seed) in seeds.iter().enumerate() {
         print!("  Seed {}/{} (0x{:08X})... ", i + 1, num_seeds, seed);
-        let (run, lift_stats, diag) = run_single_seed_full(&config, &lift_config, seed);
+        let (run, lift_stats, diag) =
+            run_single_seed_full(&config, &lift_config, seed, Some(&topology_cache));
         println!(
             "cov={:.1}% sel={:.1}% FP={:.1}% rescues={}",
             run.coverage_pos * 100.0,
@@ -989,6 +1104,7 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
             seed,
             target_scan_rate,
             target_perturb_rate,
+            Some(&topology_cache),
         );
         println!(
             "cov={:.1}% sel={:.1}% FP={:.1}%",
@@ -1359,7 +1475,8 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
 
         for (i, &seed) in seeds.iter().enumerate() {
             print!("  Seed {}/{} (0x{:08X})... ", i + 1, num_seeds, seed);
-            let (run, _, diag) = run_single_seed_full(&cfg, &lift_config, seed);
+            let (run, _, diag) =
+                run_single_seed_full(&cfg, &lift_config, seed, Some(&topology_cache));
             println!(
                 "cov={:.1}% sel={:.1}% rescues={}",
                 run.coverage_pos * 100.0,
@@ -1556,10 +1673,12 @@ pub fn run_with_options(config: &Config, options: Demo13Options) {
 }
 
 /// Run a single seed with FULL policy (Phase 2.1b with guardrails).
+/// Phase 2.2b: Accepts optional TopologyCache for deterministic topology.
 pub fn run_single_seed_full(
     config: &Config,
     lift_config: &LiftConfig,
     seed: u64,
+    topology_cache: Option<&TopologyCache>,
 ) -> (SeedRun, LiftStats, SeedDiagnostics) {
     // Phase 2.1b: Create mode policy config with guardrails
     let mode_policy_config = ModePolicyConfig::from_config(config);
@@ -1589,8 +1708,15 @@ pub fn run_single_seed_full(
     action_policy.init_burst_params(config);
 
     let mut rng = Rng::new(seed.wrapping_add(0x7A7A_7A7A));
-    let mut chamber = EchoChamber::random_graph(config.clone(), &mut rng);
-    let causes = Causes::new(config, &mut rng);
+
+    // Phase 2.2b: Use topology cache if provided, else fall back to random graph
+    let (mut chamber, causes) = if let Some(cache) = topology_cache {
+        cache.build_chamber_and_causes(config, &mut rng)
+    } else {
+        let chamber = EchoChamber::random_graph(config.clone(), &mut rng);
+        let causes = Causes::new(config, &mut rng);
+        (chamber, causes)
+    };
 
     // Pre-train
     for _ in 0..10000 {
@@ -2452,12 +2578,14 @@ pub fn run_single_seed_full(
 }
 
 /// Run a single seed with RANDOM_BUDGETED policy.
+/// Phase 2.2b: Accepts optional TopologyCache for deterministic topology.
 pub fn run_single_seed_budgeted(
     config: &Config,
     lift_config: &LiftConfig,
     seed: u64,
     target_scan_rate: f64,
     target_perturb_rate: f64,
+    topology_cache: Option<&TopologyCache>,
 ) -> (SeedRun, LiftStats) {
     let mode_policy_config = ModePolicyConfig::from_config(config);
     let mut mode_policy = ModePolicy::new(mode_policy_config);
@@ -2472,8 +2600,15 @@ pub fn run_single_seed_budgeted(
     let mut action_policy = ActionPolicy::new(action_config);
 
     let mut rng = Rng::new(seed.wrapping_add(0x7A7A_7A7A));
-    let mut chamber = EchoChamber::random_graph(config.clone(), &mut rng);
-    let causes = Causes::new(config, &mut rng);
+
+    // Phase 2.2b: Use topology cache if provided, else fall back to random graph
+    let (mut chamber, causes) = if let Some(cache) = topology_cache {
+        cache.build_chamber_and_causes(config, &mut rng)
+    } else {
+        let chamber = EchoChamber::random_graph(config.clone(), &mut rng);
+        let causes = Causes::new(config, &mut rng);
+        (chamber, causes)
+    };
 
     // Pre-train
     for _ in 0..10000 {
@@ -3006,6 +3141,11 @@ pub fn run_sweep_2_1t(config: &Config) {
         recovery_window: 10,
     };
 
+    // Phase 2.2b: Build topology cache for deterministic structure
+    let topology_cache = TopologyCache::new(config);
+    topology_cache.print_info();
+    println!();
+
     let sweep_configs = generate_sweep_configs();
     println!("Running {} configurations...", sweep_configs.len());
     println!();
@@ -3043,7 +3183,8 @@ pub fn run_sweep_2_1t(config: &Config) {
         let mut seed_diags: Vec<SeedDiagnostics> = Vec::new();
 
         for &seed in &seeds {
-            let (run, _, diag) = run_single_seed_full(&cfg, &lift_config, seed);
+            let (run, _, diag) =
+                run_single_seed_full(&cfg, &lift_config, seed, Some(&topology_cache));
             seed_runs.push(run);
             seed_diags.push(diag);
         }

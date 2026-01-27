@@ -2,8 +2,43 @@
 //! Phase 1.4c: Added competitive label binding with abstain.
 //! Phase 1.8: VALUE IS CONTROL - Memory lifecycle + self-regulation.
 //! Phase 1.9: CONSOLIDATION - Make merges happen + reduce stability flicker.
+//! Phase 2.2b: Added topology configuration for Small-World networks.
 
 use std::f64::consts::PI;
+
+// =============================================================================
+// Phase 2.2b: Topology Configuration Enums
+// =============================================================================
+
+/// Topology kind for graph construction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TopologyKind {
+    /// Random Erdős-Rényi graph (original behavior).
+    RandomER,
+    /// Watts-Strogatz Small-World topology.
+    SmallWorld,
+}
+
+impl Default for TopologyKind {
+    fn default() -> Self {
+        TopologyKind::SmallWorld // Default to SmallWorld for reduced variance
+    }
+}
+
+/// Injector layout strategy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InjectorLayout {
+    /// Random placement (original behavior).
+    Random,
+    /// Uniform spread via farthest-point sampling.
+    UniformSpread,
+}
+
+impl Default for InjectorLayout {
+    fn default() -> Self {
+        InjectorLayout::UniformSpread // Default to uniform spread
+    }
+}
 
 /// Configuration for the Echo Chamber network.
 #[derive(Clone, Debug)]
@@ -12,6 +47,20 @@ pub struct Config {
     pub num_nodes: usize,
     pub avg_degree: usize,
     pub num_ctx: usize,
+
+    // Phase 2.2b: Topology configuration
+    /// Topology kind: RandomER or SmallWorld.
+    pub topology_kind: TopologyKind,
+    /// Seed for topology generation (separate from simulation seed).
+    pub topology_seed: u64,
+    /// Small-World k parameter (number of neighbors, must be even, >= 2).
+    pub sw_k: usize,
+    /// Small-World beta parameter (rewiring probability, 0.0 to 1.0).
+    pub sw_beta: f32,
+    /// Injector layout strategy: Random or UniformSpread.
+    pub injector_layout: InjectorLayout,
+    /// Seed for injector placement (defaults to topology_seed if 0).
+    pub injector_seed: u64,
 
     // Dynamics
     pub decay_per_tick: f64,
@@ -714,6 +763,14 @@ impl Default for Config {
             avg_degree: 3,
             num_ctx: 3,
 
+            // Phase 2.2b: Topology configuration defaults
+            topology_kind: TopologyKind::SmallWorld,
+            topology_seed: 0xC0FFEE,
+            sw_k: 8,       // Even, >= 2 (each node connects to k neighbors)
+            sw_beta: 0.05, // Low rewiring probability for clustering
+            injector_layout: InjectorLayout::UniformSpread,
+            injector_seed: 0, // 0 = use topology_seed
+
             // Dynamics
             decay_per_tick: 0.08,
             clamp_max_amp: 0.8,
@@ -913,9 +970,9 @@ impl Default for Config {
             soft_proto_bad_clear_bad: 0.24,    // Early clear if bad < 24%
 
             // Phase 2.1v: Bad-Regime Proto Repair (relaxed gating)
-            soft_proto_bad_td_max: 0.30, // Reset to original
+            soft_proto_bad_td_max: 0.30,              // Reset to original
             soft_proto_bad_margin_min: 0.02, // Min margin in bad-regime (relaxed from 0.03)
-            soft_proto_bad_proto_min: 0.08, // Min proto_align in bad-regime
+            soft_proto_bad_proto_min: 0.08,  // Min proto_align in bad-regime
             soft_proto_bad_require_gate: true, // Still require gate in bad-regime
             soft_proto_repair_after_burst_ticks: 300, // P0 for 300 ticks after burst
 
@@ -1085,7 +1142,7 @@ impl Default for Config {
             // Phase 2.2b: Rescue oscillation damping defaults
             rescue_oscillation_damping_enabled: true,
             rescue_oscillation_stable_threshold: 0.50, // If stable_share < 50% after lock, extend cooldown
-            rescue_oscillation_bad_threshold: 0.25,    // If bad_share > 25% after lock, extend cooldown
+            rescue_oscillation_bad_threshold: 0.25, // If bad_share > 25% after lock, extend cooldown
             rescue_oscillation_cooldown_multiplier: 2.0, // Reset to original (double cooldown)
 
             // Phase 1.9e Option A: Stability hysteresis (very easy entry, stickier state)

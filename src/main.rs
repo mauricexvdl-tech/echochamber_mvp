@@ -22,6 +22,7 @@ mod regret;
 mod release;
 mod results;
 mod rng;
+mod topology;
 
 use cli::CliArgs;
 use config::Config;
