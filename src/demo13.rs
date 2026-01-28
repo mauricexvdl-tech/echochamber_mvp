@@ -1622,6 +1622,11 @@ pub fn run_single_seed_full(
     let mut stable_ticks: usize = 0;
     let mut total_ticks: usize = 0;
 
+    // Kuramoto coherence accumulators
+    let mut kuramoto_r_sum: f64 = 0.0;
+    let mut kuramoto_r_weighted_sum: f64 = 0.0;
+    let mut kuramoto_count: usize = 0;
+
     // Phase 2.1x: "Why Scan?" tracking
     let mut scan_by_explore_mode: usize = 0;
     let mut scan_by_soft_exploit_prob: usize = 0;
@@ -1651,6 +1656,12 @@ pub fn run_single_seed_full(
             }
 
             total_ticks += 1;
+
+            // Accumulate Kuramoto coherence
+            kuramoto_r_sum += tick_metrics.kuramoto_r;
+            kuramoto_r_weighted_sum += tick_metrics.kuramoto_r_weighted;
+            kuramoto_count += 1;
+
             let current_sig = window.competitive_sig();
             let sig_mask = current_sig.mask;
 
@@ -2212,6 +2223,18 @@ pub fn run_single_seed_full(
     run.bad_state_share = Some(lift_stats.bad_state_share());
     run.recovery_improve = Some(lift_stats.recovery_after_perturb());
 
+    // Kuramoto coherence means
+    run.kuramoto_r_mean = if kuramoto_count > 0 {
+        kuramoto_r_sum / kuramoto_count as f64
+    } else {
+        0.0
+    };
+    run.kuramoto_r_weighted_mean = if kuramoto_count > 0 {
+        kuramoto_r_weighted_sum / kuramoto_count as f64
+    } else {
+        0.0
+    };
+
     // Phase 2.1b/c: Collect diagnostics
     let mode_stats = mode_policy.mode_stats();
     let (proto_p50, margin_p50) = warmup_stats.compute_p50();
@@ -2502,6 +2525,11 @@ pub fn run_single_seed_budgeted(
     let mut stable_ticks: usize = 0;
     let mut total_ticks: usize = 0;
 
+    // Kuramoto coherence accumulators
+    let mut kuramoto_r_sum: f64 = 0.0;
+    let mut kuramoto_r_weighted_sum: f64 = 0.0;
+    let mut kuramoto_count: usize = 0;
+
     // Lift stats
     let mut lift_stats = LiftStats::new();
 
@@ -2526,6 +2554,12 @@ pub fn run_single_seed_budgeted(
             }
 
             total_ticks += 1;
+
+            // Accumulate Kuramoto coherence
+            kuramoto_r_sum += tick_metrics.kuramoto_r;
+            kuramoto_r_weighted_sum += tick_metrics.kuramoto_r_weighted;
+            kuramoto_count += 1;
+
             let current_sig = window.competitive_sig();
             let sig_mask = current_sig.mask;
 
@@ -2791,6 +2825,18 @@ pub fn run_single_seed_budgeted(
 
     run.bad_state_share = Some(lift_stats.bad_state_share());
     run.recovery_improve = Some(lift_stats.recovery_after_perturb());
+
+    // Kuramoto coherence means
+    run.kuramoto_r_mean = if kuramoto_count > 0 {
+        kuramoto_r_sum / kuramoto_count as f64
+    } else {
+        0.0
+    };
+    run.kuramoto_r_weighted_mean = if kuramoto_count > 0 {
+        kuramoto_r_weighted_sum / kuramoto_count as f64
+    } else {
+        0.0
+    };
 
     (run, lift_stats)
 }

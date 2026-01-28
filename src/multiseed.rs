@@ -28,6 +28,10 @@ pub struct SeedRun {
     pub regret_rate: Option<f64>,
     pub recovery_improve: Option<f64>,
     pub bad_state_share: Option<f64>,
+
+    // Kuramoto coherence metrics
+    pub kuramoto_r_mean: f64,
+    pub kuramoto_r_weighted_mean: f64,
 }
 
 impl SeedRun {
@@ -77,6 +81,12 @@ pub struct Aggregate {
     pub recovery_improve_std: Option<f64>,
     pub bad_state_share_mean: Option<f64>,
     pub bad_state_share_std: Option<f64>,
+
+    // Kuramoto coherence (mean, std)
+    pub kuramoto_r_mean: f64,
+    pub kuramoto_r_std: f64,
+    pub kuramoto_r_weighted_mean: f64,
+    pub kuramoto_r_weighted_std: f64,
 
     // Seeds that failed regression guard
     pub failed_seeds: Vec<u64>,
@@ -137,6 +147,9 @@ pub fn aggregate(runs: &[SeedRun]) -> Aggregate {
     let recovery_improve: Vec<Option<f64>> = runs.iter().map(|r| r.recovery_improve).collect();
     let bad_state_share: Vec<Option<f64>> = runs.iter().map(|r| r.bad_state_share).collect();
 
+    let kuramoto_r: Vec<f64> = runs.iter().map(|r| r.kuramoto_r_mean).collect();
+    let kuramoto_r_weighted: Vec<f64> = runs.iter().map(|r| r.kuramoto_r_weighted_mean).collect();
+
     // Compute means
     let coverage_pos_mean = mean(&coverage_pos);
     let selective_accuracy_mean = mean(&selective_accuracy);
@@ -169,6 +182,12 @@ pub fn aggregate(runs: &[SeedRun]) -> Aggregate {
     let (regret_rate_mean, regret_rate_std) = mean_std_opt(&regret_rate);
     let (recovery_improve_mean, recovery_improve_std) = mean_std_opt(&recovery_improve);
     let (bad_state_share_mean, bad_state_share_std) = mean_std_opt(&bad_state_share);
+
+    // Kuramoto coherence
+    let kuramoto_r_mean = mean(&kuramoto_r);
+    let kuramoto_r_std = std_dev(&kuramoto_r, kuramoto_r_mean);
+    let kuramoto_r_weighted_mean = mean(&kuramoto_r_weighted);
+    let kuramoto_r_weighted_std = std_dev(&kuramoto_r_weighted, kuramoto_r_weighted_mean);
 
     // Find seeds that fail regression guard
     let failed_seeds: Vec<u64> = runs
@@ -205,6 +224,10 @@ pub fn aggregate(runs: &[SeedRun]) -> Aggregate {
         recovery_improve_std,
         bad_state_share_mean,
         bad_state_share_std,
+        kuramoto_r_mean,
+        kuramoto_r_std,
+        kuramoto_r_weighted_mean,
+        kuramoto_r_weighted_std,
         failed_seeds,
     }
 }
@@ -326,6 +349,20 @@ pub fn print_aggregate_table(label: &str, agg: &Aggregate) {
             std * 100.0
         );
     }
+
+    // Kuramoto coherence metrics
+    println!(
+        "  {:>18} | {:>6.3} ± {:>5.3}",
+        "kuramoto_R",
+        agg.kuramoto_r_mean,
+        agg.kuramoto_r_std
+    );
+    println!(
+        "  {:>18} | {:>6.3} ± {:>5.3}",
+        "kuramoto_R_weighted",
+        agg.kuramoto_r_weighted_mean,
+        agg.kuramoto_r_weighted_std
+    );
 
     if !agg.failed_seeds.is_empty() {
         println!();

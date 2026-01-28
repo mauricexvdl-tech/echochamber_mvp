@@ -1,7 +1,7 @@
 //! Echo Chamber: signal propagation with complex-valued interference.
 //! Phase 1.3: Concept Readout + Config-based parameters.
 
-use crate::complex::Complex;
+use crate::complex::{kuramoto_order_parameter, kuramoto_weighted, Complex};
 use crate::config::Config;
 use crate::rng::Rng;
 use std::f64::consts::PI;
@@ -165,6 +165,10 @@ pub struct TickMetrics {
     pub tot_pow_pre: f64,
     pub tot_pow_post: f64,
     pub homeostasis_scale: f64,
+    /// Kuramoto order parameter R ∈ [0,1]: phase synchronization across all nodes
+    pub kuramoto_r: f64,
+    /// Weighted Kuramoto: amplitude-weighted phase coherence
+    pub kuramoto_r_weighted: f64,
 }
 
 impl TickMetrics {
@@ -177,6 +181,8 @@ impl TickMetrics {
             tot_pow_pre: 0.0,
             tot_pow_post: 0.0,
             homeostasis_scale: 1.0,
+            kuramoto_r: 0.0,
+            kuramoto_r_weighted: 0.0,
         }
     }
 
@@ -367,6 +373,11 @@ impl EchoChamber {
 
         metrics.compute_destruction(self.config.eps);
 
+        // Compute Kuramoto coherence
+        let (r, r_weighted) = self.compute_kuramoto_coherence();
+        metrics.kuramoto_r = r;
+        metrics.kuramoto_r_weighted = r_weighted;
+
         // Plasticity updates
         if learn {
             if let Some(ctx_bin) = ctx {
@@ -433,6 +444,35 @@ impl EchoChamber {
 
         self.tick_counter += 1;
         metrics
+    }
+
+    /// Compute Kuramoto coherence metrics for the current network state.
+    /// Returns (R, R_weighted) where:
+    ///   - R: standard Kuramoto order parameter (all nodes equal weight)
+    ///   - R_weighted: amplitude-weighted coherence (stronger signals matter more)
+    pub fn compute_kuramoto_coherence(&self) -> (f64, f64) {
+        let eps = self.config.eps;
+
+        // Collect phases and amplitudes from all nodes with non-negligible signal
+        let mut phases: Vec<f64> = Vec::with_capacity(self.nodes.len());
+        let mut amplitudes: Vec<f64> = Vec::with_capacity(self.nodes.len());
+
+        for node in &self.nodes {
+            let amp = node.buffer.norm();
+            if amp > eps {
+                phases.push(node.buffer.arg());
+                amplitudes.push(amp);
+            }
+        }
+
+        if phases.is_empty() {
+            return (0.0, 0.0);
+        }
+
+        let r = kuramoto_order_parameter(&phases);
+        let r_weighted = kuramoto_weighted(&amplitudes, &phases);
+
+        (r, r_weighted)
     }
 
     pub fn top_nodes(&self, n: usize) -> Vec<(usize, f64)> {
