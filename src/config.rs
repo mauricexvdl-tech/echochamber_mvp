@@ -73,6 +73,15 @@ pub struct Config {
     /// Phase 2.2d: Number of episodes to run per probe candidate.
     pub probe_episodes: usize,
 
+    // Phase 2.2e: Sinkhorn-Knopp edge weight normalization (mHC-inspired)
+    /// Enable Sinkhorn-Knopp doubly-stochastic edge weight normalization.
+    /// Makes signal propagation more stable across seeds by balancing in/out flow.
+    pub sinkhorn_enabled: bool,
+    /// Number of Sinkhorn-Knopp iterations (10-20 typically sufficient).
+    pub sinkhorn_iterations: usize,
+    /// Blending factor: 0.0 = pure degree-based, 1.0 = pure Sinkhorn.
+    pub sinkhorn_alpha: f64,
+
     // Dynamics
     pub decay_per_tick: f64,
     pub clamp_max_amp: f64,
@@ -792,6 +801,11 @@ impl Default for Config {
             injector_seed: 0, // 0 = use topology_seed as base
             probe_num_candidates: 12, // Test 12 different layouts per seed (was 6)
             probe_episodes: 50,       // 50 episodes per probe (was 30)
+
+            // Phase 2.2e: Sinkhorn-Knopp edge weight normalization defaults
+            sinkhorn_enabled: true,   // Enable by default for stability
+            sinkhorn_iterations: 15,  // 15 iterations for good convergence
+            sinkhorn_alpha: 1.0,      // Full Sinkhorn (can blend with degree-based)
 
             // Dynamics
             decay_per_tick: 0.08,

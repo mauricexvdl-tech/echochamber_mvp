@@ -31,13 +31,29 @@ pub struct Edge {
     pub to: usize,
     /// Phase shift per context channel (dynamic size based on num_ctx).
     pub phase_by_ctx: Vec<f64>,
+    /// Edge weight for signal propagation (default: 1.0, set by Sinkhorn normalization).
+    pub weight: f64,
 }
 
 impl Edge {
     /// Create a new edge with random initial phases per context channel.
     pub fn new_random(to: usize, num_ctx: usize, rng: &mut Rng) -> Self {
         let phase_by_ctx: Vec<f64> = (0..num_ctx).map(|_| rng.next_range(-PI, PI)).collect();
-        Edge { to, phase_by_ctx }
+        Edge {
+            to,
+            phase_by_ctx,
+            weight: 1.0, // Default weight, will be set by Sinkhorn if enabled
+        }
+    }
+
+    /// Create a new edge with random phases and specified weight.
+    pub fn new_random_weighted(to: usize, num_ctx: usize, weight: f64, rng: &mut Rng) -> Self {
+        let phase_by_ctx: Vec<f64> = (0..num_ctx).map(|_| rng.next_range(-PI, PI)).collect();
+        Edge {
+            to,
+            phase_by_ctx,
+            weight,
+        }
     }
 
     /// Create edge with fixed phases (for Lie Triangle demo).
@@ -45,6 +61,7 @@ impl Edge {
         Edge {
             to,
             phase_by_ctx: vec![phase; num_ctx],
+            weight: 1.0,
         }
     }
 
@@ -129,7 +146,20 @@ impl Node {
 
     /// Process buffer with context-specific phase shifts.
     /// Returns packets (local_edge_idx, target_id, signal) to deliver.
+    ///
+    /// When use_edge_weights=true, uses pre-computed Sinkhorn weights per edge.
+    /// Otherwise falls back to uniform sqrt(degree) splitting.
     pub fn process(&mut self, ctx: usize, eps: f64) -> Vec<(usize, usize, Complex)> {
+        self.process_weighted(ctx, eps, false)
+    }
+
+    /// Process buffer with optional edge weight usage.
+    pub fn process_weighted(
+        &mut self,
+        ctx: usize,
+        eps: f64,
+        use_edge_weights: bool,
+    ) -> Vec<(usize, usize, Complex)> {
         let norm = self.buffer.norm();
         if norm < eps {
             self.buffer = Complex::ZERO;
@@ -141,11 +171,17 @@ impl Node {
             return Vec::new();
         }
 
-        let split_factor = 1.0 / (out_degree as f64).sqrt();
+        // Default split factor (used when not using edge weights)
+        let default_split = 1.0 / (out_degree as f64).sqrt();
 
         let mut packets = Vec::with_capacity(out_degree);
         for (edge_idx, edge) in self.edges.iter().enumerate() {
             let rotator = Complex::from_polar(1.0, edge.phase(ctx));
+            let split_factor = if use_edge_weights {
+                edge.weight
+            } else {
+                default_split
+            };
             let outgoing = self.buffer.scale(split_factor) * rotator;
             packets.push((edge_idx, edge.to, outgoing));
         }
@@ -206,10 +242,13 @@ pub struct EchoChamber {
     pub nodes: Vec<Node>,
     pub tick_counter: usize,
     pub config: Config,
+    /// Whether to use per-edge weights (set by Sinkhorn normalization).
+    pub use_edge_weights: bool,
 }
 
 impl EchoChamber {
     pub fn new(config: Config) -> Self {
+        let use_edge_weights = config.sinkhorn_enabled;
         let nodes = (0..config.num_nodes)
             .map(|id| Node::new(id, config.num_ctx))
             .collect();
@@ -217,6 +256,7 @@ impl EchoChamber {
             nodes,
             tick_counter: 0,
             config,
+            use_edge_weights,
         }
     }
 
@@ -315,11 +355,12 @@ impl EchoChamber {
 
         let ctx_for_process = ctx.unwrap_or(0);
 
-        // Collect packets with edge info
+        // Collect packets with edge info (use Sinkhorn weights if enabled)
+        let use_weights = self.use_edge_weights;
         let mut all_packets: Vec<(usize, usize, usize, Complex)> = Vec::new();
         for node in &mut self.nodes {
             let from = node.id;
-            let packets = node.process(ctx_for_process, self.config.eps);
+            let packets = node.process_weighted(ctx_for_process, self.config.eps, use_weights);
             for (edge_idx, target, sig) in packets {
                 all_packets.push((from, edge_idx, target, sig));
             }
@@ -500,19 +541,56 @@ impl EchoChamber {
     /// Build chamber from a pre-computed adjacency list.
     /// This allows using deterministic topologies (e.g., Small-World).
     /// Edge phases are still initialized randomly using rng.
+    /// If config.sinkhorn_enabled, applies Sinkhorn-Knopp weight normalization.
     pub fn from_adjacency(config: Config, adj: &[Vec<usize>], rng: &mut Rng) -> Self {
         assert_eq!(
             adj.len(),
             config.num_nodes,
             "Adjacency list size must match num_nodes"
         );
-        let mut chamber = EchoChamber::new(config);
+        let mut chamber = EchoChamber::new(config.clone());
 
-        for (from, neighbors) in adj.iter().enumerate() {
-            for &to in neighbors {
-                chamber.add_edge_random(from, to, rng);
+        if config.sinkhorn_enabled {
+            // Use Sinkhorn-Knopp normalized edge weights
+            use crate::sinkhorn;
+
+            let weights = if config.sinkhorn_alpha >= 1.0 {
+                sinkhorn::compute_sinkhorn_weights(adj, config.sinkhorn_iterations, 1e-10)
+            } else {
+                sinkhorn::compute_blended_weights(
+                    adj,
+                    config.sinkhorn_alpha,
+                    config.sinkhorn_iterations,
+                    1e-10,
+                )
+            };
+
+            // Build a lookup map for weights
+            let mut weight_map: std::collections::HashMap<(usize, usize), f64> =
+                std::collections::HashMap::new();
+            for (from, to, w) in weights {
+                weight_map.insert((from, to), w);
+            }
+
+            // Add edges with Sinkhorn weights
+            for (from, neighbors) in adj.iter().enumerate() {
+                for &to in neighbors {
+                    let weight = *weight_map.get(&(from, to)).unwrap_or(&1.0);
+                    let num_ctx = chamber.config.num_ctx;
+                    chamber.nodes[from]
+                        .edges
+                        .push(Edge::new_random_weighted(to, num_ctx, weight, rng));
+                }
+            }
+        } else {
+            // Original behavior: uniform weights
+            for (from, neighbors) in adj.iter().enumerate() {
+                for &to in neighbors {
+                    chamber.add_edge_random(from, to, rng);
+                }
             }
         }
+
         chamber
     }
 

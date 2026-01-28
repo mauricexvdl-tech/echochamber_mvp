@@ -22,6 +22,7 @@ mod regret;
 mod release;
 mod results;
 mod rng;
+mod sinkhorn;
 mod topology;
 
 use cli::CliArgs;
