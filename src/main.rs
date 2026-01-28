@@ -22,6 +22,7 @@ mod regret;
 mod release;
 mod results;
 mod rng;
+mod spectral;
 
 use cli::CliArgs;
 use config::Config;

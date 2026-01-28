@@ -700,6 +700,18 @@ pub struct Config {
     pub stable_min_ticks_on: u32,
     /// Catastrophic V drop threshold (V < stable_v_min - this triggers immediate exit).
     pub stable_catastrophic_v_drop: f32,
+
+    // =========================================================================
+    // Phase 2.3b: Spectral Normalization (Unitary-like Constraints)
+    // =========================================================================
+    /// Enable spectral normalization of edge weight matrix.
+    pub spectral_normalize: bool,
+    /// Target spectral norm (max singular value). 1.0 = norm-preserving.
+    pub spectral_target: f64,
+    /// Power iterations for spectral norm estimation.
+    pub spectral_iterations: usize,
+    /// Recompute spectral normalization every N ticks (0 = only at init).
+    pub spectral_update_interval: usize,
 }
 
 impl Default for Config {
@@ -1092,6 +1104,12 @@ impl Default for Config {
             stable_exit_abs_td: 0.70,   // Phase 1.9e: 0.65 -> 0.70 (stickier)
             stable_min_ticks_on: 120,   // Phase 1.9e: 200 -> 120 (faster cycling)
             stable_catastrophic_v_drop: 0.15, // Catastrophic if V drops 0.15 below stable_v_min
+
+            // Phase 2.3b: Spectral normalization defaults (off by default, experimental)
+            spectral_normalize: false, // Disabled by default
+            spectral_target: 1.0,      // Target σ_max = 1.0 (norm-preserving)
+            spectral_iterations: 20,   // Power iterations for estimation
+            spectral_update_interval: 0, // 0 = only at init (cheaper)
         }
     }
 }

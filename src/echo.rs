@@ -212,6 +212,9 @@ pub struct EchoChamber {
     pub nodes: Vec<Node>,
     pub tick_counter: usize,
     pub config: Config,
+    /// Spectral scale factor for unitary-like signal propagation.
+    /// Applied to outgoing signals to bound spectral norm.
+    spectral_scale: f64,
 }
 
 impl EchoChamber {
@@ -222,6 +225,7 @@ impl EchoChamber {
         EchoChamber {
             nodes,
             tick_counter: 0,
+            spectral_scale: 1.0, // Default: no scaling
             config,
         }
     }
@@ -274,11 +278,13 @@ impl EchoChamber {
 
     /// Run one tick without metrics (for Demo 1 - uses ctx=0).
     pub fn tick(&mut self) {
+        let scale = self.spectral_scale;
         let mut all_packets: Vec<(usize, Complex)> = Vec::new();
         for node in &mut self.nodes {
             let packets = node.process(0, self.config.eps);
             for (_, target, sig) in packets {
-                all_packets.push((target, sig));
+                // Apply spectral scale for unitary-like propagation
+                all_packets.push((target, sig.scale(scale)));
             }
         }
         for (target_id, signal) in all_packets {
@@ -320,6 +326,7 @@ impl EchoChamber {
         metrics.ctx = ctx;
 
         let ctx_for_process = ctx.unwrap_or(0);
+        let spectral_scale = self.spectral_scale;
 
         // Collect packets with edge info
         let mut all_packets: Vec<(usize, usize, usize, Complex)> = Vec::new();
@@ -327,7 +334,8 @@ impl EchoChamber {
             let from = node.id;
             let packets = node.process(ctx_for_process, self.config.eps);
             for (edge_idx, target, sig) in packets {
-                all_packets.push((from, edge_idx, target, sig));
+                // Apply spectral scale for unitary-like propagation
+                all_packets.push((from, edge_idx, target, sig.scale(spectral_scale)));
             }
         }
 
@@ -534,7 +542,61 @@ impl EchoChamber {
                 chamber.add_edge_random(from, to, rng);
             }
         }
+
+        // Apply spectral normalization if configured
+        if config.spectral_normalize {
+            chamber.compute_spectral_scale();
+        }
+
         chamber
+    }
+
+    /// Compute spectral scale factor to bound the graph's spectral norm.
+    ///
+    /// This builds an adjacency matrix from the current graph structure,
+    /// computes its spectral norm (largest singular value), and sets a
+    /// scaling factor to ensure σ_max ≤ target.
+    ///
+    /// The scaling factor is applied during signal propagation in process().
+    pub fn compute_spectral_scale(&mut self) -> f64 {
+        use crate::spectral::spectral_norm;
+
+        let n = self.nodes.len();
+        if n == 0 {
+            self.spectral_scale = 1.0;
+            return 1.0;
+        }
+
+        // Build adjacency matrix with 1/sqrt(out_degree) weights
+        // This matches how signals are actually split in process()
+        let mut matrix = vec![vec![0.0; n]; n];
+
+        for node in &self.nodes {
+            let out_degree = node.edges.len();
+            if out_degree > 0 {
+                let weight = 1.0 / (out_degree as f64).sqrt();
+                for edge in &node.edges {
+                    matrix[node.id][edge.to] = weight;
+                }
+            }
+        }
+
+        // Compute spectral norm
+        let sigma = spectral_norm(&matrix, self.config.spectral_iterations);
+
+        // Compute scale factor to achieve target
+        if sigma > self.config.spectral_target && sigma > 1e-12 {
+            self.spectral_scale = self.config.spectral_target / sigma;
+        } else {
+            self.spectral_scale = 1.0;
+        }
+
+        sigma
+    }
+
+    /// Get the current spectral scale factor.
+    pub fn spectral_scale(&self) -> f64 {
+        self.spectral_scale
     }
 
     /// Dampen node buffers by a factor in (0, 1].
