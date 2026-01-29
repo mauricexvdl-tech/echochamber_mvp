@@ -712,15 +712,16 @@ pub struct Config {
     pub sinkhorn_blend: f64,
 
     // =========================================================================
-    // Phase 2.3b: Spectral Normalization (Unitary-like Constraints)
+    // Phase 2.3b: Dynamic Spectral Normalization (amplitude control)
     // =========================================================================
-    /// Enable spectral normalization of edge weight matrix.
+    /// Enable dynamic spectral normalization of signal power per tick.
+    /// Composes with Sinkhorn: Sinkhorn handles structure, Spectral handles amplitude.
     pub spectral_normalize: bool,
-    /// Target spectral norm (max singular value). 1.0 = norm-preserving.
+    /// Target power multiplier. Signals scaled if total_power > target * pow_target.
     pub spectral_target: f64,
-    /// Power iterations for spectral norm estimation.
+    /// (Legacy) Power iterations - not used in dynamic mode.
     pub spectral_iterations: usize,
-    /// Recompute spectral normalization every N ticks (0 = only at init).
+    /// (Legacy) Update interval - not used in dynamic mode.
     pub spectral_update_interval: usize,
 }
 
@@ -1120,11 +1121,12 @@ impl Default for Config {
             sinkhorn_iterations: 20,    // Sufficient for convergence
             sinkhorn_blend: 1.0,        // Full Sinkhorn (1.0 = doubly-stochastic)
 
-            // Phase 2.3b: Spectral normalization defaults (off by default, experimental)
-            spectral_normalize: false, // Disabled by default
-            spectral_target: 1.0,      // Target σ_max = 1.0 (norm-preserving)
-            spectral_iterations: 20,   // Power iterations for estimation
-            spectral_update_interval: 0, // 0 = only at init (cheaper)
+            // Phase 2.3b: Dynamic spectral normalization (ENABLED - composable with Sinkhorn)
+            // Sinkhorn: structural (edge weights), Spectral: dynamic (signal amplitude)
+            spectral_normalize: true,  // ENABLED: dynamic per-tick amplitude control
+            spectral_target: 1.0,      // Scale signals if total_power > target * pow_target
+            spectral_iterations: 20,   // (legacy, not used in dynamic mode)
+            spectral_update_interval: 0, // (legacy, not used in dynamic mode)
         }
     }
 }

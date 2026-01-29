@@ -285,17 +285,29 @@ impl EchoChamber {
 
     /// Run one tick without metrics (for Demo 1 - uses ctx=0).
     pub fn tick(&mut self) {
-        let scale = self.spectral_scale;
         let mut all_packets: Vec<(usize, Complex)> = Vec::new();
         for node in &mut self.nodes {
             let packets = node.process(0, self.config.eps);
             for (_, target, sig) in packets {
-                // Apply spectral scale for unitary-like propagation
-                all_packets.push((target, sig.scale(scale)));
+                all_packets.push((target, sig));
             }
         }
+
+        // Dynamic spectral normalization if enabled
+        let scale = if self.config.spectral_normalize {
+            let total_power: f64 = all_packets.iter().map(|(_, s)| s.power()).sum();
+            let target_power = self.config.spectral_target * self.config.pow_target;
+            if total_power > target_power && total_power > self.config.eps {
+                (target_power / total_power).sqrt()
+            } else {
+                1.0
+            }
+        } else {
+            1.0
+        };
+
         for (target_id, signal) in all_packets {
-            self.nodes[target_id].receive(signal);
+            self.nodes[target_id].receive(signal.scale(scale));
         }
         self.tick_counter += 1;
     }
@@ -333,18 +345,35 @@ impl EchoChamber {
         metrics.ctx = ctx;
 
         let ctx_for_process = ctx.unwrap_or(0);
-        let spectral_scale = self.spectral_scale;
 
-        // Collect packets with edge info
+        // Collect packets with edge info (Sinkhorn weights applied in process())
         let mut all_packets: Vec<(usize, usize, usize, Complex)> = Vec::new();
         for node in &mut self.nodes {
             let from = node.id;
             let packets = node.process(ctx_for_process, self.config.eps);
             for (edge_idx, target, sig) in packets {
-                // Apply spectral scale for unitary-like propagation
-                all_packets.push((from, edge_idx, target, sig.scale(spectral_scale)));
+                all_packets.push((from, edge_idx, target, sig));
             }
         }
+
+        // Dynamic spectral normalization: scale signals if total power exceeds target
+        let spectral_scale = if self.config.spectral_normalize {
+            let total_power: f64 = all_packets.iter().map(|(_, _, _, s)| s.power()).sum();
+            let target_power = self.config.spectral_target * self.config.pow_target;
+            if total_power > target_power && total_power > self.config.eps {
+                (target_power / total_power).sqrt()
+            } else {
+                1.0
+            }
+        } else {
+            1.0
+        };
+
+        // Apply spectral scale to all packets
+        let all_packets: Vec<_> = all_packets
+            .into_iter()
+            .map(|(from, edge_idx, target, sig)| (from, edge_idx, target, sig.scale(spectral_scale)))
+            .collect();
 
         // Track edge contributions per target node
         let mut incoming_edges: Vec<Vec<EdgeContrib>> = vec![Vec::new(); n];
@@ -551,6 +580,7 @@ impl EchoChamber {
         }
 
         // Apply Sinkhorn-Knopp normalization if configured (doubly-stochastic weights)
+        // Sinkhorn: structural edge weights (mass-preserving routing)
         if config.sinkhorn_normalize {
             chamber.compute_sinkhorn_weights();
         } else {
@@ -558,10 +588,8 @@ impl EchoChamber {
             chamber.init_uniform_weights();
         }
 
-        // Apply spectral normalization if configured
-        if config.spectral_normalize {
-            chamber.compute_spectral_scale();
-        }
+        // Note: Spectral normalization is now DYNAMIC (computed per-tick on signal power)
+        // This composes with Sinkhorn: Sinkhorn handles structure, Spectral handles amplitude
 
         chamber
     }
