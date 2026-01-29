@@ -702,6 +702,16 @@ pub struct Config {
     pub stable_catastrophic_v_drop: f32,
 
     // =========================================================================
+    // Phase 2.3c: Sinkhorn-Knopp Normalization (Doubly-Stochastic Weights)
+    // =========================================================================
+    /// Enable Sinkhorn-Knopp normalization for doubly-stochastic edge weights.
+    pub sinkhorn_normalize: bool,
+    /// Number of Sinkhorn iterations (typically 10-20).
+    pub sinkhorn_iterations: usize,
+    /// Blend factor: 0.0 = uniform weights, 1.0 = full Sinkhorn.
+    pub sinkhorn_blend: f64,
+
+    // =========================================================================
     // Phase 2.3b: Spectral Normalization (Unitary-like Constraints)
     // =========================================================================
     /// Enable spectral normalization of edge weight matrix.
@@ -1104,6 +1114,11 @@ impl Default for Config {
             stable_exit_abs_td: 0.70,   // Phase 1.9e: 0.65 -> 0.70 (stickier)
             stable_min_ticks_on: 120,   // Phase 1.9e: 200 -> 120 (faster cycling)
             stable_catastrophic_v_drop: 0.15, // Catastrophic if V drops 0.15 below stable_v_min
+
+            // Phase 2.3c: Sinkhorn-Knopp normalization (ENABLED by default - proven improvement)
+            sinkhorn_normalize: true,   // ENABLED: improves worst-seed significantly
+            sinkhorn_iterations: 20,    // Sufficient for convergence
+            sinkhorn_blend: 1.0,        // Full Sinkhorn (1.0 = doubly-stochastic)
 
             // Phase 2.3b: Spectral normalization defaults (off by default, experimental)
             spectral_normalize: false, // Disabled by default

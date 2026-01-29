@@ -25,19 +25,25 @@ pub fn quantize_phase_to_ctx(phi: f64, num_ctx: usize) -> usize {
     bin.min(num_ctx - 1)
 }
 
-/// A directed edge with context-conditioned phase shifts.
+/// A directed edge with context-conditioned phase shifts and weight.
 #[derive(Clone, Debug)]
 pub struct Edge {
     pub to: usize,
     /// Phase shift per context channel (dynamic size based on num_ctx).
     pub phase_by_ctx: Vec<f64>,
+    /// Edge weight for signal propagation (normalized by Sinkhorn if enabled).
+    pub weight: f64,
 }
 
 impl Edge {
     /// Create a new edge with random initial phases per context channel.
     pub fn new_random(to: usize, num_ctx: usize, rng: &mut Rng) -> Self {
         let phase_by_ctx: Vec<f64> = (0..num_ctx).map(|_| rng.next_range(-PI, PI)).collect();
-        Edge { to, phase_by_ctx }
+        Edge {
+            to,
+            phase_by_ctx,
+            weight: 1.0, // Default weight, will be normalized later
+        }
     }
 
     /// Create edge with fixed phases (for Lie Triangle demo).
@@ -45,6 +51,7 @@ impl Edge {
         Edge {
             to,
             phase_by_ctx: vec![phase; num_ctx],
+            weight: 1.0,
         }
     }
 
@@ -129,6 +136,7 @@ impl Node {
 
     /// Process buffer with context-specific phase shifts.
     /// Returns packets (local_edge_idx, target_id, signal) to deliver.
+    /// Uses edge weights for signal splitting (Sinkhorn-normalized if enabled).
     pub fn process(&mut self, ctx: usize, eps: f64) -> Vec<(usize, usize, Complex)> {
         let norm = self.buffer.norm();
         if norm < eps {
@@ -141,12 +149,11 @@ impl Node {
             return Vec::new();
         }
 
-        let split_factor = 1.0 / (out_degree as f64).sqrt();
-
         let mut packets = Vec::with_capacity(out_degree);
         for (edge_idx, edge) in self.edges.iter().enumerate() {
             let rotator = Complex::from_polar(1.0, edge.phase(ctx));
-            let outgoing = self.buffer.scale(split_factor) * rotator;
+            // Use edge weight for signal splitting (can be Sinkhorn-normalized)
+            let outgoing = self.buffer.scale(edge.weight) * rotator;
             packets.push((edge_idx, edge.to, outgoing));
         }
 
@@ -543,6 +550,14 @@ impl EchoChamber {
             }
         }
 
+        // Apply Sinkhorn-Knopp normalization if configured (doubly-stochastic weights)
+        if config.sinkhorn_normalize {
+            chamber.compute_sinkhorn_weights();
+        } else {
+            // Initialize uniform weights: 1/sqrt(out_degree)
+            chamber.init_uniform_weights();
+        }
+
         // Apply spectral normalization if configured
         if config.spectral_normalize {
             chamber.compute_spectral_scale();
@@ -551,9 +566,70 @@ impl EchoChamber {
         chamber
     }
 
+    /// Initialize edge weights to uniform 1/sqrt(out_degree).
+    /// This is the baseline without Sinkhorn normalization.
+    pub fn init_uniform_weights(&mut self) {
+        for node in &mut self.nodes {
+            let out_degree = node.edges.len();
+            if out_degree > 0 {
+                let weight = 1.0 / (out_degree as f64).sqrt();
+                for edge in &mut node.edges {
+                    edge.weight = weight;
+                }
+            }
+        }
+    }
+
+    /// Compute Sinkhorn-Knopp normalized edge weights for doubly-stochastic propagation.
+    ///
+    /// This ensures that both row sums (outgoing) and column sums (incoming)
+    /// are normalized, providing mass-preserving signal routing that stabilizes
+    /// dynamics across different random seeds.
+    ///
+    /// Reference: DeepSeek "Manifold-Constrained Hyper-Connections" (mHC)
+    pub fn compute_sinkhorn_weights(&mut self) {
+        use crate::sinkhorn::compute_blended_weights;
+
+        let n = self.nodes.len();
+        if n == 0 {
+            return;
+        }
+
+        // Build edge list: (from, to, raw_weight)
+        let mut edges: Vec<(usize, usize, f64)> = Vec::new();
+        let mut edge_map: Vec<(usize, usize)> = Vec::new(); // (node_id, edge_idx)
+
+        for node in &self.nodes {
+            for (edge_idx, edge) in node.edges.iter().enumerate() {
+                edges.push((node.id, edge.to, 1.0)); // Raw weight = 1.0
+                edge_map.push((node.id, edge_idx));
+            }
+        }
+
+        if edges.is_empty() {
+            return;
+        }
+
+        // Compute Sinkhorn-normalized weights
+        let weights = compute_blended_weights(
+            n,
+            &edges,
+            self.config.sinkhorn_iterations,
+            self.config.sinkhorn_blend,
+            self.config.eps,
+        );
+
+        // Apply weights to edges
+        for (idx, &(node_id, edge_idx)) in edge_map.iter().enumerate() {
+            if let Some(weight) = weights.get(idx) {
+                self.nodes[node_id].edges[edge_idx].weight = *weight;
+            }
+        }
+    }
+
     /// Compute spectral scale factor to bound the graph's spectral norm.
     ///
-    /// This builds an adjacency matrix from the current graph structure,
+    /// This builds an adjacency matrix from the current edge weights,
     /// computes its spectral norm (largest singular value), and sets a
     /// scaling factor to ensure σ_max ≤ target.
     ///
@@ -567,17 +643,12 @@ impl EchoChamber {
             return 1.0;
         }
 
-        // Build adjacency matrix with 1/sqrt(out_degree) weights
-        // This matches how signals are actually split in process()
+        // Build adjacency matrix from actual edge weights
         let mut matrix = vec![vec![0.0; n]; n];
 
         for node in &self.nodes {
-            let out_degree = node.edges.len();
-            if out_degree > 0 {
-                let weight = 1.0 / (out_degree as f64).sqrt();
-                for edge in &node.edges {
-                    matrix[node.id][edge.to] = weight;
-                }
+            for edge in &node.edges {
+                matrix[node.id][edge.to] = edge.weight;
             }
         }
 
